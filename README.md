@@ -92,6 +92,28 @@ python -m text_to_cad.cad_agent \
   --provider azure
 ```
 
+Run with local Ollama and Qwen2.5-Coder:
+
+```bash
+ollama pull qwen2.5-coder:7b
+ollama serve
+
+export OLLAMA_MODEL="qwen2.5-coder:7b"
+
+python -m text_to_cad.cad_agent \
+  --prompt "Create a 30 mm diameter compression spring, 4 mm wire diameter, 70 mm height, and 8 turns." \
+  --output-dir outputs/phase_b/ollama_spring \
+  --name ollama_spring \
+  --provider ollama
+```
+
+Smaller laptop-friendly model options:
+
+```bash
+ollama pull qwen2.5-coder:3b
+export OLLAMA_MODEL="qwen2.5-coder:3b"
+```
+
 Expected Phase B files:
 
 ```text
@@ -182,6 +204,8 @@ AZURE_OPENAI_ENDPOINT: https://<resource-name>.openai.azure.com
 AZURE_OPENAI_API_KEY: <key>
 AZURE_OPENAI_DEPLOYMENT: <deployment-name>
 AZURE_OPENAI_API_VERSION: 2024-10-21
+OLLAMA_HOST: http://localhost:11434
+OLLAMA_MODEL: qwen2.5-coder:7b
 ```
 
 GitHub Actions deployment uses a publish profile. Add this repository secret:

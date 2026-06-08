@@ -21,6 +21,7 @@ try:
         LlmConfigurationError,
         azure_openai_configured,
         generate_json_with_azure,
+        generate_json_with_ollama,
         load_prompt_template,
     )
     from text_to_cad.viewer import write_viewer
@@ -34,6 +35,7 @@ except ModuleNotFoundError:
         LlmConfigurationError,
         azure_openai_configured,
         generate_json_with_azure,
+        generate_json_with_ollama,
         load_prompt_template,
     )
     from viewer import write_viewer
@@ -90,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--name", default=None, help="Output basename for STEP/STL files.")
     parser.add_argument(
         "--provider",
-        choices=("auto", "azure", "fallback"),
+        choices=("auto", "azure", "ollama", "fallback"),
         default="auto",
         help="CAD document source. auto uses Azure when configured, otherwise fallback.",
     )
@@ -100,14 +102,18 @@ def main(argv: list[str] | None = None) -> int:
 
     prompt = args.prompt if args.prompt is not None else args.prompt_file.read_text(encoding="utf-8")
     output_name = args.name or _slug_from_prompt(prompt)
-    return generate_with_agent(
-        prompt=prompt,
-        output_dir=args.output_dir,
-        output_name=output_name,
-        provider=args.provider,
-        execute=not args.dry_run,
-        max_repairs=args.max_repairs,
-    )
+    try:
+        return generate_with_agent(
+            prompt=prompt,
+            output_dir=args.output_dir,
+            output_name=output_name,
+            provider=args.provider,
+            execute=not args.dry_run,
+            max_repairs=args.max_repairs,
+        )
+    except LlmConfigurationError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
 
 
 def create_document_for_prompt(prompt: str, output_name: str, provider: str = "auto") -> AgentCadDocument:
@@ -115,6 +121,11 @@ def create_document_for_prompt(prompt: str, output_name: str, provider: str = "a
 
 
 def _create_document(prompt: str, output_name: str, provider: str) -> tuple[AgentCadDocument, str]:
+    if provider == "ollama":
+        system_prompt = load_prompt_template(DEFAULT_SYSTEM_PROMPT)
+        payload = generate_json_with_ollama(system_prompt, prompt)
+        return AgentCadDocument.model_validate(payload), "ollama"
+
     use_azure = provider == "azure" or (provider == "auto" and azure_openai_configured())
     if use_azure:
         try:
