@@ -1,0 +1,1 @@
+Create a 100 mm x 50 mm x 4 mm simple rectangular steel plate.
