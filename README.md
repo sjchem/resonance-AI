@@ -2,6 +2,54 @@
 
 Local prototype for a text-to-CAD plus simulation-surrogate workflow.
 
+## Local Ollama CAD Prompt Parser
+
+This POC backend uses local Ollama only. It does not call Azure OpenAI, OpenAI
+API, or any remote runtime LLM. The endpoint converts a natural-language CAD
+prompt into validated structured JSON.
+
+Start Ollama in one WSL 2 terminal:
+
+```bash
+ollama serve
+```
+
+Start the FastAPI backend in a second terminal:
+
+```bash
+cd backend
+pip install -r requirements.txt
+uvicorn app.main:app --reload --port 8000
+```
+
+Health check:
+
+```bash
+curl http://localhost:8000/
+```
+
+List local Ollama models:
+
+```bash
+curl http://localhost:8000/models
+```
+
+Parse a CAD prompt:
+
+```bash
+curl -X POST http://localhost:8000/parse-cad \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "Create a rubber bushing with outer diameter 60 mm, inner diameter 20 mm, height 40 mm and chamfer 2 mm."
+  }'
+```
+
+The backend expects this local model to be available:
+
+```bash
+ollama pull qwen2.5-coder:7b
+```
+
 ## Phase A: Text to CAD
 
 Phase A converts a short engineering prompt into a deterministic CadQuery script,
