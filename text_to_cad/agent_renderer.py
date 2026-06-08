@@ -13,6 +13,7 @@ from text_to_cad.agent_schema import (
     EdgeOperation,
     HoleOperation,
     Primitive,
+    SpringPrimitive,
     Vec3,
 )
 
@@ -31,8 +32,12 @@ def render_agent_cadquery_script(document: AgentCadDocument, output_name: str) -
         'os.environ.setdefault("XDG_CACHE_HOME", str(OUTPUT_DIR / ".cache"))',
         "",
         "import cadquery as cq",
+        "from cadquery import Vector",
+        "from math import cos, pi, sin",
         "",
         f"DOCUMENT = {json.dumps(document.model_dump(mode='json'), indent=2)!r}",
+        "",
+        _helper_functions(),
         "",
         _render_part(part),
         "",
@@ -69,12 +74,35 @@ def _primitive_expression(primitive: Primitive, variable: str, at: Vec3) -> str:
             f'{variable} = cq.Workplane("XY")'
             f".circle({primitive.radius!r}).extrude({primitive.height!r})"
         )
+    elif isinstance(primitive, SpringPrimitive):
+        expression = (
+            f"{variable} = make_helical_spring("
+            f"coil_radius={primitive.coil_radius!r}, "
+            f"wire_radius={primitive.wire_radius!r}, "
+            f"height={primitive.height!r}, "
+            f"turns={primitive.turns!r}, "
+            f"samples_per_turn={primitive.samples_per_turn!r})"
+        )
     else:
         raise TypeError(f"Unsupported primitive: {primitive!r}")
 
     if at.x or at.y or at.z:
         expression += f".translate(({at.x!r}, {at.y!r}, {at.z!r}))"
     return expression
+
+
+def _helper_functions() -> str:
+    return '''def make_helical_spring(coil_radius, wire_radius, height, turns, samples_per_turn):
+    sample_count = max(24, int(turns * samples_per_turn))
+    points = []
+    for index in range(sample_count + 1):
+        t = index / sample_count
+        angle = 2.0 * pi * turns * t
+        points.append(Vector(coil_radius * cos(angle), coil_radius * sin(angle), height * t))
+    path = cq.Workplane("XY").spline(points)
+    profile = cq.Workplane("YZ").center(coil_radius, 0).circle(wire_radius)
+    return profile.sweep(path, isFrenet=True)
+'''
 
 
 def _hole_statement(operation: HoleOperation) -> str:

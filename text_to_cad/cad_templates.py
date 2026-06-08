@@ -58,6 +58,9 @@ def prompt_to_spec(prompt: str) -> CadSpec:
     normalized = " ".join(prompt.strip().split())
     lowered = normalized.lower()
 
+    if any(word in lowered for word in ("spring", "coil", "helical")):
+        return _parse_spring_spec(lowered)
+
     length, width, thickness = _parse_dimensions(lowered)
     part_type = "bracket" if any(word in lowered for word in ("bracket", "mount", "bolt", "hole")) else "plate"
     hole_count = _parse_hole_count(lowered) if part_type == "bracket" else 0
@@ -73,6 +76,64 @@ def prompt_to_spec(prompt: str) -> CadSpec:
         hole_diameter_mm=hole_diameter,
         material_hint=material_hint,
     )
+
+
+def _parse_spring_spec(text: str) -> CadSpec:
+    coil_diameter = _parse_named_dimension(
+        text,
+        ("coil diameter", "outer diameter", "outside diameter", "diameter", "od"),
+        default=24.0,
+    )
+    height = _parse_named_dimension(
+        text,
+        ("height", "length", "free length"),
+        default=40.0,
+    )
+    wire_diameter = _parse_named_dimension(
+        text,
+        ("wire diameter", "wire dia", "wire"),
+        default=3.0,
+    )
+    turns = _parse_turn_count(text)
+    return CadSpec(
+        part_type="spring",
+        length_mm=coil_diameter,
+        width_mm=coil_diameter,
+        thickness_mm=height,
+        hole_count=turns,
+        hole_diameter_mm=wire_diameter,
+        material_hint=_parse_material_hint(text),
+    )
+
+
+def _parse_named_dimension(text: str, names: tuple[str, ...], default: float) -> float:
+    for name in names:
+        match = re.search(
+            rf"{re.escape(name)}\s*(?:of|=|:)?\s*(?P<value>\d+(?:\.\d+)?)\s*(?:mm|millimeter|millimeters)?",
+            text,
+            re.I,
+        )
+        if match:
+            return float(match.group("value"))
+
+        reverse_match = re.search(
+            rf"(?P<value>\d+(?:\.\d+)?)\s*(?:mm|millimeter|millimeters)?\s+{re.escape(name)}",
+            text,
+            re.I,
+        )
+        if reverse_match:
+            return float(reverse_match.group("value"))
+    return default
+
+
+def _parse_turn_count(text: str) -> int:
+    match = re.search(r"(?P<count>\d+)\s*(?:turns?|coils?)", text, re.I)
+    if match:
+        return max(1, int(match.group("count")))
+    for word, value in NUMBER_WORDS.items():
+        if re.search(rf"\b{word}\s+(?:turns?|coils?)\b", text, re.I):
+            return value
+    return 6
 
 
 def render_cadquery_script(spec: CadSpec, output_name: str) -> str:

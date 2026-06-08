@@ -27,6 +27,7 @@ The JSON must match this schema:
 Supported primitives:
 - cube: {"type": "cube", "size": {"x": length_mm, "y": width_mm, "z": height_mm}}
 - cylinder: {"type": "cylinder", "radius": radius_mm, "height": height_mm}
+- spring: {"type": "spring", "coil_radius": radius_to_wire_centerline_mm, "wire_radius": wire_radius_mm, "height": height_mm, "turns": turn_count, "samples_per_turn": 18}
 
 Supported operations:
 - hole: {"type": "hole", "diameter": diameter_mm, "at": {"x": x_mm, "y": y_mm, "z": 0}}
@@ -42,4 +43,5 @@ Important geometry rules:
 - Put plate/bracket holes on the top face with z = 0 and x/y coordinates inside the cube bounds.
 - For four mounting holes on a rectangular plate, place them near the corners with enough edge margin.
 - If the prompt omits hole diameter, use 8 mm for brackets and 6 mm for small plates.
+- For spring or coil prompts, use the spring primitive. If omitted, use 12 mm coil radius, 1.5 mm wire radius, 40 mm height, and 6 turns.
 - Keep geometry simple, manufacturable, and exportable.

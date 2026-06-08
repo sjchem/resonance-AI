@@ -35,7 +35,16 @@ class CylinderPrimitive(BaseModel):
     height: Number
 
 
-Primitive = CubePrimitive | CylinderPrimitive
+class SpringPrimitive(BaseModel):
+    type: Literal["spring"]
+    coil_radius: Number = 12.0
+    wire_radius: Number = 1.5
+    height: Number = 40.0
+    turns: Number = 6.0
+    samples_per_turn: int = Field(default=18, ge=12, le=64)
+
+
+Primitive = CubePrimitive | CylinderPrimitive | SpringPrimitive
 
 
 class HoleOperation(BaseModel):
@@ -83,6 +92,9 @@ class AgentCadDocument(BaseModel):
 def document_from_spec(spec: CadSpec, name: str, description: str = "") -> AgentCadDocument:
     """Create a Phase B document from the Phase A deterministic parser."""
 
+    if spec.part_type == "spring":
+        return document_from_spring_spec(spec, name, description)
+
     operations: list[Operation] = []
     for x, y in _hole_points(spec):
         operations.append(
@@ -110,6 +122,26 @@ def document_from_spec(spec: CadSpec, name: str, description: str = "") -> Agent
     )
 
 
+def document_from_spring_spec(spec: CadSpec, name: str, description: str = "") -> AgentCadDocument:
+    return AgentCadDocument(
+        name=name,
+        material_hint=spec.material_hint,
+        description=description,
+        parts=[
+            CadPart(
+                name=name,
+                primitive=SpringPrimitive(
+                    type="spring",
+                    coil_radius=spec.length_mm / 2.0,
+                    wire_radius=spec.hole_diameter_mm / 2.0,
+                    height=spec.thickness_mm,
+                    turns=max(1.0, float(spec.hole_count or 6)),
+                ),
+            )
+        ],
+    )
+
+
 def spec_from_document(document: AgentCadDocument) -> CadSpec:
     """Convert a simple CAD document into viewer metadata."""
 
@@ -119,14 +151,18 @@ def spec_from_document(document: AgentCadDocument) -> CadSpec:
         length = primitive.size.x
         width = primitive.size.y
         thickness = primitive.size.z
-    else:
+    elif primitive.type == "cylinder":
         length = primitive.radius * 2.0
         width = primitive.radius * 2.0
+        thickness = primitive.height
+    else:
+        length = (primitive.coil_radius + primitive.wire_radius) * 2.0
+        width = length
         thickness = primitive.height
 
     hole_ops = [op for op in part.operations if op.type == "hole"]
     hole_diameter = hole_ops[0].diameter if hole_ops else 8.0
-    part_type = "bracket" if hole_ops or "bracket" in document.name.lower() else "plate"
+    part_type = primitive.type if primitive.type == "spring" else "bracket" if hole_ops or "bracket" in document.name.lower() else "plate"
     return CadSpec(
         part_type=part_type,
         length_mm=length,
