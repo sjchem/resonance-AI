@@ -1,11 +1,18 @@
-"""Async OpenAI client for CAD prompt parsing."""
+"""Async OpenAI/Azure OpenAI client for CAD prompt parsing."""
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
 
-from openai import APIConnectionError, APIStatusError, AsyncOpenAI, AuthenticationError, OpenAIError
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    AsyncAzureOpenAI,
+    AsyncOpenAI,
+    AuthenticationError,
+    OpenAIError,
+)
 from dotenv import load_dotenv
 from pydantic import ValidationError
 
@@ -15,6 +22,7 @@ from app.schemas import CADPromptOutput
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-21")
 
 SYSTEM_PROMPT = """You are a CAD intent parser for vibroacoustic and mechanical components.
 
@@ -45,7 +53,7 @@ Extraction details:
 
 
 class OpenAIConfigurationError(RuntimeError):
-    """Raised when OPENAI_API_KEY or model configuration is missing."""
+    """Raised when OpenAI or Azure OpenAI configuration is missing."""
 
 
 class OpenAIRequestError(RuntimeError):
@@ -59,6 +67,20 @@ class CADValidationError(RuntimeError):
 def openai_status() -> dict[str, str | bool]:
     """Return local configuration state without exposing secrets."""
 
+    azure_configured = all(
+        [
+            os.getenv("AZURE_OPENAI_API_KEY"),
+            os.getenv("AZURE_OPENAI_ENDPOINT"),
+            os.getenv("AZURE_OPENAI_DEPLOYMENT"),
+        ]
+    )
+    if azure_configured:
+        return {
+            "provider": "azure_openai",
+            "model": os.getenv("AZURE_OPENAI_DEPLOYMENT", ""),
+            "api_key_configured": True,
+        }
+
     return {
         "provider": "openai",
         "model": OPENAI_MODEL,
@@ -69,13 +91,10 @@ def openai_status() -> dict[str, str | bool]:
 async def parse_cad_prompt(prompt: str) -> CADPromptOutput:
     """Convert a natural-language CAD prompt into validated structured JSON."""
 
-    if not os.getenv("OPENAI_API_KEY"):
-        raise OpenAIConfigurationError("OPENAI_API_KEY is not set.")
-
-    client = AsyncOpenAI()
+    client, model = _build_client()
     try:
         response = await client.responses.parse(
-            model=OPENAI_MODEL,
+            model=model,
             instructions=SYSTEM_PROMPT,
             input=prompt,
             text_format=CADPromptOutput,
@@ -98,3 +117,46 @@ async def parse_cad_prompt(prompt: str) -> CADPromptOutput:
         return CADPromptOutput.model_validate(parsed)
     except ValidationError as exc:
         raise CADValidationError(str(exc)) from exc
+
+
+def _build_client() -> tuple[AsyncOpenAI | AsyncAzureOpenAI, str]:
+    """Build the configured LLM client.
+
+    Azure OpenAI is preferred when its environment variables are present because
+    Azure deployment names are not the same thing as public OpenAI model names.
+    """
+
+    azure_api_key = os.getenv("AZURE_OPENAI_API_KEY")
+    azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+    azure_deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
+
+    if azure_api_key or azure_endpoint or azure_deployment:
+        missing = [
+            name
+            for name, value in {
+                "AZURE_OPENAI_API_KEY": azure_api_key,
+                "AZURE_OPENAI_ENDPOINT": azure_endpoint,
+                "AZURE_OPENAI_DEPLOYMENT": azure_deployment,
+            }.items()
+            if not value
+        ]
+        if missing:
+            raise OpenAIConfigurationError(
+                f"Azure OpenAI configuration is incomplete. Missing: {', '.join(missing)}."
+            )
+
+        return (
+            AsyncAzureOpenAI(
+                api_key=azure_api_key,
+                azure_endpoint=azure_endpoint,
+                api_version=AZURE_OPENAI_API_VERSION,
+            ),
+            azure_deployment,
+        )
+
+    if not os.getenv("OPENAI_API_KEY"):
+        raise OpenAIConfigurationError(
+            "Set Azure OpenAI variables or set OPENAI_API_KEY for the public OpenAI API."
+        )
+
+    return AsyncOpenAI(), OPENAI_MODEL

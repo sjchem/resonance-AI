@@ -4,14 +4,23 @@ Local prototype for a text-to-CAD plus simulation-surrogate workflow.
 
 ## OpenAI CAD Prompt Parser
 
-This POC backend uses the OpenAI API and Structured Outputs. It converts a
-natural-language CAD prompt into validated structured JSON and returns a simple
-CAD-style SVG preview.
+This POC backend uses Azure OpenAI or the public OpenAI API with Structured
+Outputs. It converts a natural-language CAD prompt into validated structured
+JSON and returns a simple CAD-style SVG preview.
 
-Configure your API key in `backend/.env`:
+For Azure OpenAI, configure:
 
 ```text
-OPENAI_API_KEY=<your-api-key>
+AZURE_OPENAI_API_KEY=<your-azure-openai-key>
+AZURE_OPENAI_ENDPOINT=https://<resource-name>.openai.azure.com
+AZURE_OPENAI_DEPLOYMENT=<deployment-name>
+AZURE_OPENAI_API_VERSION=2024-10-21
+```
+
+For the public OpenAI API instead, configure:
+
+```text
+OPENAI_API_KEY=<your-openai-api-key>
 OPENAI_MODEL=gpt-4.1-mini
 ```
 
@@ -211,8 +220,10 @@ Service does not need CadQuery or native OpenCascade libraries.
 Set these App Service application settings:
 
 ```text
-OPENAI_API_KEY=<your-api-key>
-OPENAI_MODEL=gpt-4.1-mini
+AZURE_OPENAI_API_KEY=<your-azure-openai-key>
+AZURE_OPENAI_ENDPOINT=https://<resource-name>.openai.azure.com
+AZURE_OPENAI_DEPLOYMENT=<deployment-name>
+AZURE_OPENAI_API_VERSION=2024-10-21
 SCM_DO_BUILD_DURING_DEPLOYMENT=true
 ```
 
@@ -255,8 +266,10 @@ Azure App Service settings to configure:
 Runtime stack: Python 3.12 or newer on Linux
 Startup command: bash startup.sh
 SCM_DO_BUILD_DURING_DEPLOYMENT: true
-OPENAI_API_KEY: <key>
-OPENAI_MODEL: gpt-4.1-mini
+AZURE_OPENAI_API_KEY: <key>
+AZURE_OPENAI_ENDPOINT: https://<resource-name>.openai.azure.com
+AZURE_OPENAI_DEPLOYMENT: <deployment-name>
+AZURE_OPENAI_API_VERSION: 2024-10-21
 ```
 
 GitHub Actions deployment uses a publish profile. Add this repository secret:
