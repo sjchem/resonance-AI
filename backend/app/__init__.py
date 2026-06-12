@@ -1,1 +1,1 @@
-"""Local Ollama-powered CAD prompt parser backend."""
+"""OpenAI-powered CAD prompt parser backend."""

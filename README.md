@@ -2,19 +2,20 @@
 
 Local prototype for a text-to-CAD plus simulation-surrogate workflow.
 
-## Local Ollama CAD Prompt Parser
+## OpenAI CAD Prompt Parser
 
-This POC backend uses local Ollama only. It does not call Azure OpenAI, OpenAI
-API, or any remote runtime LLM. The endpoint converts a natural-language CAD
-prompt into validated structured JSON.
+This POC backend uses the OpenAI API and Structured Outputs. It converts a
+natural-language CAD prompt into validated structured JSON and returns a simple
+CAD-style SVG preview.
 
-Start Ollama in one WSL 2 terminal:
+Configure your API key in `backend/.env`:
 
-```bash
-ollama serve
+```text
+OPENAI_API_KEY=<your-api-key>
+OPENAI_MODEL=gpt-4.1-mini
 ```
 
-Start the FastAPI backend in a second terminal:
+Start the FastAPI backend:
 
 ```bash
 cd backend
@@ -28,7 +29,7 @@ Health check:
 curl http://localhost:8000/
 ```
 
-List local Ollama models:
+Check model configuration:
 
 ```bash
 curl http://localhost:8000/models
@@ -44,10 +45,20 @@ curl -X POST http://localhost:8000/parse-cad \
   }'
 ```
 
-The backend expects this local model to be available:
+Generate parsed JSON plus CAD preview SVG:
 
 ```bash
-ollama pull qwen2.5-coder:7b
+curl -X POST http://localhost:8000/generate-cad \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "Create a rubber bushing with outer diameter 60 mm, inner diameter 20 mm, height 40 mm and chamfer 2 mm."
+  }'
+```
+
+Open the local UI:
+
+```text
+http://localhost:8000/ui
 ```
 
 ## Phase A: Text to CAD
@@ -140,28 +151,6 @@ python -m text_to_cad.cad_agent \
   --provider azure
 ```
 
-Run with local Ollama and Qwen2.5-Coder:
-
-```bash
-ollama pull qwen2.5-coder:7b
-ollama serve
-
-export OLLAMA_MODEL="qwen2.5-coder:7b"
-
-python -m text_to_cad.cad_agent \
-  --prompt "Create a 30 mm diameter compression spring, 4 mm wire diameter, 70 mm height, and 8 turns." \
-  --output-dir outputs/phase_b/ollama_spring \
-  --name ollama_spring \
-  --provider ollama
-```
-
-Smaller laptop-friendly model options:
-
-```bash
-ollama pull qwen2.5-coder:3b
-export OLLAMA_MODEL="qwen2.5-coder:3b"
-```
-
 Expected Phase B files:
 
 ```text
@@ -214,9 +203,24 @@ Example MCP config:
 
 ## Azure Web App
 
-This repo includes a FastAPI web UI with a prompt box and generated CAD output.
-It is Azure App Service-ready through [main.py](main.py), [startup.sh](startup.sh),
-and [.github/workflows/azure-webapp.yml](.github/workflows/azure-webapp.yml).
+This repo includes a lightweight FastAPI web UI with a prompt box, validated
+OpenAI CAD JSON, and an SVG CAD-style preview. The Azure deployment packages
+only [main.py](main.py), [startup.sh](startup.sh), and the `backend/` app so App
+Service does not need CadQuery or native OpenCascade libraries.
+
+Set these App Service application settings:
+
+```text
+OPENAI_API_KEY=<your-api-key>
+OPENAI_MODEL=gpt-4.1-mini
+SCM_DO_BUILD_DURING_DEPLOYMENT=true
+```
+
+Use this startup command:
+
+```bash
+bash startup.sh
+```
 
 Run locally:
 
@@ -227,8 +231,11 @@ python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 Then open:
 
 ```text
-http://localhost:8000
+http://localhost:8000/generate
 ```
+
+The same UI is also available at `/ui`. The root `/` remains a JSON health
+check endpoint.
 
 The configured Azure Web App name in the workflow is:
 
@@ -248,12 +255,8 @@ Azure App Service settings to configure:
 Runtime stack: Python 3.12 or newer on Linux
 Startup command: bash startup.sh
 SCM_DO_BUILD_DURING_DEPLOYMENT: true
-AZURE_OPENAI_ENDPOINT: https://<resource-name>.openai.azure.com
-AZURE_OPENAI_API_KEY: <key>
-AZURE_OPENAI_DEPLOYMENT: <deployment-name>
-AZURE_OPENAI_API_VERSION: 2024-10-21
-OLLAMA_HOST: http://localhost:11434
-OLLAMA_MODEL: qwen2.5-coder:7b
+OPENAI_API_KEY: <key>
+OPENAI_MODEL: gpt-4.1-mini
 ```
 
 GitHub Actions deployment uses a publish profile. Add this repository secret:
