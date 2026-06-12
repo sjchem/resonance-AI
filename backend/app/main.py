@@ -228,7 +228,7 @@ UI_HTML = """<!doctype html>
       <label for="prompt">CAD prompt</label>
       <textarea id="prompt" name="prompt">Create a rubber bushing with outer diameter 60 mm, inner diameter 20 mm, height 40 mm and chamfer 2 mm.</textarea>
       <button id="submitButton" type="submit">Parse and Preview</button>
-      <p class="muted">Uses OpenAI Structured Outputs through /generate-cad.</p>
+      <p class="muted">Uses Azure OpenAI or OpenAI structured parsing through /generate-cad.</p>
 
       <hr class="divider">
 
@@ -295,7 +295,7 @@ UI_HTML = """<!doctype html>
       event.preventDefault();
       button.disabled = true;
       button.textContent = "Parsing...";
-      preview.innerHTML = '<p class="muted">Waiting for OpenAI...</p>';
+      preview.innerHTML = '<p class="muted">Waiting for the configured AI model...</p>';
 
       try {
         const response = await fetch("/generate-cad", {

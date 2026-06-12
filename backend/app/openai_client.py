@@ -91,17 +91,14 @@ def openai_status() -> dict[str, str | bool]:
 async def parse_cad_prompt(prompt: str) -> CADPromptOutput:
     """Convert a natural-language CAD prompt into validated structured JSON."""
 
-    client, model = _build_client()
+    client, model, provider = _build_client()
     try:
-        response = await client.responses.parse(
-            model=model,
-            instructions=SYSTEM_PROMPT,
-            input=prompt,
-            text_format=CADPromptOutput,
-            temperature=0,
-        )
+        if provider == "azure_openai":
+            parsed = await _parse_with_azure_chat(client, model, prompt)
+        else:
+            parsed = await _parse_with_openai_responses(client, model, prompt)
     except AuthenticationError as exc:
-        raise OpenAIConfigurationError("OpenAI authentication failed. Check OPENAI_API_KEY.") from exc
+        raise OpenAIConfigurationError("OpenAI authentication failed. Check the configured API key.") from exc
     except APIConnectionError as exc:
         raise OpenAIRequestError("Could not connect to the OpenAI API.") from exc
     except APIStatusError as exc:
@@ -109,7 +106,6 @@ async def parse_cad_prompt(prompt: str) -> CADPromptOutput:
     except OpenAIError as exc:
         raise OpenAIRequestError(str(exc)) from exc
 
-    parsed = response.output_parsed
     if parsed is None:
         raise CADValidationError("OpenAI did not return parsed CAD JSON.")
 
@@ -119,7 +115,44 @@ async def parse_cad_prompt(prompt: str) -> CADPromptOutput:
         raise CADValidationError(str(exc)) from exc
 
 
-def _build_client() -> tuple[AsyncOpenAI | AsyncAzureOpenAI, str]:
+async def _parse_with_openai_responses(
+    client: AsyncOpenAI | AsyncAzureOpenAI, model: str, prompt: str
+) -> CADPromptOutput | None:
+    """Parse with the public OpenAI Responses API."""
+
+    response = await client.responses.parse(
+        model=model,
+        instructions=SYSTEM_PROMPT,
+        input=prompt,
+        text_format=CADPromptOutput,
+        temperature=0,
+    )
+    return response.output_parsed
+
+
+async def _parse_with_azure_chat(
+    client: AsyncOpenAI | AsyncAzureOpenAI, model: str, prompt: str
+) -> CADPromptOutput | None:
+    """Parse with Azure OpenAI Chat Completions structured outputs.
+
+    The Azure deployment in this app uses API version 2024-10-21. Chat
+    Completions is the compatible route for that setup, while the newer
+    Responses route can return "Resource not found" on some Azure resources.
+    """
+
+    completion = await client.beta.chat.completions.parse(
+        model=model,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+        response_format=CADPromptOutput,
+        temperature=0,
+    )
+    return completion.choices[0].message.parsed
+
+
+def _build_client() -> tuple[AsyncOpenAI | AsyncAzureOpenAI, str, str]:
     """Build the configured LLM client.
 
     Azure OpenAI is preferred when its environment variables are present because
@@ -152,6 +185,7 @@ def _build_client() -> tuple[AsyncOpenAI | AsyncAzureOpenAI, str]:
                 api_version=AZURE_OPENAI_API_VERSION,
             ),
             azure_deployment,
+            "azure_openai",
         )
 
     if not os.getenv("OPENAI_API_KEY"):
@@ -159,4 +193,4 @@ def _build_client() -> tuple[AsyncOpenAI | AsyncAzureOpenAI, str]:
             "Set Azure OpenAI variables or set OPENAI_API_KEY for the public OpenAI API."
         )
 
-    return AsyncOpenAI(), OPENAI_MODEL
+    return AsyncOpenAI(), OPENAI_MODEL, "openai"
