@@ -366,14 +366,20 @@ UI_HTML = """<!doctype html>
       flex-direction: column;
       gap: 12px;
     }
-    .chat-log {
-      min-height: 360px;
-      max-height: 520px;
-      overflow-y: auto;
+    .chat-shell {
+      min-height: 420px;
       border: 1px solid var(--line);
       border-radius: 3px;
-      padding: 12px;
       background: linear-gradient(135deg, #f9fbfd, #eef3f8);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .chat-log {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      padding: 12px;
       display: flex;
       flex-direction: column;
       gap: 10px;
@@ -399,17 +405,26 @@ UI_HTML = """<!doctype html>
       color: var(--ink);
     }
     .msg.bot.err { border-color: #fecdca; background: #fff7f6; color: var(--danger); }
-    .chat-input {
+    .chat-composer {
       display: flex;
-      gap: 8px;
+      gap: 10px;
+      padding: 12px;
+      border-top: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.9);
+      align-items: flex-end;
     }
-    .chat-input input {
+    .chat-composer textarea {
       flex: 1;
+      min-height: 56px;
+      max-height: 144px;
+      resize: none;
+      margin: 0;
     }
-    .chat-input button {
+    .chat-composer button {
       width: auto;
       margin: 0;
-      padding: 10px 18px;
+      min-width: 104px;
+      padding: 12px 18px;
     }
     .attachment-tools {
       display: grid;
@@ -686,13 +701,15 @@ UI_HTML = """<!doctype html>
           </div>
           <div id="attachmentList" class="attachment-list"></div>
         </div>
-        <div id="chatLog" class="chat-log">
-          <div class="msg bot">Start by adding a PDF, image, JSON status file, or old CAD model. I will extract context and draft a short prompt for approval. Images are reference-only in this POC, so please type the key dimensions in chat.</div>
+        <div class="chat-shell">
+          <div id="chatLog" class="chat-log">
+            <div class="msg bot">Start by adding a PDF, image, JSON status file, or old CAD model. I will extract context and draft a short prompt for approval. Images are reference-only in this POC, so please type the key dimensions in chat.</div>
+          </div>
+          <form id="chatForm" class="chat-composer">
+            <textarea id="chatInput" placeholder="Write your CAD request here..." autocomplete="off"></textarea>
+            <button type="submit" id="chatSend" class="primary-action">Send</button>
+          </form>
         </div>
-        <form id="chatForm" class="chat-input">
-          <input id="chatInput" type="text" placeholder="Type a CAD request, or type proceed after reviewing an uploaded file..." autocomplete="off">
-          <button type="submit" id="chatSend" class="primary-action">Send</button>
-        </form>
         <div class="summary-box" id="summaryBox">
           <p>Upload a file or write a request. I will summarize the proposed CAD intent before generating the model.</p>
         </div>
@@ -745,6 +762,14 @@ UI_HTML = """<!doctype html>
         uploadContextFile();
       }
     });
+    chatInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        chatForm.requestSubmit();
+      }
+    });
+    chatInput.addEventListener("input", autoResizeChatInput);
+    autoResizeChatInput();
 
     chatForm.addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -758,6 +783,7 @@ UI_HTML = """<!doctype html>
         pendingDraftPrompt = "";
       }
       chatInput.value = "";
+      autoResizeChatInput();
       chatSend.disabled = true;
       chatSend.textContent = "Working...";
       const thinking = appendMsg("bot", "Reviewing your request...");
@@ -829,6 +855,7 @@ UI_HTML = """<!doctype html>
           <p><strong>Awaiting approval.</strong> Review the proposed short prompt in the chat. Type "proceed" to generate the structured CAD result and preview, or add corrections.</p>
         `;
         chatInput.value = "proceed";
+        autoResizeChatInput();
         contextFile.value = "";
       } catch (error) {
         appendMsg("bot err", error.message);
@@ -963,6 +990,11 @@ UI_HTML = """<!doctype html>
       chatLog.appendChild(el);
       chatLog.scrollTop = chatLog.scrollHeight;
       return el;
+    }
+
+    function autoResizeChatInput() {
+      chatInput.style.height = "auto";
+      chatInput.style.height = `${Math.min(chatInput.scrollHeight, 144)}px`;
     }
 
     function render3DPreview(cadIntent) {
