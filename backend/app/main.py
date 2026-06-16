@@ -367,13 +367,16 @@ UI_HTML = """<!doctype html>
       gap: 12px;
     }
     .chat-shell {
-      min-height: 420px;
+      min-height: 520px;
       border: 1px solid var(--line);
       border-radius: 3px;
       background: linear-gradient(135deg, #f9fbfd, #eef3f8);
       display: flex;
       flex-direction: column;
       overflow: hidden;
+    }
+    .chat-shell.idle {
+      min-height: 560px;
     }
     .chat-log {
       flex: 1;
@@ -383,6 +386,11 @@ UI_HTML = """<!doctype html>
       display: flex;
       flex-direction: column;
       gap: 10px;
+    }
+    .chat-shell.idle .chat-log {
+      flex: 0 0 auto;
+      justify-content: flex-start;
+      padding: 16px;
     }
     .msg {
       padding: 10px 12px;
@@ -404,21 +412,50 @@ UI_HTML = """<!doctype html>
       border: 1px solid var(--line);
       color: var(--ink);
     }
+    .msg.intro {
+      max-width: 100%;
+      padding: 18px 20px;
+      font-size: 15px;
+      line-height: 1.6;
+      box-shadow: 0 12px 30px rgba(15, 23, 42, 0.05);
+    }
     .msg.bot.err { border-color: #fecdca; background: #fff7f6; color: var(--danger); }
     .chat-composer {
-      display: flex;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
       gap: 10px;
       padding: 12px;
       border-top: 1px solid var(--line);
       background: rgba(255, 255, 255, 0.9);
-      align-items: flex-end;
+      align-items: end;
     }
     .chat-composer textarea {
       flex: 1;
-      min-height: 56px;
-      max-height: 144px;
+      min-height: 96px;
+      max-height: 220px;
       resize: none;
       margin: 0;
+    }
+    .chat-shell.idle .chat-composer {
+      padding: 16px;
+      grid-template-columns: 1fr;
+      gap: 12px;
+      border-top: 0;
+      background: transparent;
+    }
+    .chat-shell.idle .chat-composer textarea {
+      min-height: 240px;
+      max-height: 280px;
+      padding: 18px;
+      font-size: 16px;
+      line-height: 1.6;
+    }
+    .chat-actions {
+      display: flex;
+      align-items: end;
+    }
+    .chat-shell.idle .chat-actions {
+      justify-content: flex-end;
     }
     .chat-composer button {
       width: auto;
@@ -533,6 +570,50 @@ UI_HTML = """<!doctype html>
       padding: 6px 9px;
       color: var(--danger);
       background: #fff1f0;
+    }
+    .activity-panel {
+      display: none;
+      gap: 8px;
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      background: #f8fbff;
+    }
+    .activity-panel.active {
+      display: grid;
+    }
+    .activity-status {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      color: var(--brand);
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .activity-phase {
+      color: var(--muted);
+      font-weight: 600;
+      text-align: right;
+    }
+    .activity-track {
+      width: 100%;
+      height: 8px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: #dbe6f2;
+    }
+    .activity-fill {
+      width: 0%;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, #0f766e, #24a39a);
+      transition: width 260ms ease;
+    }
+    .activity-panel.done .activity-fill {
+      background: linear-gradient(90deg, #11895d, #34c77b);
+    }
+    .activity-panel.error .activity-fill {
+      background: linear-gradient(90deg, #d8222a, #ef6a6f);
     }
     .summary-box {
       border: 1px solid var(--line);
@@ -701,14 +782,25 @@ UI_HTML = """<!doctype html>
           </div>
           <div id="attachmentList" class="attachment-list"></div>
         </div>
-        <div class="chat-shell">
+        <div id="chatShell" class="chat-shell idle">
           <div id="chatLog" class="chat-log">
-            <div class="msg bot">Start by adding a PDF, image, JSON status file, or old CAD model. I will extract context and draft a short prompt for approval. Images are reference-only in this POC, so please type the key dimensions in chat.</div>
+            <div class="msg bot intro">Start by adding a PDF, image, JSON status file, or old CAD model. I will extract context and draft a short prompt for approval. Images are reference-only in this POC, so please type the key dimensions in chat.</div>
           </div>
           <form id="chatForm" class="chat-composer">
-            <textarea id="chatInput" placeholder="Write your CAD request here..." autocomplete="off"></textarea>
-            <button type="submit" id="chatSend" class="primary-action">Send</button>
+            <textarea id="chatInput" placeholder="Describe the part, main dimensions, material, and anything important for the CAD model..." autocomplete="off"></textarea>
+            <div class="chat-actions">
+              <button type="submit" id="chatSend" class="primary-action">Send</button>
+            </div>
           </form>
+        </div>
+        <div id="activityPanel" class="activity-panel" aria-live="polite">
+          <div class="activity-status">
+            <span id="activityLabel">Ready</span>
+            <span id="activityPhase" class="activity-phase">Waiting</span>
+          </div>
+          <div class="activity-track" aria-hidden="true">
+            <div id="activityFill" class="activity-fill"></div>
+          </div>
         </div>
         <div class="summary-box" id="summaryBox">
           <p>Upload a file or write a request. I will summarize the proposed CAD intent before generating the model.</p>
@@ -744,14 +836,20 @@ UI_HTML = """<!doctype html>
     const preview = document.getElementById("preview");
     const jsonOutput = document.getElementById("jsonOutput");
     const summaryBox = document.getElementById("summaryBox");
+    const chatShell = document.getElementById("chatShell");
     const chatForm = document.getElementById("chatForm");
     const chatInput = document.getElementById("chatInput");
     const chatLog = document.getElementById("chatLog");
     const chatSend = document.getElementById("chatSend");
+    const activityPanel = document.getElementById("activityPanel");
+    const activityLabel = document.getElementById("activityLabel");
+    const activityPhase = document.getElementById("activityPhase");
+    const activityFill = document.getElementById("activityFill");
     const contextFile = document.getElementById("contextFile");
     const uploadContextButton = document.getElementById("uploadContextButton");
     const attachmentList = document.getElementById("attachmentList");
     let activeViewer = null;
+    let activityTimer = null;
     let requestContext = [];
     let attachmentContexts = [];
     let pendingDraftPrompt = "";
@@ -770,6 +868,7 @@ UI_HTML = """<!doctype html>
     });
     chatInput.addEventListener("input", autoResizeChatInput);
     autoResizeChatInput();
+    syncChatState();
 
     chatForm.addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -786,6 +885,11 @@ UI_HTML = """<!doctype html>
       autoResizeChatInput();
       chatSend.disabled = true;
       chatSend.textContent = "Working...";
+      startActivity("Processing CAD request", [
+        "Reading request",
+        "Parsing CAD intent",
+        "Preparing preview"
+      ]);
       const thinking = appendMsg("bot", "Reviewing your request...");
       try {
         const prompt = buildFullPrompt();
@@ -809,11 +913,13 @@ UI_HTML = """<!doctype html>
         }
         updateSummary(intent);
         thinking.textContent = payload.assistant_message || formatChatSummary(intent);
+        completeActivity(previewReady ? "Preview updated" : "More detail needed");
       } catch (error) {
         thinking.classList.add("err");
         thinking.textContent = error.message;
         summaryBox.innerHTML = `<p>${escapeHtml(error.message)}</p>`;
         preview.innerHTML = `<pre class="error-box">${escapeHtml(error.message)}</pre>`;
+        failActivity("Request failed");
       } finally {
         chatSend.disabled = false;
         chatSend.textContent = "Send";
@@ -833,6 +939,11 @@ UI_HTML = """<!doctype html>
 
       uploadContextButton.disabled = true;
       uploadContextButton.textContent = "Reading...";
+      startActivity("Reading uploaded file", [
+        "Uploading file",
+        "Extracting context",
+        "Drafting prompt"
+      ]);
       try {
         const formData = new FormData();
         formData.append("file", file);
@@ -857,8 +968,10 @@ UI_HTML = """<!doctype html>
         chatInput.value = "proceed";
         autoResizeChatInput();
         contextFile.value = "";
+        completeActivity("Draft ready");
       } catch (error) {
         appendMsg("bot err", error.message);
+        failActivity("Upload failed");
       } finally {
         uploadContextButton.disabled = false;
         uploadContextButton.textContent = "Attach File";
@@ -988,13 +1101,66 @@ UI_HTML = """<!doctype html>
       el.className = `msg ${role}`;
       el.textContent = text;
       chatLog.appendChild(el);
+      syncChatState();
       chatLog.scrollTop = chatLog.scrollHeight;
       return el;
     }
 
     function autoResizeChatInput() {
       chatInput.style.height = "auto";
-      chatInput.style.height = `${Math.min(chatInput.scrollHeight, 144)}px`;
+      const maxHeight = chatShell.classList.contains("idle") ? 280 : 220;
+      chatInput.style.height = `${Math.min(chatInput.scrollHeight, maxHeight)}px`;
+    }
+
+    function syncChatState() {
+      const messageCount = chatLog.querySelectorAll(".msg").length;
+      chatShell.classList.toggle("idle", messageCount <= 1);
+      autoResizeChatInput();
+    }
+
+    function startActivity(label, phases) {
+      stopActivityTimer();
+      activityPanel.className = "activity-panel active";
+      activityLabel.textContent = label;
+      activityPhase.textContent = phases[0] || "Working";
+      activityFill.style.width = "10%";
+      let progress = 10;
+      let phaseIndex = 0;
+      activityTimer = window.setInterval(() => {
+        progress = Math.min(progress + 12, 90);
+        activityFill.style.width = `${progress}%`;
+        if (phaseIndex < phases.length - 1 && progress >= (phaseIndex + 1) * 30) {
+          phaseIndex += 1;
+          activityPhase.textContent = phases[phaseIndex];
+        }
+      }, 700);
+    }
+
+    function completeActivity(phaseText) {
+      stopActivityTimer();
+      activityPanel.className = "activity-panel active done";
+      activityPhase.textContent = phaseText;
+      activityFill.style.width = "100%";
+      window.setTimeout(() => {
+        activityPanel.className = "activity-panel";
+        activityLabel.textContent = "Ready";
+        activityPhase.textContent = "Waiting";
+        activityFill.style.width = "0%";
+      }, 1400);
+    }
+
+    function failActivity(phaseText) {
+      stopActivityTimer();
+      activityPanel.className = "activity-panel active error";
+      activityPhase.textContent = phaseText;
+      activityFill.style.width = "100%";
+    }
+
+    function stopActivityTimer() {
+      if (activityTimer) {
+        window.clearInterval(activityTimer);
+        activityTimer = null;
+      }
     }
 
     function render3DPreview(cadIntent) {
