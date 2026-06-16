@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from urllib.parse import urlparse
@@ -98,7 +99,7 @@ async def parse_cad_prompt(prompt: str) -> CADPromptOutput:
         if provider == "azure_ai_foundry":
             parsed = await _parse_with_foundry_fallbacks(model, prompt)
         elif provider == "azure_openai":
-            parsed = await _parse_with_azure_chat(client, model, prompt)
+            parsed = await _parse_with_azure_openai_fallbacks(client, model, prompt)
         else:
             parsed = await _parse_with_openai_responses(client, model, prompt)
     except AuthenticationError as exc:
@@ -154,6 +155,49 @@ async def _parse_with_azure_chat(
         temperature=0,
     )
     return completion.choices[0].message.parsed
+
+
+async def _parse_with_azure_chat_json_schema(
+    client: AsyncOpenAI | AsyncAzureOpenAI, model: str, prompt: str
+) -> CADPromptOutput | None:
+    """Fallback for Azure chat using explicit JSON schema response_format."""
+
+    completion = await client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": "cad_prompt_output",
+                "strict": True,
+                "schema": CADPromptOutput.model_json_schema(),
+            },
+        },
+        temperature=0,
+    )
+    content = completion.choices[0].message.content or ""
+    if not content:
+        return None
+    return CADPromptOutput.model_validate(json.loads(content))
+
+
+async def _parse_with_azure_openai_fallbacks(
+    client: AsyncAzureOpenAI, model: str, prompt: str
+) -> CADPromptOutput | None:
+    """Try the Azure OpenAI parse helper first, then a plain JSON-schema chat call."""
+
+    try:
+        return await _parse_with_azure_chat(client, model, prompt)
+    except APIStatusError as exc:
+        if exc.status_code != 404:
+            raise
+    except OpenAIError:
+        pass
+
+    return await _parse_with_azure_chat_json_schema(client, model, prompt)
 
 
 async def _parse_with_foundry_fallbacks(model: str, prompt: str) -> CADPromptOutput | None:
