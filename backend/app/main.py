@@ -830,9 +830,6 @@ UI_HTML = """<!doctype html>
   </main>
 
   <script type="module">
-    import * as THREE from "https://unpkg.com/three@0.166.1/build/three.module.js";
-    import { OrbitControls } from "https://unpkg.com/three@0.166.1/examples/jsm/controls/OrbitControls.js";
-
     const preview = document.getElementById("preview");
     const jsonOutput = document.getElementById("jsonOutput");
     const summaryBox = document.getElementById("summaryBox");
@@ -850,6 +847,7 @@ UI_HTML = """<!doctype html>
     const attachmentList = document.getElementById("attachmentList");
     let activeViewer = null;
     let activityTimer = null;
+    let threeDepsPromise = null;
     let requestContext = [];
     let attachmentContexts = [];
     let pendingDraftPrompt = "";
@@ -906,7 +904,12 @@ UI_HTML = """<!doctype html>
         const previewReady = Boolean(payload.preview_ready);
         jsonOutput.textContent = JSON.stringify(intent, null, 2);
         if (previewReady) {
-          render3DPreview(intent);
+          try {
+            await render3DPreview(intent);
+          } catch (previewError) {
+            cleanupViewer();
+            preview.innerHTML = '<div class="placeholder"><p class="muted">The CAD intent was parsed, but the interactive preview library could not be loaded.</p></div>';
+          }
         } else {
           cleanupViewer();
           preview.innerHTML = '<div class="placeholder"><p class="muted">I need one more engineering detail before I can show a useful preview.</p></div>';
@@ -1163,8 +1166,24 @@ UI_HTML = """<!doctype html>
       }
     }
 
-    function render3DPreview(cadIntent) {
+    async function loadThreeDeps() {
+      if (!threeDepsPromise) {
+        threeDepsPromise = Promise.all([
+          import("https://unpkg.com/three@0.166.1/build/three.module.js"),
+          import("https://unpkg.com/three@0.166.1/examples/jsm/controls/OrbitControls.js"),
+        ]).then(([threeModule, controlsModule]) => ({
+          THREE: threeModule,
+          OrbitControls: controlsModule.OrbitControls,
+        }));
+      }
+      return threeDepsPromise;
+    }
+
+    async function render3DPreview(cadIntent) {
       cleanupViewer();
+      preview.innerHTML = '<div class="placeholder"><p class="muted">Loading interactive preview...</p></div>';
+
+      const { THREE, OrbitControls } = await loadThreeDeps();
 
       const container = document.createElement("div");
       container.className = "viewer3d";
