@@ -847,7 +847,6 @@ UI_HTML = """<!doctype html>
     const attachmentList = document.getElementById("attachmentList");
     let activeViewer = null;
     let activityTimer = null;
-    let threeDepsPromise = null;
     let requestContext = [];
     let attachmentContexts = [];
     let pendingDraftPrompt = "";
@@ -1166,230 +1165,455 @@ UI_HTML = """<!doctype html>
       }
     }
 
-    async function loadThreeDeps() {
-      if (!threeDepsPromise) {
-        threeDepsPromise = Promise.all([
-          import("https://unpkg.com/three@0.166.1/build/three.module.js"),
-          import("https://unpkg.com/three@0.166.1/examples/jsm/controls/OrbitControls.js"),
-        ]).then(([threeModule, controlsModule]) => ({
-          THREE: threeModule,
-          OrbitControls: controlsModule.OrbitControls,
-        }));
-      }
-      return threeDepsPromise;
-    }
-
     async function render3DPreview(cadIntent) {
       cleanupViewer();
-      preview.innerHTML = '<div class="placeholder"><p class="muted">Loading interactive preview...</p></div>';
-
-      const { THREE, OrbitControls } = await loadThreeDeps();
-
       const container = document.createElement("div");
       container.className = "viewer3d";
+      const canvas = document.createElement("canvas");
+      canvas.setAttribute("aria-label", "Interactive CAD preview");
+      container.appendChild(canvas);
       preview.innerHTML = "";
       preview.appendChild(container);
 
-      const initialWidth = Math.max(320, Math.floor(preview.clientWidth || 720));
-      const initialHeight = Math.max(320, Math.floor(preview.clientHeight || 470));
+      const context = canvas.getContext("2d");
+      if (!context) {
+        throw new Error("Canvas rendering is not available in this browser.");
+      }
 
-      const scene = new THREE.Scene();
-      scene.background = new THREE.Color(0xf7fbff);
+      const mesh = createPreviewMesh(cadIntent || {});
+      const bounds = computeMeshBounds(mesh.faces);
+      const size = bounds.size;
+      const extent = Math.max(size.x, size.y, size.z, 40);
+      const center = bounds.center;
+      const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
 
-      const camera = new THREE.PerspectiveCamera(44, initialWidth / initialHeight, 0.1, 10000);
-      const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-      renderer.setSize(initialWidth, initialHeight, false);
-      container.appendChild(renderer.domElement);
-
-      const controls = new OrbitControls(camera, renderer.domElement);
-      controls.enableDamping = true;
-      controls.dampingFactor = 0.06;
-      controls.screenSpacePanning = true;
-      controls.minDistance = 5;
-      controls.maxDistance = 8000;
-
-      scene.add(new THREE.HemisphereLight(0xffffff, 0xa4bfdc, 0.85));
-      const keyLight = new THREE.DirectionalLight(0xffffff, 0.9);
-      keyLight.position.set(180, 220, 140);
-      scene.add(keyLight);
-
-      const fillLight = new THREE.DirectionalLight(0xffffff, 0.45);
-      fillLight.position.set(-180, 120, -140);
-      scene.add(fillLight);
-
-      const grid = new THREE.GridHelper(800, 40, 0xc3d2e5, 0xdeebf8);
-      scene.add(grid);
-
-      const meshGroup = createPartObject(cadIntent || {});
-      scene.add(meshGroup);
-
-      const bounds = new THREE.Box3().setFromObject(meshGroup);
-      const size = bounds.getSize(new THREE.Vector3());
-      const center = bounds.getCenter(new THREE.Vector3());
-      meshGroup.position.sub(center);
-
-      const fit = Math.max(size.x, size.y, size.z, 40);
-      camera.position.set(fit * 1.35, fit * 1.1, fit * 1.45);
-      controls.target.set(0, 0, 0);
-      controls.update();
-
-      const resizeObserver = new ResizeObserver(() => {
-        const width = Math.max(280, Math.floor(preview.clientWidth || initialWidth));
-        const height = Math.max(280, Math.floor(preview.clientHeight || initialHeight));
-        camera.aspect = width / height;
-        camera.updateProjectionMatrix();
-        renderer.setSize(width, height, false);
-      });
-      resizeObserver.observe(preview);
-
-      let animationFrameId = 0;
-      const animate = () => {
-        animationFrameId = requestAnimationFrame(animate);
-        controls.update();
-        renderer.render(scene, camera);
+      const state = {
+        width: 0,
+        height: 0,
+        rotationX: -0.55,
+        rotationY: 0.78,
+        zoom: 1,
+        dragging: false,
+        lastX: 0,
+        lastY: 0,
+        animationFrameId: 0,
+        renderQueued: false,
       };
-      animate();
+
+      const lightDirection = normalizeVector({ x: 0.35, y: 0.85, z: 0.4 });
+      const centeredFaces = mesh.faces.map((face) => ({
+        color: face.color,
+        points: face.points.map((point) => ({
+          x: point.x - center.x,
+          y: point.y - center.y,
+          z: point.z - center.z,
+        })),
+      }));
+      const gridLevel = -size.y * 0.55;
+
+      function scheduleRender() {
+        if (state.renderQueued) {
+          return;
+        }
+        state.renderQueued = true;
+        state.animationFrameId = requestAnimationFrame(() => {
+          state.renderQueued = false;
+          drawPreview();
+        });
+      }
+
+      function resizeCanvas() {
+        state.width = Math.max(320, Math.floor(preview.clientWidth || 720));
+        state.height = Math.max(320, Math.floor(preview.clientHeight || 470));
+        canvas.width = Math.floor(state.width * pixelRatio);
+        canvas.height = Math.floor(state.height * pixelRatio);
+        canvas.style.width = `${state.width}px`;
+        canvas.style.height = `${state.height}px`;
+        context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+        scheduleRender();
+      }
+
+      function projectWorldPoint(point) {
+        return projectRotatedPoint(rotatePoint(point, state.rotationX, state.rotationY));
+      }
+
+      function projectRotatedPoint(rotated) {
+        const scale = (Math.min(state.width, state.height) / (extent * 2.4)) * state.zoom;
+        return {
+          x: state.width / 2 + rotated.x * scale,
+          y: state.height / 2 - rotated.y * scale,
+          z: rotated.z,
+        };
+      }
+
+      function drawGrid() {
+        const spacing = niceGridSpacing(extent);
+        const radius = Math.max(extent * 0.9, spacing * 4);
+        context.save();
+        context.lineWidth = 1;
+        context.strokeStyle = "#dbe6f2";
+        for (let value = -radius; value <= radius + 0.001; value += spacing) {
+          drawLine(
+            projectWorldPoint({ x: value, y: gridLevel, z: -radius }),
+            projectWorldPoint({ x: value, y: gridLevel, z: radius })
+          );
+          drawLine(
+            projectWorldPoint({ x: -radius, y: gridLevel, z: value }),
+            projectWorldPoint({ x: radius, y: gridLevel, z: value })
+          );
+        }
+        context.restore();
+      }
+
+      function drawLine(start, end) {
+        context.beginPath();
+        context.moveTo(start.x, start.y);
+        context.lineTo(end.x, end.y);
+        context.stroke();
+      }
+
+      function drawFaces() {
+        const projectedFaces = centeredFaces
+          .map((face) => {
+            const rotatedPoints = face.points.map((point) => rotatePoint(point, state.rotationX, state.rotationY));
+            const projectedPoints = rotatedPoints.map((point) => projectRotatedPoint(point));
+            const normal = computeFaceNormal(rotatedPoints);
+            const intensity = clamp(dotProduct(normal, lightDirection) * 0.55 + 0.72, 0.28, 0.95);
+            const averageDepth = rotatedPoints.reduce((sum, point) => sum + point.z, 0) / rotatedPoints.length;
+            return {
+              projectedPoints,
+              averageDepth,
+              fill: shadeColor(face.color, intensity),
+              stroke: shadeColor(face.color, Math.max(intensity - 0.2, 0.18)),
+            };
+          })
+          .sort((left, right) => left.averageDepth - right.averageDepth);
+
+        for (const face of projectedFaces) {
+          context.beginPath();
+          context.moveTo(face.projectedPoints[0].x, face.projectedPoints[0].y);
+          for (let index = 1; index < face.projectedPoints.length; index += 1) {
+            context.lineTo(face.projectedPoints[index].x, face.projectedPoints[index].y);
+          }
+          context.closePath();
+          context.fillStyle = face.fill;
+          context.strokeStyle = face.stroke;
+          context.lineWidth = 1.2;
+          context.fill();
+          context.stroke();
+        }
+      }
+
+      function drawPreview() {
+        context.clearRect(0, 0, state.width, state.height);
+        context.fillStyle = "#f8fbff";
+        context.fillRect(0, 0, state.width, state.height);
+        drawGrid();
+        drawFaces();
+      }
+
+      function onPointerDown(event) {
+        state.dragging = true;
+        state.lastX = event.clientX;
+        state.lastY = event.clientY;
+        canvas.setPointerCapture(event.pointerId);
+      }
+
+      function onPointerMove(event) {
+        if (!state.dragging) {
+          return;
+        }
+        const deltaX = event.clientX - state.lastX;
+        const deltaY = event.clientY - state.lastY;
+        state.lastX = event.clientX;
+        state.lastY = event.clientY;
+        state.rotationY += deltaX * 0.01;
+        state.rotationX = clamp(state.rotationX + deltaY * 0.01, -1.35, 1.35);
+        scheduleRender();
+      }
+
+      function onPointerUp(event) {
+        state.dragging = false;
+        if (canvas.hasPointerCapture(event.pointerId)) {
+          canvas.releasePointerCapture(event.pointerId);
+        }
+      }
+
+      function onWheel(event) {
+        event.preventDefault();
+        const nextZoom = state.zoom * (event.deltaY > 0 ? 0.92 : 1.08);
+        state.zoom = clamp(nextZoom, 0.55, 2.8);
+        scheduleRender();
+      }
+
+      canvas.addEventListener("pointerdown", onPointerDown);
+      canvas.addEventListener("pointermove", onPointerMove);
+      canvas.addEventListener("pointerup", onPointerUp);
+      canvas.addEventListener("pointerleave", onPointerUp);
+      canvas.addEventListener("wheel", onWheel, { passive: false });
+
+      const resizeObserver = new ResizeObserver(resizeCanvas);
+      resizeObserver.observe(preview);
+      resizeCanvas();
 
       activeViewer = {
-        scene,
-        renderer,
-        controls,
         resizeObserver,
-        animationFrameId,
+        dispose() {
+          cancelAnimationFrame(state.animationFrameId);
+          resizeObserver.disconnect();
+          canvas.removeEventListener("pointerdown", onPointerDown);
+          canvas.removeEventListener("pointermove", onPointerMove);
+          canvas.removeEventListener("pointerup", onPointerUp);
+          canvas.removeEventListener("pointerleave", onPointerUp);
+          canvas.removeEventListener("wheel", onWheel);
+        },
       };
     }
 
-    function createPartObject(cadIntent) {
+    function createPreviewMesh(cadIntent) {
       const type = String(cadIntent.part_type || "unknown").toLowerCase();
       const geometry = cadIntent.geometry || {};
       if (type === "bushing" || type === "rubber_mount") {
-        return createBushingObject(geometry);
+        return createBushingMesh(geometry);
       }
       if (type === "plate") {
-        return createPlateObject(geometry);
+        return createPlateMesh(geometry);
       }
       if (type === "bracket") {
-        return createBracketObject(geometry);
+        return createBracketMesh(geometry);
       }
-      return createUnknownObject(geometry);
+      return createUnknownMesh(geometry);
     }
 
-    function createBushingObject(geometry) {
+    function createBushingMesh(geometry) {
       const outerDiameter = readPositive(geometry.outer_diameter_mm, 60);
       const innerDiameter = readPositive(geometry.inner_diameter_mm, 20);
       const height = readPositive(geometry.height_mm, 40);
       const outerRadius = Math.max(outerDiameter / 2, 5);
       const innerRadius = Math.min(Math.max(innerDiameter / 2, 2), outerRadius - 1);
 
-      const shape = new THREE.Shape();
-      shape.absarc(0, 0, outerRadius, 0, Math.PI * 2, false);
-      const hole = new THREE.Path();
-      hole.absarc(0, 0, innerRadius, 0, Math.PI * 2, true);
-      shape.holes.push(hole);
+      const segments = 28;
+      const faces = [];
+      const topY = height / 2;
+      const bottomY = -height / 2;
+      const color = "#7f9bbd";
 
-      const bodyGeometry = new THREE.ExtrudeGeometry(shape, {
-        depth: height,
-        bevelEnabled: false,
-        curveSegments: 80,
-      });
-      bodyGeometry.translate(0, 0, -height / 2);
+      for (let index = 0; index < segments; index += 1) {
+        const thetaA = (index / segments) * Math.PI * 2;
+        const thetaB = ((index + 1) / segments) * Math.PI * 2;
+        const outerTopA = pointOnRing(outerRadius, thetaA, topY);
+        const outerTopB = pointOnRing(outerRadius, thetaB, topY);
+        const outerBottomA = pointOnRing(outerRadius, thetaA, bottomY);
+        const outerBottomB = pointOnRing(outerRadius, thetaB, bottomY);
+        const innerTopA = pointOnRing(innerRadius, thetaA, topY);
+        const innerTopB = pointOnRing(innerRadius, thetaB, topY);
+        const innerBottomA = pointOnRing(innerRadius, thetaA, bottomY);
+        const innerBottomB = pointOnRing(innerRadius, thetaB, bottomY);
 
-      const bodyMaterial = new THREE.MeshStandardMaterial({
-        color: 0x7f9bbd,
-        roughness: 0.56,
-        metalness: 0.18,
-      });
-      const mesh = new THREE.Mesh(bodyGeometry, bodyMaterial);
+        faces.push(makeFace([outerTopA, outerTopB, outerBottomB, outerBottomA], color));
+        faces.push(makeFace([innerTopB, innerTopA, innerBottomA, innerBottomB], "#6f89a8"));
+        faces.push(makeFace([outerTopA, innerTopA, innerTopB, outerTopB], "#97b3cf"));
+        faces.push(makeFace([outerBottomB, innerBottomB, innerBottomA, outerBottomA], "#6681a2"));
+      }
 
-      const edges = new THREE.LineSegments(
-        new THREE.EdgesGeometry(bodyGeometry, 30),
-        new THREE.LineBasicMaterial({ color: 0x435f81 })
-      );
-
-      const group = new THREE.Group();
-      group.add(mesh);
-      group.add(edges);
-      return group;
+      return { faces };
     }
 
-    function createPlateObject(geometry) {
+    function createPlateMesh(geometry) {
       const length = readPositive(geometry.length_mm, 120);
       const width = readPositive(geometry.width_mm, 60);
       const thickness = readPositive(geometry.thickness_mm, 8);
-
-      const bodyGeometry = new THREE.BoxGeometry(length, thickness, width);
-      const bodyMaterial = new THREE.MeshStandardMaterial({
-        color: 0x95afcc,
-        roughness: 0.55,
-        metalness: 0.25,
-      });
-
-      const mesh = new THREE.Mesh(bodyGeometry, bodyMaterial);
-      const edges = new THREE.LineSegments(
-        new THREE.EdgesGeometry(bodyGeometry, 25),
-        new THREE.LineBasicMaterial({ color: 0x4f6b8d })
-      );
-
-      const group = new THREE.Group();
-      group.add(mesh);
-      group.add(edges);
-      return group;
+      return {
+        faces: createBoxFaces(length, thickness, width, { x: 0, y: 0, z: 0 }, "#95afcc"),
+      };
     }
 
-    function createBracketObject(geometry) {
+    function createBracketMesh(geometry) {
       const length = readPositive(geometry.length_mm, 120);
       const width = readPositive(geometry.width_mm, 60);
       const thickness = readPositive(geometry.thickness_mm, 8);
       const legHeight = Math.max(length * 0.7, thickness * 6);
-
-      const mat = new THREE.MeshStandardMaterial({
-        color: 0x90abc9,
-        roughness: 0.52,
-        metalness: 0.28,
-      });
-      const edgeMat = new THREE.LineBasicMaterial({ color: 0x4a6688 });
-
-      const baseGeom = new THREE.BoxGeometry(length, thickness, width);
-      const baseMesh = new THREE.Mesh(baseGeom, mat);
-      baseMesh.position.set(0, thickness / 2, 0);
-
-      const legGeom = new THREE.BoxGeometry(thickness, legHeight, width);
-      const legMesh = new THREE.Mesh(legGeom, mat);
-      legMesh.position.set(length / 2 - thickness / 2, legHeight / 2, 0);
-
-      const group = new THREE.Group();
-      group.add(baseMesh);
-      group.add(legMesh);
-
-      const baseEdges = new THREE.LineSegments(new THREE.EdgesGeometry(baseGeom, 25), edgeMat);
-      baseEdges.position.copy(baseMesh.position);
-      const legEdges = new THREE.LineSegments(new THREE.EdgesGeometry(legGeom, 25), edgeMat);
-      legEdges.position.copy(legMesh.position);
-      group.add(baseEdges);
-      group.add(legEdges);
-      return group;
+      return {
+        faces: [
+          ...createBoxFaces(length, thickness, width, { x: 0, y: thickness / 2, z: 0 }, "#90abc9"),
+          ...createBoxFaces(
+            thickness,
+            legHeight,
+            width,
+            { x: length / 2 - thickness / 2, y: legHeight / 2, z: 0 },
+            "#7f9cc0"
+          ),
+        ],
+      };
     }
 
-    function createUnknownObject(geometry) {
+    function createUnknownMesh(geometry) {
       const length = readPositive(geometry.length_mm, 90);
       const width = readPositive(geometry.width_mm, 70);
       const thickness = readPositive(geometry.thickness_mm, 50);
-      const bodyGeometry = new THREE.BoxGeometry(length, thickness, width);
-      const bodyMaterial = new THREE.MeshStandardMaterial({
-        color: 0xa0b6d0,
-        roughness: 0.6,
-        metalness: 0.2,
+      return {
+        faces: createBoxFaces(length, thickness, width, { x: 0, y: 0, z: 0 }, "#a0b6d0"),
+      };
+    }
+
+    function createBoxFaces(length, height, width, center, color) {
+      const halfLength = length / 2;
+      const halfHeight = height / 2;
+      const halfWidth = width / 2;
+      const vertices = [
+        { x: center.x - halfLength, y: center.y - halfHeight, z: center.z - halfWidth },
+        { x: center.x + halfLength, y: center.y - halfHeight, z: center.z - halfWidth },
+        { x: center.x + halfLength, y: center.y + halfHeight, z: center.z - halfWidth },
+        { x: center.x - halfLength, y: center.y + halfHeight, z: center.z - halfWidth },
+        { x: center.x - halfLength, y: center.y - halfHeight, z: center.z + halfWidth },
+        { x: center.x + halfLength, y: center.y - halfHeight, z: center.z + halfWidth },
+        { x: center.x + halfLength, y: center.y + halfHeight, z: center.z + halfWidth },
+        { x: center.x - halfLength, y: center.y + halfHeight, z: center.z + halfWidth },
+      ];
+      return [
+        makeFace([vertices[0], vertices[1], vertices[2], vertices[3]], color),
+        makeFace([vertices[4], vertices[5], vertices[6], vertices[7]], lightenHex(color, 0.05)),
+        makeFace([vertices[0], vertices[4], vertices[7], vertices[3]], darkenHex(color, 0.08)),
+        makeFace([vertices[1], vertices[5], vertices[6], vertices[2]], darkenHex(color, 0.16)),
+        makeFace([vertices[3], vertices[2], vertices[6], vertices[7]], lightenHex(color, 0.12)),
+        makeFace([vertices[0], vertices[1], vertices[5], vertices[4]], darkenHex(color, 0.2)),
+      ];
+    }
+
+    function makeFace(points, color) {
+      return { points, color };
+    }
+
+    function pointOnRing(radius, angle, y) {
+      return {
+        x: Math.cos(angle) * radius,
+        y,
+        z: Math.sin(angle) * radius,
+      };
+    }
+
+    function computeMeshBounds(faces) {
+      const points = faces.flatMap((face) => face.points);
+      let minX = Infinity;
+      let minY = Infinity;
+      let minZ = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      let maxZ = -Infinity;
+
+      for (const point of points) {
+        minX = Math.min(minX, point.x);
+        minY = Math.min(minY, point.y);
+        minZ = Math.min(minZ, point.z);
+        maxX = Math.max(maxX, point.x);
+        maxY = Math.max(maxY, point.y);
+        maxZ = Math.max(maxZ, point.z);
+      }
+
+      return {
+        center: {
+          x: (minX + maxX) / 2,
+          y: (minY + maxY) / 2,
+          z: (minZ + maxZ) / 2,
+        },
+        size: {
+          x: maxX - minX,
+          y: maxY - minY,
+          z: maxZ - minZ,
+        },
+      };
+    }
+
+    function rotatePoint(point, rotationX, rotationY) {
+      const cosY = Math.cos(rotationY);
+      const sinY = Math.sin(rotationY);
+      const x1 = point.x * cosY - point.z * sinY;
+      const z1 = point.x * sinY + point.z * cosY;
+
+      const cosX = Math.cos(rotationX);
+      const sinX = Math.sin(rotationX);
+      const y2 = point.y * cosX - z1 * sinX;
+      const z2 = point.y * sinX + z1 * cosX;
+
+      return { x: x1, y: y2, z: z2 };
+    }
+
+    function computeFaceNormal(points) {
+      const a = points[0];
+      const b = points[1];
+      const c = points[2];
+      const ab = { x: b.x - a.x, y: b.y - a.y, z: b.z - a.z };
+      const ac = { x: c.x - a.x, y: c.y - a.y, z: c.z - a.z };
+      return normalizeVector({
+        x: ab.y * ac.z - ab.z * ac.y,
+        y: ab.z * ac.x - ab.x * ac.z,
+        z: ab.x * ac.y - ab.y * ac.x,
       });
-      const mesh = new THREE.Mesh(bodyGeometry, bodyMaterial);
-      const edges = new THREE.LineSegments(
-        new THREE.EdgesGeometry(bodyGeometry, 20),
-        new THREE.LineBasicMaterial({ color: 0x5e7899 })
-      );
-      const group = new THREE.Group();
-      group.add(mesh);
-      group.add(edges);
-      return group;
+    }
+
+    function normalizeVector(vector) {
+      const length = Math.hypot(vector.x, vector.y, vector.z) || 1;
+      return {
+        x: vector.x / length,
+        y: vector.y / length,
+        z: vector.z / length,
+      };
+    }
+
+    function dotProduct(left, right) {
+      return left.x * right.x + left.y * right.y + left.z * right.z;
+    }
+
+    function shadeColor(color, intensity) {
+      const rgb = hexToRgb(color);
+      const base = intensity >= 0.5
+        ? mixColor(rgb, { r: 255, g: 255, b: 255 }, (intensity - 0.5) * 0.5)
+        : mixColor(rgb, { r: 30, g: 45, b: 76 }, (0.5 - intensity) * 0.9);
+      return `rgb(${base.r}, ${base.g}, ${base.b})`;
+    }
+
+    function lightenHex(color, amount) {
+      return rgbToHex(mixColor(hexToRgb(color), { r: 255, g: 255, b: 255 }, amount));
+    }
+
+    function darkenHex(color, amount) {
+      return rgbToHex(mixColor(hexToRgb(color), { r: 28, g: 43, b: 70 }, amount));
+    }
+
+    function mixColor(source, target, amount) {
+      return {
+        r: Math.round(source.r + (target.r - source.r) * clamp(amount, 0, 1)),
+        g: Math.round(source.g + (target.g - source.g) * clamp(amount, 0, 1)),
+        b: Math.round(source.b + (target.b - source.b) * clamp(amount, 0, 1)),
+      };
+    }
+
+    function hexToRgb(color) {
+      const value = color.replace("#", "");
+      const normalized = value.length === 3
+        ? value.split("").map((char) => char + char).join("")
+        : value;
+      return {
+        r: parseInt(normalized.slice(0, 2), 16),
+        g: parseInt(normalized.slice(2, 4), 16),
+        b: parseInt(normalized.slice(4, 6), 16),
+      };
+    }
+
+    function rgbToHex(color) {
+      return `#${[color.r, color.g, color.b]
+        .map((value) => clamp(Math.round(value), 0, 255).toString(16).padStart(2, "0"))
+        .join("")}`;
+    }
+
+    function niceGridSpacing(extent) {
+      const roughSpacing = Math.max(extent / 4.5, 10);
+      const magnitude = Math.pow(10, Math.floor(Math.log10(roughSpacing)));
+      const normalized = roughSpacing / magnitude;
+      if (normalized <= 1.5) return magnitude;
+      if (normalized <= 3.5) return magnitude * 2;
+      if (normalized <= 7.5) return magnitude * 5;
+      return magnitude * 10;
     }
 
     function readPositive(value, fallback) {
@@ -1402,26 +1626,13 @@ UI_HTML = """<!doctype html>
         return;
       }
 
-      cancelAnimationFrame(activeViewer.animationFrameId);
-      activeViewer.resizeObserver.disconnect();
-      activeViewer.controls.dispose();
-
-      activeViewer.scene.traverse((node) => {
-        if (node.geometry) {
-          node.geometry.dispose();
-        }
-        if (node.material) {
-          if (Array.isArray(node.material)) {
-            node.material.forEach((material) => material.dispose());
-          } else {
-            node.material.dispose();
-          }
-        }
-      });
-
-      activeViewer.renderer.dispose();
+      activeViewer.dispose();
       preview.innerHTML = "";
       activeViewer = null;
+    }
+
+    function clamp(value, min, max) {
+      return Math.min(Math.max(value, min), max);
     }
 
     window.addEventListener("beforeunload", cleanupViewer);
