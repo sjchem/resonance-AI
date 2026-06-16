@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 
 from openai import (
     APIConnectionError,
@@ -67,16 +68,17 @@ class CADValidationError(RuntimeError):
 def openai_status() -> dict[str, str | bool]:
     """Return local configuration state without exposing secrets."""
 
+    azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "")
     azure_configured = all(
         [
             os.getenv("AZURE_OPENAI_API_KEY"),
-            os.getenv("AZURE_OPENAI_ENDPOINT"),
+            azure_endpoint,
             os.getenv("AZURE_OPENAI_DEPLOYMENT"),
         ]
     )
     if azure_configured:
         return {
-            "provider": "azure_openai",
+            "provider": _provider_name_for_endpoint(azure_endpoint),
             "model": os.getenv("AZURE_OPENAI_DEPLOYMENT", ""),
             "api_key_configured": True,
         }
@@ -93,7 +95,7 @@ async def parse_cad_prompt(prompt: str) -> CADPromptOutput:
 
     client, model, provider = _build_client()
     try:
-        if provider == "azure_openai":
+        if provider.startswith("azure_"):
             parsed = await _parse_with_azure_chat(client, model, prompt)
         else:
             parsed = await _parse_with_openai_responses(client, model, prompt)
@@ -178,10 +180,21 @@ def _build_client() -> tuple[AsyncOpenAI | AsyncAzureOpenAI, str, str]:
                 f"Azure OpenAI configuration is incomplete. Missing: {', '.join(missing)}."
             )
 
+        if _is_foundry_endpoint(azure_endpoint):
+            return (
+                AsyncOpenAI(
+                    api_key=azure_api_key,
+                    base_url=_normalize_foundry_base_url(azure_endpoint),
+                    default_query={"api-version": AZURE_OPENAI_API_VERSION},
+                ),
+                azure_deployment,
+                "azure_ai_foundry",
+            )
+
         return (
             AsyncAzureOpenAI(
                 api_key=azure_api_key,
-                azure_endpoint=azure_endpoint,
+                azure_endpoint=_normalize_azure_openai_endpoint(azure_endpoint),
                 api_version=AZURE_OPENAI_API_VERSION,
             ),
             azure_deployment,
@@ -194,3 +207,39 @@ def _build_client() -> tuple[AsyncOpenAI | AsyncAzureOpenAI, str, str]:
         )
 
     return AsyncOpenAI(), OPENAI_MODEL, "openai"
+
+
+def _provider_name_for_endpoint(endpoint: str) -> str:
+    if _is_foundry_endpoint(endpoint):
+        return "azure_ai_foundry"
+    return "azure_openai"
+
+
+def _is_foundry_endpoint(endpoint: str | None) -> bool:
+    return bool(endpoint and "services.ai.azure.com" in endpoint)
+
+
+def _normalize_azure_openai_endpoint(endpoint: str) -> str:
+    """Return the resource-level Azure OpenAI endpoint.
+
+    The Azure OpenAI client expects the resource endpoint, for example:
+    https://my-resource.openai.azure.com
+    """
+
+    return endpoint.rstrip("/")
+
+
+def _normalize_foundry_base_url(endpoint: str) -> str:
+    """Build an OpenAI-compatible base URL for Azure AI Foundry inference.
+
+    Users sometimes paste a project endpoint such as:
+    https://name.services.ai.azure.com/api/projects/proj-default
+    For the OpenAI-compatible client path we only want the host, then `/models`.
+    """
+
+    parsed = urlparse(endpoint)
+    if not parsed.scheme or not parsed.netloc:
+        raise OpenAIConfigurationError(
+            "AZURE_OPENAI_ENDPOINT is not a valid URL. Expected an Azure AI Foundry endpoint."
+        )
+    return f"{parsed.scheme}://{parsed.netloc}/models"

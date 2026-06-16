@@ -22,14 +22,14 @@ app = FastAPI(title="Resonance AI", version="0.1.0")
 
 @app.get("/")
 async def health_check() -> dict[str, str]:
-    """Simple health check for local development."""
+    """Simple health check for the deployed web app."""
 
     return {"status": "ok", "service": "openai-cad-prompt-parser"}
 
 
 @app.get("/ui", response_class=HTMLResponse)
 async def ui() -> str:
-    """Small local frontend for prompt parsing and CAD-style preview."""
+    """Frontend for prompt parsing and CAD-style preview."""
 
     return UI_HTML
 
@@ -64,24 +64,24 @@ async def parse_cad(request: CADPromptRequest) -> CADPromptOutput:
 
 @app.post("/generate-cad")
 async def generate_cad(request: CADPromptRequest) -> dict:
-    """Parse prompt JSON and return a lightweight CAD SVG preview."""
+    """Parse prompt JSON and return a lightweight preview payload."""
 
     parsed = await parse_cad(request)
     return {
         "cad_intent": parsed.model_dump(),
         "preview_svg": build_preview_svg(parsed),
-        "note": "POC preview only; STEP/STL generation is intentionally not implemented in this backend yet.",
+        "note": "Interactive preview only for the current web POC. STEP/STL export is not implemented in this deployed flow yet.",
     }
 
 
 @app.post("/preview-cad")
 async def preview_cad(parsed: CADPromptOutput) -> dict:
-    """Return a CAD-style preview for already structured step-by-step input."""
+    """Return a CAD-style preview for already structured input."""
 
     return {
         "cad_intent": parsed.model_dump(),
         "preview_svg": build_preview_svg(parsed),
-        "note": "POC preview only; STEP/STL generation is intentionally not implemented in this backend yet.",
+        "note": "Interactive preview only for the current web POC. STEP/STL export is not implemented in this deployed flow yet.",
     }
 
 
@@ -667,12 +667,12 @@ UI_HTML = """<!doctype html>
               type="file"
               accept=".pdf,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff,.step,.stp,.iges,.igs,.stl,.obj,.dxf,.scad,.fcstd,.txt,.md,.json,.xml,.csv"
             >
-            <button id="uploadContextButton" type="button">Add File</button>
+            <button id="uploadContextButton" type="button">Attach File</button>
           </div>
           <div id="attachmentList" class="attachment-list"></div>
         </div>
         <div id="chatLog" class="chat-log">
-          <div class="msg bot">Start by adding a PDF, image, JSON status file, or old CAD model. I will extract context and draft a short prompt for approval. You can also type a CAD request directly below.</div>
+          <div class="msg bot">Start by adding a PDF, image, JSON status file, or old CAD model. I will extract context and draft a short prompt for approval. Images are reference-only in this POC, so please type the key dimensions in chat.</div>
         </div>
         <form id="chatForm" class="chat-input">
           <input id="chatInput" type="text" placeholder="Type a CAD request, or type proceed after reviewing an uploaded file..." autocomplete="off">
@@ -691,7 +691,7 @@ UI_HTML = """<!doctype html>
           </div>
           <div class="preview" id="preview">
             <div class="placeholder">
-              <p class="muted">Interactive 3D CAD preview will appear here.</p>
+              <p class="muted">Interactive 3D preview will appear here after the CAD intent is parsed.</p>
             </div>
           </div>
         </div>
@@ -725,6 +725,11 @@ UI_HTML = """<!doctype html>
     let pendingDraftPrompt = "";
 
     uploadContextButton.addEventListener("click", uploadContextFile);
+    contextFile.addEventListener("change", () => {
+      if (contextFile.files && contextFile.files.length) {
+        uploadContextFile();
+      }
+    });
 
     chatForm.addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -741,7 +746,7 @@ UI_HTML = """<!doctype html>
       chatSend.disabled = true;
       chatSend.textContent = "Working...";
       cleanupViewer();
-      preview.innerHTML = '<p class="muted">Parsing the request and generating the 3D CAD model...</p>';
+      preview.innerHTML = '<p class="muted">Parsing the request and building the interactive preview...</p>';
       const thinking = appendMsg("bot", "Parsing the full request context...");
       try {
         const prompt = buildFullPrompt();
@@ -772,6 +777,9 @@ UI_HTML = """<!doctype html>
     });
 
     async function uploadContextFile() {
+      if (uploadContextButton.disabled) {
+        return;
+      }
       const file = contextFile.files && contextFile.files[0];
       if (!file) {
         appendMsg("bot", "Choose a PDF, image, or CAD file first.");
@@ -796,10 +804,10 @@ UI_HTML = """<!doctype html>
         pendingDraftPrompt = draftPromptFromAttachments();
         appendMsg(
           "bot",
-          `Extracted file context from ${payload.filename}.\\n${payload.summary}\\n\\nProposed short CAD prompt:\\n${pendingDraftPrompt}\\n\\nType "proceed" to create the final CAD summary and 3D model, or type corrections/additional dimensions.`
+          `Extracted file context from ${payload.filename}.\\n${payload.summary}\\n\\nProposed short CAD prompt:\\n${pendingDraftPrompt}\\n\\nType "proceed" to create the final CAD summary and interactive preview, or type corrections/additional dimensions.`
         );
         summaryBox.innerHTML = `
-          <p><strong>Awaiting approval.</strong> Review the proposed short prompt in the chat. Type "proceed" to generate the CAD model, or add corrections.</p>
+          <p><strong>Awaiting approval.</strong> Review the proposed short prompt in the chat. Type "proceed" to generate the structured CAD result and preview, or add corrections.</p>
         `;
         chatInput.value = "proceed";
         contextFile.value = "";
@@ -807,7 +815,7 @@ UI_HTML = """<!doctype html>
         appendMsg("bot err", error.message);
       } finally {
         uploadContextButton.disabled = false;
-        uploadContextButton.textContent = "Add File";
+        uploadContextButton.textContent = "Attach File";
       }
     }
 
@@ -883,7 +891,7 @@ UI_HTML = """<!doctype html>
       const summary = [
         `Summary: ${formatPartName(intent.part_type)}${intent.material?.name ? " in " + intent.material.name : ""}.`,
         `Dimensions: ${formatDimensions(intent.geometry || {})}.`,
-        "3D CAD model preview created on the right."
+        "Interactive preview created on the right."
       ];
       if (missing.length) {
         summary.push(`Needs clarification: ${missing.join("; ")}.`);
@@ -898,7 +906,7 @@ UI_HTML = """<!doctype html>
           <dt>Part</dt><dd>${escapeHtml(formatPartName(intent.part_type))}</dd>
           <dt>Material</dt><dd>${escapeHtml(intent.material?.name || "Not specified")}</dd>
           <dt>Dimensions</dt><dd>${escapeHtml(formatDimensions(intent.geometry || {}))}</dd>
-          <dt>Output</dt><dd>Interactive 3D CAD preview and structured JSON</dd>
+          <dt>Output</dt><dd>Interactive preview and structured CAD JSON</dd>
           <dt>Status</dt><dd>${missing.length ? escapeHtml("Clarification needed: " + missing.join("; ")) : "Ready for engineering review"}</dd>
         </dl>
       `;
