@@ -60,3 +60,23 @@ class CADPromptRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     prompt: str = Field(min_length=1)
+
+
+class CADChatRequest(BaseModel):
+    """Incoming engineering chat message plus compiled CAD context."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    message: str = Field(min_length=1)
+    prompt: str = Field(min_length=1)
+
+
+class CADChatResponse(BaseModel):
+    """Assistant reply for the engineering chat panel."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    assistant_message: str
+    cad_intent: CADPromptOutput
+    preview_ready: bool
+    preview_svg: str | None = None

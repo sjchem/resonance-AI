@@ -6,6 +6,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse
 
 from app.cad_preview import build_preview_svg
+from app.chat_logic import respond_to_cad_chat
 from app.openai_client import (
     CADValidationError,
     OpenAIConfigurationError,
@@ -13,7 +14,7 @@ from app.openai_client import (
     openai_status,
     parse_cad_prompt,
 )
-from app.schemas import CADPromptOutput, CADPromptRequest
+from app.schemas import CADChatRequest, CADChatResponse, CADPromptOutput, CADPromptRequest
 from app.upload_context import UploadContext, build_upload_context
 
 
@@ -54,6 +55,20 @@ async def parse_cad(request: CADPromptRequest) -> CADPromptOutput:
 
     try:
         return await parse_cad_prompt(request.prompt)
+    except OpenAIConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except OpenAIRequestError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except CADValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/chat-cad", response_model=CADChatResponse)
+async def chat_cad(request: CADChatRequest) -> CADChatResponse:
+    """Return an interactive chat reply plus the current CAD state."""
+
+    try:
+        return await respond_to_cad_chat(request.message, request.prompt)
     except OpenAIConfigurationError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except OpenAIRequestError as exc:
@@ -745,25 +760,29 @@ UI_HTML = """<!doctype html>
       chatInput.value = "";
       chatSend.disabled = true;
       chatSend.textContent = "Working...";
-      cleanupViewer();
-      preview.innerHTML = '<p class="muted">Parsing the request and building the interactive preview...</p>';
-      const thinking = appendMsg("bot", "Parsing the full request context...");
+      const thinking = appendMsg("bot", "Reviewing your request...");
       try {
         const prompt = buildFullPrompt();
-        const response = await fetch("/generate-cad", {
+        const response = await fetch("/chat-cad", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({prompt})
+          body: JSON.stringify({message: text, prompt})
         });
         const payload = await response.json();
         if (!response.ok) {
           throw new Error(payload.detail || "CAD parsing failed");
         }
         const intent = payload.cad_intent || {};
+        const previewReady = Boolean(payload.preview_ready);
         jsonOutput.textContent = JSON.stringify(intent, null, 2);
-        render3DPreview(intent);
+        if (previewReady) {
+          render3DPreview(intent);
+        } else {
+          cleanupViewer();
+          preview.innerHTML = '<div class="placeholder"><p class="muted">I need one more engineering detail before I can show a useful preview.</p></div>';
+        }
         updateSummary(intent);
-        thinking.textContent = formatChatSummary(intent);
+        thinking.textContent = payload.assistant_message || formatChatSummary(intent);
       } catch (error) {
         thinking.classList.add("err");
         thinking.textContent = error.message;
