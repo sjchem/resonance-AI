@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse
 
 from app.cad_preview import build_preview_svg
@@ -14,6 +14,7 @@ from app.openai_client import (
     parse_cad_prompt,
 )
 from app.schemas import CADPromptOutput, CADPromptRequest
+from app.upload_context import UploadContext, build_upload_context
 
 
 app = FastAPI(title="Resonance AI", version="0.1.0")
@@ -84,6 +85,18 @@ async def preview_cad(parsed: CADPromptOutput) -> dict:
     }
 
 
+@app.post("/upload-context", response_model=UploadContext)
+async def upload_context(file: UploadFile = File(...)) -> UploadContext:
+    """Extract prompt context from an uploaded document, image, or CAD file."""
+
+    try:
+        return await build_upload_context(file)
+    except ValueError as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Could not read uploaded file: {exc}") from exc
+
+
 UI_HTML = """<!doctype html>
 <html lang="en">
 <head>
@@ -92,7 +105,7 @@ UI_HTML = """<!doctype html>
   <title>Resonance AI — Vibracoustic</title>
   <style>
     :root {
-      --bg: #f4f6f8;
+      --bg: #eef5ff;
       --panel: #ffffff;
       --ink: #111827;
       --muted: #647084;
@@ -104,7 +117,7 @@ UI_HTML = """<!doctype html>
       --danger: #b42318;
       --cad: #0f766e;
       --cad-dark: #0b4f49;
-      --soft: #eef3f8;
+      --soft: #e7f0fb;
     }
     * { box-sizing: border-box; }
     body {
@@ -112,7 +125,7 @@ UI_HTML = """<!doctype html>
       min-height: 100vh;
       background: var(--bg);
       color: var(--ink);
-      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-family: "Segoe UI", "Segoe UI Variable", "Aptos", "Noto Sans", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
     }
     header {
       position: sticky;
@@ -185,11 +198,11 @@ UI_HTML = """<!doctype html>
       min-height: 220px;
       margin: 0 calc(50% - 50vw) 28px;
       padding: 32px 0;
-      color: #fff;
+      color: #0f2a49;
       background:
-        linear-gradient(110deg, rgba(7, 31, 63, 0.97), rgba(7, 31, 63, 0.82) 52%, rgba(216, 34, 42, 0.82)),
-        radial-gradient(circle at 70% 40%, rgba(255, 255, 255, 0.16), transparent 32%),
-        var(--brand);
+        linear-gradient(110deg, rgba(222, 236, 255, 0.96), rgba(201, 226, 255, 0.93) 55%, rgba(186, 216, 255, 0.9)),
+        radial-gradient(circle at 72% 38%, rgba(255, 255, 255, 0.62), transparent 34%),
+        #d9ecff;
       display: grid;
       align-items: end;
       overflow: hidden;
@@ -204,7 +217,7 @@ UI_HTML = """<!doctype html>
     }
     .eyebrow {
       margin: 0 0 14px;
-      color: #bed0e7;
+      color: #3d658f;
       font-size: 12px;
       font-weight: 800;
       letter-spacing: 1.6px;
@@ -213,7 +226,7 @@ UI_HTML = """<!doctype html>
     .hero-copy {
       margin: 0;
       max-width: 660px;
-      color: #dbe7f5;
+      color: #33587f;
       font-size: 16px;
       line-height: 1.6;
     }
@@ -221,13 +234,13 @@ UI_HTML = """<!doctype html>
       display: grid;
       grid-template-columns: repeat(3, 1fr);
       gap: 1px;
-      background: rgba(255, 255, 255, 0.22);
-      border: 1px solid rgba(255, 255, 255, 0.22);
+      background: rgba(83, 128, 178, 0.24);
+      border: 1px solid rgba(83, 128, 178, 0.28);
     }
     .metric {
       min-height: 92px;
       padding: 16px;
-      background: rgba(255, 255, 255, 0.08);
+      background: rgba(245, 250, 255, 0.82);
     }
     .metric strong {
       display: block;
@@ -237,7 +250,7 @@ UI_HTML = """<!doctype html>
     }
     .metric span {
       display: block;
-      color: #dbe7f5;
+      color: #4c6f96;
       font-size: 12px;
       line-height: 1.35;
     }
@@ -247,7 +260,7 @@ UI_HTML = """<!doctype html>
       gap: 24px;
       align-items: start;
     }
-    #cadForm, .panel {
+    .workbench, .panel {
       background: var(--panel);
       border: 1px solid var(--line);
       border-radius: 4px;
@@ -329,18 +342,18 @@ UI_HTML = """<!doctype html>
     }
     button:hover { background: var(--brand-2); }
     button:disabled { opacity: 0.62; cursor: wait; }
-    #submitButton {
+    .primary-action {
       background: var(--accent);
     }
-    #submitButton:hover { background: var(--accent-dark); }
+    .primary-action:hover { background: var(--accent-dark); }
     .chat {
       display: flex;
       flex-direction: column;
       gap: 12px;
     }
     .chat-log {
-      min-height: 220px;
-      max-height: 360px;
+      min-height: 360px;
+      max-height: 520px;
       overflow-y: auto;
       border: 1px solid var(--line);
       border-radius: 3px;
@@ -383,6 +396,143 @@ UI_HTML = """<!doctype html>
       margin: 0;
       padding: 10px 18px;
     }
+    .attachment-tools {
+      display: grid;
+      gap: 10px;
+      padding: 12px;
+      border: 1px dashed #b8c8da;
+      background: #f8fbff;
+    }
+    .label-with-info {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin: 0;
+    }
+    .info-dot {
+      position: relative;
+      display: inline-grid;
+      place-items: center;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      color: #fff;
+      background: var(--brand);
+      font-size: 12px;
+      font-weight: 800;
+      cursor: help;
+    }
+    .info-dot:hover::after,
+    .info-dot:focus::after {
+      content: attr(data-tooltip);
+      position: absolute;
+      left: 50%;
+      bottom: calc(100% + 9px);
+      transform: translateX(-50%);
+      z-index: 10;
+      width: min(320px, 82vw);
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--ink);
+      box-shadow: 0 12px 30px rgba(15, 23, 42, 0.16);
+      font-size: 12px;
+      font-weight: 650;
+      line-height: 1.45;
+      text-align: left;
+      white-space: normal;
+    }
+    .info-dot:hover::before,
+    .info-dot:focus::before {
+      content: "";
+      position: absolute;
+      left: 50%;
+      bottom: calc(100% + 3px);
+      transform: translateX(-50%);
+      border: 6px solid transparent;
+      border-top: 0;
+      border-bottom-color: #fff;
+      z-index: 11;
+    }
+    .attachment-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .attachment-row input {
+      flex: 1;
+      padding: 9px;
+      background: #fff;
+    }
+    .attachment-row button {
+      flex: 0 0 auto;
+      width: auto;
+      margin: 0;
+      padding: 9px 14px;
+      background: #385a7e;
+    }
+    .attachment-row button:hover {
+      background: #2a4562;
+    }
+    .attachment-list {
+      display: grid;
+      gap: 8px;
+    }
+    .attachment-item {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      padding: 9px 10px;
+      border: 1px solid var(--line);
+      background: #fff;
+      font-size: 13px;
+    }
+    .attachment-item strong {
+      color: var(--brand);
+      overflow-wrap: anywhere;
+    }
+    .attachment-item span {
+      color: var(--muted);
+      display: block;
+      margin-top: 2px;
+    }
+    .attachment-item button {
+      width: auto;
+      margin: 0;
+      padding: 6px 9px;
+      color: var(--danger);
+      background: #fff1f0;
+    }
+    .summary-box {
+      border: 1px solid var(--line);
+      border-left: 4px solid var(--accent);
+      background: #fbfdff;
+      padding: 14px;
+      min-height: 112px;
+    }
+    .summary-box p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    .summary-box dl {
+      margin: 0;
+      display: grid;
+      grid-template-columns: max-content minmax(0, 1fr);
+      gap: 7px 14px;
+      font-size: 14px;
+    }
+    .summary-box dt {
+      color: var(--muted);
+      font-weight: 700;
+    }
+    .summary-box dd {
+      margin: 0;
+      color: var(--ink);
+      overflow-wrap: anywhere;
+    }
     .stack {
       display: grid;
       gap: 18px;
@@ -392,11 +542,22 @@ UI_HTML = """<!doctype html>
       display: grid;
       place-items: center;
       overflow: hidden;
+      position: relative;
       background:
         linear-gradient(90deg, rgba(216, 224, 234, 0.34) 1px, transparent 1px),
         linear-gradient(rgba(216, 224, 234, 0.34) 1px, transparent 1px),
         #fff;
       background-size: 28px 28px;
+    }
+    .viewer3d {
+      width: 100%;
+      height: 100%;
+      min-height: 470px;
+    }
+    .viewer3d canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
     }
     svg {
       width: 100%;
@@ -485,70 +646,58 @@ UI_HTML = """<!doctype html>
     </section>
 
     <section class="workspace">
-      <form id="cadForm">
+      <section class="workbench chat">
         <div class="section-title">
-          <strong>CAD Request</strong>
+          <strong>Engineering Chat</strong>
           <span class="status-pill">Model ready</span>
         </div>
-        <label for="prompt">CAD prompt</label>
-        <textarea id="prompt" name="prompt">Create a rubber bushing with outer diameter 60 mm, inner diameter 20 mm, height 40 mm and chamfer 2 mm.</textarea>
-        <button id="submitButton" type="submit">Parse and Preview</button>
-
-        <hr class="divider">
-
-        <label for="partType">Step 1: Part type</label>
-        <select id="partType">
-          <option value="bushing">Bushing</option>
-          <option value="plate">Plate</option>
-          <option value="bracket">Bracket</option>
-        </select>
-
-        <div id="guidedFields"></div>
-        <button id="guidedButton" type="button">Build JSON and Preview</button>
-      </form>
+        <div class="attachment-tools">
+          <label for="contextFile" class="label-with-info">
+            Add document, image, or old CAD model
+            <span
+              class="info-dot"
+              tabindex="0"
+              aria-label="Supported file types: PDF, image jpg, JSON, STEP/STP/IGES/STL/OBJ/DXF/SCAD/FCStd"
+              data-tooltip="Supported file types: PDF, image (jpg), JSON, STEP/STP/IGES/STL/OBJ/DXF/SCAD/FCStd"
+            >i</span>
+          </label>
+          <div class="attachment-row">
+            <input
+              id="contextFile"
+              type="file"
+              accept=".pdf,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff,.step,.stp,.iges,.igs,.stl,.obj,.dxf,.scad,.fcstd,.txt,.md,.json,.xml,.csv"
+            >
+            <button id="uploadContextButton" type="button">Add File</button>
+          </div>
+          <div id="attachmentList" class="attachment-list"></div>
+        </div>
+        <div id="chatLog" class="chat-log">
+          <div class="msg bot">Start by adding a PDF, image, JSON status file, or old CAD model. I will extract context and draft a short prompt for approval. You can also type a CAD request directly below.</div>
+        </div>
+        <form id="chatForm" class="chat-input">
+          <input id="chatInput" type="text" placeholder="Type a CAD request, or type proceed after reviewing an uploaded file..." autocomplete="off">
+          <button type="submit" id="chatSend" class="primary-action">Send</button>
+        </form>
+        <div class="summary-box" id="summaryBox">
+          <p>Upload a file or write a request. I will summarize the proposed CAD intent before generating the model.</p>
+        </div>
+      </section>
 
       <section class="stack">
-        <div class="panel chat">
+        <div class="panel">
           <div class="section-title">
-            <strong>Engineering Chat</strong>
-            <span class="muted">Azure OpenAI</span>
+            <strong>3D CAD Model</strong>
+            <span class="muted">Interactive preview</span>
           </div>
-          <div id="chatLog" class="chat-log">
-            <div class="msg bot">Describe a bushing, bracket, or plate and I will prepare the CAD intent for review.</div>
-          </div>
-          <form id="chatForm" class="chat-input">
-            <input id="chatInput" type="text" placeholder="Ask Resonance AI to design a part..." autocomplete="off">
-            <button type="submit" id="chatSend">Send</button>
-          </form>
-        </div>
-        <div class="panel preview" id="preview">
-          <div class="placeholder">
-            <svg viewBox="0 0 640 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Technical CAD placeholder">
-              <rect width="640" height="300" fill="none"/>
-              <g fill="none" stroke="#071f3f" stroke-width="3">
-                <path d="M110 200 L400 158 L530 210 L235 255 Z"/>
-                <path d="M110 200 L110 156 L400 112 L530 164 L530 210"/>
-                <path d="M400 112 L400 158"/>
-                <circle cx="230" cy="194" r="20"/>
-                <circle cx="405" cy="169" r="20"/>
-              </g>
-              <g stroke="#d8222a" stroke-width="2" fill="none">
-                <path d="M92 146 H392"/>
-                <path d="M92 146 l18 -10 M92 146 l18 10"/>
-                <path d="M392 146 l-18 -10 M392 146 l-18 10"/>
-                <path d="M552 165 V230"/>
-                <path d="M552 165 l-9 16 M552 165 l9 16"/>
-                <path d="M552 230 l-9 -16 M552 230 l9 -16"/>
-              </g>
-              <text x="244" y="132" text-anchor="middle" font-size="16" fill="#647084">length</text>
-              <text x="570" y="203" font-size="16" fill="#647084">width</text>
-            </svg>
-            <p class="muted">CAD preview will appear here.</p>
+          <div class="preview" id="preview">
+            <div class="placeholder">
+              <p class="muted">Interactive 3D CAD preview will appear here.</p>
+            </div>
           </div>
         </div>
         <div class="panel">
           <div class="section-title">
-            <strong>Validated JSON</strong>
+            <strong>Structured CAD JSON</strong>
           </div>
           <pre id="jsonOutput">{}</pre>
         </div>
@@ -556,212 +705,229 @@ UI_HTML = """<!doctype html>
     </section>
   </main>
 
-  <script>
-    const form = document.getElementById("cadForm");
-    const button = document.getElementById("submitButton");
-    const guidedButton = document.getElementById("guidedButton");
-    const partType = document.getElementById("partType");
-    const guidedFields = document.getElementById("guidedFields");
+  <script type="module">
+    import * as THREE from "https://unpkg.com/three@0.166.1/build/three.module.js";
+    import { OrbitControls } from "https://unpkg.com/three@0.166.1/examples/jsm/controls/OrbitControls.js";
+
     const preview = document.getElementById("preview");
     const jsonOutput = document.getElementById("jsonOutput");
-
-    const fieldTemplates = {
-      bushing: [
-        ["outer_diameter_mm", "Outer diameter mm", "60"],
-        ["inner_diameter_mm", "Inner diameter mm", "20"],
-        ["height_mm", "Height mm", "40"],
-        ["chamfer_mm", "Chamfer mm", "2"],
-        ["material", "Material", "rubber"]
-      ],
-      plate: [
-        ["length_mm", "Length mm", "120"],
-        ["width_mm", "Width mm", "60"],
-        ["thickness_mm", "Thickness mm", "5"],
-        ["chamfer_mm", "Chamfer mm", "0"],
-        ["material", "Material", "steel"]
-      ],
-      bracket: [
-        ["length_mm", "Length mm", "120"],
-        ["width_mm", "Width mm", "60"],
-        ["thickness_mm", "Thickness mm", "5"],
-        ["chamfer_mm", "Chamfer mm", "0"],
-        ["material", "Material", "steel"]
-      ]
-    };
-
-    renderGuidedFields();
-    partType.addEventListener("change", renderGuidedFields);
-
-    form.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      button.disabled = true;
-      button.textContent = "Parsing...";
-      preview.innerHTML = '<p class="muted">Waiting for the configured AI model...</p>';
-
-      try {
-        const response = await fetch("/generate-cad", {
-          method: "POST",
-          headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({prompt: document.getElementById("prompt").value})
-        });
-        const payload = await response.json();
-        if (!response.ok) {
-          throw new Error(payload.detail || "CAD parsing failed");
-        }
-        jsonOutput.textContent = JSON.stringify(payload.cad_intent, null, 2);
-        preview.innerHTML = payload.preview_svg;
-      } catch (error) {
-        preview.innerHTML = `<pre class="error-box">${escapeHtml(error.message)}</pre>`;
-      } finally {
-        button.disabled = false;
-        button.textContent = "Parse and Preview";
-      }
-    });
-
-    guidedButton.addEventListener("click", async () => {
-      guidedButton.disabled = true;
-      guidedButton.textContent = "Building...";
-      preview.innerHTML = '<p class="muted">Building structured CAD JSON...</p>';
-
-      try {
-        const cadIntent = buildGuidedIntent();
-        const response = await fetch("/preview-cad", {
-          method: "POST",
-          headers: {"Content-Type": "application/json"},
-          body: JSON.stringify(cadIntent)
-        });
-        const payload = await response.json();
-        if (!response.ok) {
-          throw new Error(payload.detail || "CAD preview failed");
-        }
-        jsonOutput.textContent = JSON.stringify(payload.cad_intent, null, 2);
-        preview.innerHTML = payload.preview_svg;
-      } catch (error) {
-        preview.innerHTML = `<pre class="error-box">${escapeHtml(error.message)}</pre>`;
-      } finally {
-        guidedButton.disabled = false;
-        guidedButton.textContent = "Build JSON and Preview";
-      }
-    });
-
-    function renderGuidedFields() {
-      const fields = fieldTemplates[partType.value];
-      guidedFields.innerHTML = `
-        <p class="muted">Step 2: Fill the required fields for ${escapeHtml(partType.value)}.</p>
-        <div class="grid">
-          ${fields.map(([name, label, value]) => `
-            <div class="field">
-              <label for="guided_${name}">${label}</label>
-              <input id="guided_${name}" name="${name}" value="${value}">
-            </div>
-          `).join("")}
-        </div>
-      `;
-    }
-
-    function buildGuidedIntent() {
-      const type = partType.value;
-      const geometry = {
-        outer_diameter_mm: null,
-        inner_diameter_mm: null,
-        height_mm: null,
-        length_mm: null,
-        width_mm: null,
-        thickness_mm: null,
-        chamfer_mm: null,
-        fillet_mm: 0
-      };
-
-      for (const [name] of fieldTemplates[type]) {
-        if (name === "material") continue;
-        geometry[name] = readNumber(name);
-      }
-
-      return {
-        part_type: type,
-        geometry,
-        material: {
-          name: readText("material"),
-          shore_a: null,
-          density_kg_m3: null
-        },
-        simulation_hints: {
-          boundary_condition: null,
-          load_direction: null,
-          target_output: "cad"
-        },
-        missing_information: missingInfoFor(type, geometry)
-      };
-    }
-
-    function missingInfoFor(type, geometry) {
-      const missing = [];
-      const requiredByType = {
-        bushing: ["outer_diameter_mm", "inner_diameter_mm", "height_mm"],
-        plate: ["length_mm", "width_mm", "thickness_mm"],
-        bracket: ["length_mm", "width_mm", "thickness_mm"]
-      };
-      for (const field of requiredByType[type]) {
-        if (geometry[field] === null) {
-          missing.push(`${field} not specified`);
-        }
-      }
-      return missing;
-    }
-
-    function readNumber(name) {
-      const value = document.getElementById(`guided_${name}`).value.trim();
-      if (!value) return null;
-      const number = Number(value);
-      if (!Number.isFinite(number)) {
-        throw new Error(`${name} must be a number`);
-      }
-      return number;
-    }
-
-    function readText(name) {
-      const value = document.getElementById(`guided_${name}`).value.trim();
-      return value || null;
-    }
-
-    // --- Chat prompt ---
+    const summaryBox = document.getElementById("summaryBox");
     const chatForm = document.getElementById("chatForm");
     const chatInput = document.getElementById("chatInput");
     const chatLog = document.getElementById("chatLog");
     const chatSend = document.getElementById("chatSend");
+    const contextFile = document.getElementById("contextFile");
+    const uploadContextButton = document.getElementById("uploadContextButton");
+    const attachmentList = document.getElementById("attachmentList");
+    let activeViewer = null;
+    let requestContext = [];
+    let attachmentContexts = [];
+    let pendingDraftPrompt = "";
+
+    uploadContextButton.addEventListener("click", uploadContextFile);
 
     chatForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       const text = chatInput.value.trim();
       if (!text) return;
       appendMsg("user", text);
+      const approvedDraft = pendingDraftPrompt && isApproval(text);
+      const requestText = approvedDraft ? pendingDraftPrompt : text;
+      requestContext.push(requestText);
+      if (!approvedDraft) {
+        pendingDraftPrompt = "";
+      }
       chatInput.value = "";
       chatSend.disabled = true;
-      const thinking = appendMsg("bot", "Thinking…");
+      chatSend.textContent = "Working...";
+      cleanupViewer();
+      preview.innerHTML = '<p class="muted">Parsing the request and generating the 3D CAD model...</p>';
+      const thinking = appendMsg("bot", "Parsing the full request context...");
       try {
+        const prompt = buildFullPrompt();
         const response = await fetch("/generate-cad", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({prompt: text})
+          body: JSON.stringify({prompt})
         });
         const payload = await response.json();
         if (!response.ok) {
           throw new Error(payload.detail || "CAD parsing failed");
         }
-        jsonOutput.textContent = JSON.stringify(payload.cad_intent, null, 2);
-        preview.innerHTML = payload.preview_svg;
         const intent = payload.cad_intent || {};
-        const part = intent.part_type || "part";
-        const missing = (intent.missing_information || []).length;
-        thinking.textContent = `Generated a ${part} preview. ${missing ? missing + " field(s) need clarification." : "All required fields detected."}`;
+        jsonOutput.textContent = JSON.stringify(intent, null, 2);
+        render3DPreview(intent);
+        updateSummary(intent);
+        thinking.textContent = formatChatSummary(intent);
       } catch (error) {
         thinking.classList.add("err");
         thinking.textContent = error.message;
+        summaryBox.innerHTML = `<p>${escapeHtml(error.message)}</p>`;
+        preview.innerHTML = `<pre class="error-box">${escapeHtml(error.message)}</pre>`;
       } finally {
         chatSend.disabled = false;
+        chatSend.textContent = "Send";
         chatInput.focus();
       }
     });
+
+    async function uploadContextFile() {
+      const file = contextFile.files && contextFile.files[0];
+      if (!file) {
+        appendMsg("bot", "Choose a PDF, image, or CAD file first.");
+        return;
+      }
+
+      uploadContextButton.disabled = true;
+      uploadContextButton.textContent = "Reading...";
+      try {
+        const formData = new FormData();
+        formData.append("file", file);
+        const response = await fetch("/upload-context", {
+          method: "POST",
+          body: formData
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload.detail || "File upload failed");
+        }
+        attachmentContexts.push(payload);
+        renderAttachmentList();
+        pendingDraftPrompt = draftPromptFromAttachments();
+        appendMsg(
+          "bot",
+          `Extracted file context from ${payload.filename}.\\n${payload.summary}\\n\\nProposed short CAD prompt:\\n${pendingDraftPrompt}\\n\\nType "proceed" to create the final CAD summary and 3D model, or type corrections/additional dimensions.`
+        );
+        summaryBox.innerHTML = `
+          <p><strong>Awaiting approval.</strong> Review the proposed short prompt in the chat. Type "proceed" to generate the CAD model, or add corrections.</p>
+        `;
+        chatInput.value = "proceed";
+        contextFile.value = "";
+      } catch (error) {
+        appendMsg("bot err", error.message);
+      } finally {
+        uploadContextButton.disabled = false;
+        uploadContextButton.textContent = "Add File";
+      }
+    }
+
+    function buildFullPrompt() {
+      const parts = [];
+      if (attachmentContexts.length) {
+        parts.push("Use the following uploaded engineering context when interpreting the CAD request.");
+        for (const context of attachmentContexts) {
+          parts.push(context.prompt_context);
+        }
+      }
+      if (requestContext.length) {
+        parts.push("User chat request:");
+        parts.push(requestContext.join("\\n"));
+      }
+      parts.push(
+        "Return a CAD intent that can be used to generate the best possible 3D CAD model preview. Do not invent missing critical dimensions."
+      );
+      return parts.join("\\n\\n");
+    }
+
+    function draftPromptFromAttachments() {
+      if (!attachmentContexts.length) {
+        return "";
+      }
+      const summaries = attachmentContexts.map((context) => context.summary).join(" ");
+      return [
+        "Create a CAD model from the uploaded engineering context.",
+        summaries,
+        "Extract the part type, material, dimensions, chamfer/fillet details, and any status or validation hints from the uploaded file.",
+        "If critical dimensions are missing, mark them as missing rather than inventing them."
+      ].join(" ");
+    }
+
+    function isApproval(value) {
+      return /^(proceed|agree|approved|approve|yes|ok|okay|generate|create|go)$/i.test(value.trim());
+    }
+
+    function renderAttachmentList() {
+      if (!attachmentContexts.length) {
+        attachmentList.innerHTML = "";
+        return;
+      }
+      attachmentList.innerHTML = attachmentContexts.map((context, index) => `
+        <div class="attachment-item">
+          <div>
+            <strong>${escapeHtml(context.filename)}</strong>
+            <span>${escapeHtml(context.file_kind)} · ${formatBytes(context.size_bytes)}</span>
+          </div>
+          <button type="button" data-remove-context="${index}">Remove</button>
+        </div>
+      `).join("");
+
+      for (const button of attachmentList.querySelectorAll("[data-remove-context]")) {
+        button.addEventListener("click", () => {
+          const index = Number(button.dataset.removeContext);
+          attachmentContexts.splice(index, 1);
+          pendingDraftPrompt = attachmentContexts.length ? draftPromptFromAttachments() : "";
+          renderAttachmentList();
+        });
+      }
+    }
+
+    function formatBytes(value) {
+      const bytes = Number(value) || 0;
+      if (bytes < 1024) return `${bytes} B`;
+      if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+      return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    }
+
+    function formatChatSummary(intent) {
+      const missing = intent.missing_information || [];
+      const summary = [
+        `Summary: ${formatPartName(intent.part_type)}${intent.material?.name ? " in " + intent.material.name : ""}.`,
+        `Dimensions: ${formatDimensions(intent.geometry || {})}.`,
+        "3D CAD model preview created on the right."
+      ];
+      if (missing.length) {
+        summary.push(`Needs clarification: ${missing.join("; ")}.`);
+      }
+      return summary.join("\\n");
+    }
+
+    function updateSummary(intent) {
+      const missing = intent.missing_information || [];
+      summaryBox.innerHTML = `
+        <dl>
+          <dt>Part</dt><dd>${escapeHtml(formatPartName(intent.part_type))}</dd>
+          <dt>Material</dt><dd>${escapeHtml(intent.material?.name || "Not specified")}</dd>
+          <dt>Dimensions</dt><dd>${escapeHtml(formatDimensions(intent.geometry || {}))}</dd>
+          <dt>Output</dt><dd>Interactive 3D CAD preview and structured JSON</dd>
+          <dt>Status</dt><dd>${missing.length ? escapeHtml("Clarification needed: " + missing.join("; ")) : "Ready for engineering review"}</dd>
+        </dl>
+      `;
+    }
+
+    function formatPartName(value) {
+      return String(value || "unknown part").replaceAll("_", " ");
+    }
+
+    function formatDimensions(geometry) {
+      const labels = {
+        outer_diameter_mm: "OD",
+        inner_diameter_mm: "ID",
+        height_mm: "height",
+        length_mm: "length",
+        width_mm: "width",
+        thickness_mm: "thickness",
+        chamfer_mm: "chamfer",
+        fillet_mm: "fillet"
+      };
+      const parts = [];
+      for (const [key, label] of Object.entries(labels)) {
+        const value = geometry[key];
+        if (value !== null && value !== undefined && value !== "") {
+          parts.push(`${label} ${value} mm`);
+        }
+      }
+      return parts.length ? parts.join(", ") : "No dimensions specified";
+    }
 
     function appendMsg(role, text) {
       const el = document.createElement("div");
@@ -771,6 +937,250 @@ UI_HTML = """<!doctype html>
       chatLog.scrollTop = chatLog.scrollHeight;
       return el;
     }
+
+    function render3DPreview(cadIntent) {
+      cleanupViewer();
+
+      const container = document.createElement("div");
+      container.className = "viewer3d";
+      preview.innerHTML = "";
+      preview.appendChild(container);
+
+      const initialWidth = Math.max(320, Math.floor(preview.clientWidth || 720));
+      const initialHeight = Math.max(320, Math.floor(preview.clientHeight || 470));
+
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(0xf7fbff);
+
+      const camera = new THREE.PerspectiveCamera(44, initialWidth / initialHeight, 0.1, 10000);
+      const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      renderer.setSize(initialWidth, initialHeight, false);
+      container.appendChild(renderer.domElement);
+
+      const controls = new OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.06;
+      controls.screenSpacePanning = true;
+      controls.minDistance = 5;
+      controls.maxDistance = 8000;
+
+      scene.add(new THREE.HemisphereLight(0xffffff, 0xa4bfdc, 0.85));
+      const keyLight = new THREE.DirectionalLight(0xffffff, 0.9);
+      keyLight.position.set(180, 220, 140);
+      scene.add(keyLight);
+
+      const fillLight = new THREE.DirectionalLight(0xffffff, 0.45);
+      fillLight.position.set(-180, 120, -140);
+      scene.add(fillLight);
+
+      const grid = new THREE.GridHelper(800, 40, 0xc3d2e5, 0xdeebf8);
+      scene.add(grid);
+
+      const meshGroup = createPartObject(cadIntent || {});
+      scene.add(meshGroup);
+
+      const bounds = new THREE.Box3().setFromObject(meshGroup);
+      const size = bounds.getSize(new THREE.Vector3());
+      const center = bounds.getCenter(new THREE.Vector3());
+      meshGroup.position.sub(center);
+
+      const fit = Math.max(size.x, size.y, size.z, 40);
+      camera.position.set(fit * 1.35, fit * 1.1, fit * 1.45);
+      controls.target.set(0, 0, 0);
+      controls.update();
+
+      const resizeObserver = new ResizeObserver(() => {
+        const width = Math.max(280, Math.floor(preview.clientWidth || initialWidth));
+        const height = Math.max(280, Math.floor(preview.clientHeight || initialHeight));
+        camera.aspect = width / height;
+        camera.updateProjectionMatrix();
+        renderer.setSize(width, height, false);
+      });
+      resizeObserver.observe(preview);
+
+      let animationFrameId = 0;
+      const animate = () => {
+        animationFrameId = requestAnimationFrame(animate);
+        controls.update();
+        renderer.render(scene, camera);
+      };
+      animate();
+
+      activeViewer = {
+        scene,
+        renderer,
+        controls,
+        resizeObserver,
+        animationFrameId,
+      };
+    }
+
+    function createPartObject(cadIntent) {
+      const type = String(cadIntent.part_type || "unknown").toLowerCase();
+      const geometry = cadIntent.geometry || {};
+      if (type === "bushing" || type === "rubber_mount") {
+        return createBushingObject(geometry);
+      }
+      if (type === "plate") {
+        return createPlateObject(geometry);
+      }
+      if (type === "bracket") {
+        return createBracketObject(geometry);
+      }
+      return createUnknownObject(geometry);
+    }
+
+    function createBushingObject(geometry) {
+      const outerDiameter = readPositive(geometry.outer_diameter_mm, 60);
+      const innerDiameter = readPositive(geometry.inner_diameter_mm, 20);
+      const height = readPositive(geometry.height_mm, 40);
+      const outerRadius = Math.max(outerDiameter / 2, 5);
+      const innerRadius = Math.min(Math.max(innerDiameter / 2, 2), outerRadius - 1);
+
+      const shape = new THREE.Shape();
+      shape.absarc(0, 0, outerRadius, 0, Math.PI * 2, false);
+      const hole = new THREE.Path();
+      hole.absarc(0, 0, innerRadius, 0, Math.PI * 2, true);
+      shape.holes.push(hole);
+
+      const bodyGeometry = new THREE.ExtrudeGeometry(shape, {
+        depth: height,
+        bevelEnabled: false,
+        curveSegments: 80,
+      });
+      bodyGeometry.translate(0, 0, -height / 2);
+
+      const bodyMaterial = new THREE.MeshStandardMaterial({
+        color: 0x7f9bbd,
+        roughness: 0.56,
+        metalness: 0.18,
+      });
+      const mesh = new THREE.Mesh(bodyGeometry, bodyMaterial);
+
+      const edges = new THREE.LineSegments(
+        new THREE.EdgesGeometry(bodyGeometry, 30),
+        new THREE.LineBasicMaterial({ color: 0x435f81 })
+      );
+
+      const group = new THREE.Group();
+      group.add(mesh);
+      group.add(edges);
+      return group;
+    }
+
+    function createPlateObject(geometry) {
+      const length = readPositive(geometry.length_mm, 120);
+      const width = readPositive(geometry.width_mm, 60);
+      const thickness = readPositive(geometry.thickness_mm, 8);
+
+      const bodyGeometry = new THREE.BoxGeometry(length, thickness, width);
+      const bodyMaterial = new THREE.MeshStandardMaterial({
+        color: 0x95afcc,
+        roughness: 0.55,
+        metalness: 0.25,
+      });
+
+      const mesh = new THREE.Mesh(bodyGeometry, bodyMaterial);
+      const edges = new THREE.LineSegments(
+        new THREE.EdgesGeometry(bodyGeometry, 25),
+        new THREE.LineBasicMaterial({ color: 0x4f6b8d })
+      );
+
+      const group = new THREE.Group();
+      group.add(mesh);
+      group.add(edges);
+      return group;
+    }
+
+    function createBracketObject(geometry) {
+      const length = readPositive(geometry.length_mm, 120);
+      const width = readPositive(geometry.width_mm, 60);
+      const thickness = readPositive(geometry.thickness_mm, 8);
+      const legHeight = Math.max(length * 0.7, thickness * 6);
+
+      const mat = new THREE.MeshStandardMaterial({
+        color: 0x90abc9,
+        roughness: 0.52,
+        metalness: 0.28,
+      });
+      const edgeMat = new THREE.LineBasicMaterial({ color: 0x4a6688 });
+
+      const baseGeom = new THREE.BoxGeometry(length, thickness, width);
+      const baseMesh = new THREE.Mesh(baseGeom, mat);
+      baseMesh.position.set(0, thickness / 2, 0);
+
+      const legGeom = new THREE.BoxGeometry(thickness, legHeight, width);
+      const legMesh = new THREE.Mesh(legGeom, mat);
+      legMesh.position.set(length / 2 - thickness / 2, legHeight / 2, 0);
+
+      const group = new THREE.Group();
+      group.add(baseMesh);
+      group.add(legMesh);
+
+      const baseEdges = new THREE.LineSegments(new THREE.EdgesGeometry(baseGeom, 25), edgeMat);
+      baseEdges.position.copy(baseMesh.position);
+      const legEdges = new THREE.LineSegments(new THREE.EdgesGeometry(legGeom, 25), edgeMat);
+      legEdges.position.copy(legMesh.position);
+      group.add(baseEdges);
+      group.add(legEdges);
+      return group;
+    }
+
+    function createUnknownObject(geometry) {
+      const length = readPositive(geometry.length_mm, 90);
+      const width = readPositive(geometry.width_mm, 70);
+      const thickness = readPositive(geometry.thickness_mm, 50);
+      const bodyGeometry = new THREE.BoxGeometry(length, thickness, width);
+      const bodyMaterial = new THREE.MeshStandardMaterial({
+        color: 0xa0b6d0,
+        roughness: 0.6,
+        metalness: 0.2,
+      });
+      const mesh = new THREE.Mesh(bodyGeometry, bodyMaterial);
+      const edges = new THREE.LineSegments(
+        new THREE.EdgesGeometry(bodyGeometry, 20),
+        new THREE.LineBasicMaterial({ color: 0x5e7899 })
+      );
+      const group = new THREE.Group();
+      group.add(mesh);
+      group.add(edges);
+      return group;
+    }
+
+    function readPositive(value, fallback) {
+      const numeric = Number(value);
+      return Number.isFinite(numeric) && numeric > 0 ? numeric : fallback;
+    }
+
+    function cleanupViewer() {
+      if (!activeViewer) {
+        return;
+      }
+
+      cancelAnimationFrame(activeViewer.animationFrameId);
+      activeViewer.resizeObserver.disconnect();
+      activeViewer.controls.dispose();
+
+      activeViewer.scene.traverse((node) => {
+        if (node.geometry) {
+          node.geometry.dispose();
+        }
+        if (node.material) {
+          if (Array.isArray(node.material)) {
+            node.material.forEach((material) => material.dispose());
+          } else {
+            node.material.dispose();
+          }
+        }
+      });
+
+      activeViewer.renderer.dispose();
+      preview.innerHTML = "";
+      activeViewer = null;
+    }
+
+    window.addEventListener("beforeunload", cleanupViewer);
 
     function escapeHtml(value) {
       return String(value)
