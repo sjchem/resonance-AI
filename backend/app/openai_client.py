@@ -95,7 +95,9 @@ async def parse_cad_prompt(prompt: str) -> CADPromptOutput:
 
     client, model, provider = _build_client()
     try:
-        if provider.startswith("azure_"):
+        if provider == "azure_ai_foundry":
+            parsed = await _parse_with_foundry_fallbacks(model, prompt)
+        elif provider == "azure_openai":
             parsed = await _parse_with_azure_chat(client, model, prompt)
         else:
             parsed = await _parse_with_openai_responses(client, model, prompt)
@@ -152,6 +154,55 @@ async def _parse_with_azure_chat(
         temperature=0,
     )
     return completion.choices[0].message.parsed
+
+
+async def _parse_with_foundry_fallbacks(model: str, prompt: str) -> CADPromptOutput | None:
+    """Try multiple Azure AI Foundry endpoint shapes before failing.
+
+    Foundry deployments can be exposed either through a project endpoint such as
+    `.../api/projects/<name>` or an OpenAI-compatible host-level route. Some
+    combinations return 404 even with valid credentials, so we try the most
+    likely structured-output paths in sequence.
+    """
+
+    azure_api_key = os.getenv("AZURE_OPENAI_API_KEY")
+    azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "")
+    if not azure_api_key or not azure_endpoint:
+        raise OpenAIConfigurationError(
+            "Azure AI Foundry configuration is incomplete. Set AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT."
+        )
+
+    candidate_clients = [
+        AsyncOpenAI(
+            api_key=azure_api_key,
+            base_url=_normalize_foundry_project_base_url(azure_endpoint),
+            default_query={"api-version": AZURE_OPENAI_API_VERSION},
+        ),
+        AsyncOpenAI(
+            api_key=azure_api_key,
+            base_url=_normalize_foundry_base_url(azure_endpoint),
+            default_query={"api-version": AZURE_OPENAI_API_VERSION},
+        ),
+    ]
+    parsers = (_parse_with_azure_chat, _parse_with_openai_responses)
+    last_error: OpenAIError | None = None
+
+    for candidate in candidate_clients:
+        for parser in parsers:
+            try:
+                return await parser(candidate, model, prompt)
+            except APIStatusError as exc:
+                last_error = exc
+                if exc.status_code == 404:
+                    continue
+                raise
+            except OpenAIError as exc:
+                last_error = exc
+                continue
+
+    if last_error:
+        raise last_error
+    return None
 
 
 def _build_client() -> tuple[AsyncOpenAI | AsyncAzureOpenAI, str, str]:
@@ -243,3 +294,17 @@ def _normalize_foundry_base_url(endpoint: str) -> str:
             "AZURE_OPENAI_ENDPOINT is not a valid URL. Expected an Azure AI Foundry endpoint."
         )
     return f"{parsed.scheme}://{parsed.netloc}/models"
+
+
+def _normalize_foundry_project_base_url(endpoint: str) -> str:
+    """Return the exact Foundry project endpoint when the user configured one."""
+
+    parsed = urlparse(endpoint)
+    if not parsed.scheme or not parsed.netloc:
+        raise OpenAIConfigurationError(
+            "AZURE_OPENAI_ENDPOINT is not a valid URL. Expected an Azure AI Foundry project endpoint."
+        )
+    path = parsed.path.rstrip("/")
+    if path:
+        return f"{parsed.scheme}://{parsed.netloc}{path}"
+    return f"{parsed.scheme}://{parsed.netloc}"
