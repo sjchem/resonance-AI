@@ -99,6 +99,8 @@ def _format_dimensions(parsed: CADPromptOutput) -> str:
         ("fillet", geometry.fillet_mm),
     ]
     parts = [f"{label} {value:g} mm" for label, value in values if value is not None]
+    if geometry.coil_count is not None:
+        parts.append(f"{geometry.coil_count:g} coils")
     return ", ".join(parts) if parts else "no dimensions captured yet"
 
 

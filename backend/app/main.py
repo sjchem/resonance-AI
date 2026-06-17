@@ -368,6 +368,7 @@ UI_HTML = """<!doctype html>
     }
     .chat-shell {
       min-height: 520px;
+      max-height: 620px;
       border: 1px solid var(--line);
       border-radius: 3px;
       background: linear-gradient(135deg, #f9fbfd, #eef3f8);
@@ -377,6 +378,7 @@ UI_HTML = """<!doctype html>
     }
     .chat-shell.idle {
       min-height: 560px;
+      max-height: none;
     }
     .chat-log {
       flex: 1;
@@ -615,6 +617,51 @@ UI_HTML = """<!doctype html>
     .activity-panel.error .activity-fill {
       background: linear-gradient(90deg, #d8222a, #ef6a6f);
     }
+    .preview-progress {
+      display: none;
+      gap: 8px;
+      margin-bottom: 14px;
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      background: #f4f9ff;
+      border-radius: 3px;
+    }
+    .preview-progress.active {
+      display: grid;
+    }
+    .preview-progress-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      color: var(--brand);
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .preview-progress-phase {
+      color: var(--muted);
+      font-weight: 600;
+    }
+    .preview-progress-track {
+      width: 100%;
+      height: 8px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: #dbe6f2;
+    }
+    .preview-progress-fill {
+      width: 0%;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, #0f766e, #24a39a);
+      transition: width 260ms ease;
+    }
+    .preview-progress.done .preview-progress-fill {
+      background: linear-gradient(90deg, #11895d, #34c77b);
+    }
+    .preview-progress.error .preview-progress-fill {
+      background: linear-gradient(90deg, #d8222a, #ef6a6f);
+    }
     .summary-box {
       border: 1px solid var(--line);
       border-left: 4px solid var(--accent);
@@ -813,6 +860,15 @@ UI_HTML = """<!doctype html>
             <strong>3D CAD Model</strong>
             <span class="muted">Interactive preview</span>
           </div>
+          <div id="previewProgress" class="preview-progress" aria-live="polite">
+            <div class="preview-progress-head">
+              <span id="previewProgressLabel">Generating CAD model</span>
+              <span id="previewProgressPhase" class="preview-progress-phase">Working</span>
+            </div>
+            <div class="preview-progress-track" aria-hidden="true">
+              <div id="previewProgressFill" class="preview-progress-fill"></div>
+            </div>
+          </div>
           <div class="preview" id="preview">
             <div class="placeholder">
               <p class="muted">Interactive 3D preview will appear here after the CAD intent is parsed.</p>
@@ -842,6 +898,10 @@ UI_HTML = """<!doctype html>
     const activityLabel = document.getElementById("activityLabel");
     const activityPhase = document.getElementById("activityPhase");
     const activityFill = document.getElementById("activityFill");
+    const previewProgress = document.getElementById("previewProgress");
+    const previewProgressLabel = document.getElementById("previewProgressLabel");
+    const previewProgressPhase = document.getElementById("previewProgressPhase");
+    const previewProgressFill = document.getElementById("previewProgressFill");
     const contextFile = document.getElementById("contextFile");
     const uploadContextButton = document.getElementById("uploadContextButton");
     const attachmentList = document.getElementById("attachmentList");
@@ -1089,13 +1149,14 @@ UI_HTML = """<!doctype html>
         width_mm: "width",
         thickness_mm: "thickness",
         chamfer_mm: "chamfer",
-        fillet_mm: "fillet"
+        fillet_mm: "fillet",
+        coil_count: "coils"
       };
       const parts = [];
       for (const [key, label] of Object.entries(labels)) {
         const value = geometry[key];
         if (value !== null && value !== undefined && value !== "") {
-          parts.push(`${label} ${value} mm`);
+          parts.push(key === "coil_count" ? `${value} ${label}` : `${label} ${value} mm`);
         }
       }
       return parts.length ? parts.join(", ") : "No dimensions specified";
@@ -1129,14 +1190,20 @@ UI_HTML = """<!doctype html>
       activityLabel.textContent = label;
       activityPhase.textContent = phases[0] || "Working";
       activityFill.style.width = "10%";
+      previewProgress.className = "preview-progress active";
+      previewProgressLabel.textContent = label;
+      previewProgressPhase.textContent = phases[0] || "Working";
+      previewProgressFill.style.width = "10%";
       let progress = 10;
       let phaseIndex = 0;
       activityTimer = window.setInterval(() => {
         progress = Math.min(progress + 12, 90);
         activityFill.style.width = `${progress}%`;
+        previewProgressFill.style.width = `${progress}%`;
         if (phaseIndex < phases.length - 1 && progress >= (phaseIndex + 1) * 30) {
           phaseIndex += 1;
           activityPhase.textContent = phases[phaseIndex];
+          previewProgressPhase.textContent = phases[phaseIndex];
         }
       }, 700);
     }
@@ -1146,11 +1213,16 @@ UI_HTML = """<!doctype html>
       activityPanel.className = "activity-panel active done";
       activityPhase.textContent = phaseText;
       activityFill.style.width = "100%";
+      previewProgress.className = "preview-progress active done";
+      previewProgressPhase.textContent = phaseText;
+      previewProgressFill.style.width = "100%";
       window.setTimeout(() => {
         activityPanel.className = "activity-panel";
         activityLabel.textContent = "Ready";
         activityPhase.textContent = "Waiting";
         activityFill.style.width = "0%";
+        previewProgress.className = "preview-progress";
+        previewProgressFill.style.width = "0%";
       }, 1400);
     }
 
@@ -1159,6 +1231,9 @@ UI_HTML = """<!doctype html>
       activityPanel.className = "activity-panel active error";
       activityPhase.textContent = phaseText;
       activityFill.style.width = "100%";
+      previewProgress.className = "preview-progress active error";
+      previewProgressPhase.textContent = phaseText;
+      previewProgressFill.style.width = "100%";
     }
 
     function stopActivityTimer() {
@@ -1385,6 +1460,9 @@ UI_HTML = """<!doctype html>
       if (type === "bracket") {
         return createBracketMesh(geometry);
       }
+      if (type === "spring") {
+        return createSpringMesh(geometry);
+      }
       return createUnknownMesh(geometry);
     }
 
@@ -1456,6 +1534,88 @@ UI_HTML = """<!doctype html>
       const thickness = readPositive(geometry.thickness_mm, 50);
       return {
         faces: createBoxFaces(length, thickness, width, { x: 0, y: 0, z: 0 }, "#a0b6d0"),
+      };
+    }
+
+    function createSpringMesh(geometry) {
+      const coilDiameter = readPositive(geometry.outer_diameter_mm, 40);
+      const freeLength = readPositive(geometry.height_mm, 50);
+      const wireDiameter = readPositive(geometry.thickness_mm, Math.max(coilDiameter * 0.08, 2));
+      const coils = Math.max(2, Math.round(readPositive(geometry.coil_count, 6)));
+
+      const coilRadius = Math.max(coilDiameter / 2, wireDiameter);
+      const wireRadius = Math.min(Math.max(wireDiameter / 2, 0.8), coilRadius * 0.45);
+      const segmentsPerCoil = 28;
+      const totalSteps = Math.max(coils * segmentsPerCoil, 32);
+      const tubeSides = 8;
+      const pitch = freeLength / coils;
+      const startY = -freeLength / 2;
+      const color = "#7f9bbd";
+
+      const centerline = [];
+      for (let step = 0; step <= totalSteps; step += 1) {
+        const t = step / segmentsPerCoil;
+        const theta = t * Math.PI * 2;
+        centerline.push({
+          x: coilRadius * Math.cos(theta),
+          y: startY + pitch * t,
+          z: coilRadius * Math.sin(theta),
+        });
+      }
+
+      function ringAt(index) {
+        const point = centerline[index];
+        const next = centerline[Math.min(index + 1, centerline.length - 1)];
+        const prev = centerline[Math.max(index - 1, 0)];
+        const tangent = normalizeVector({
+          x: next.x - prev.x,
+          y: next.y - prev.y,
+          z: next.z - prev.z,
+        });
+        let reference = { x: 0, y: 1, z: 0 };
+        if (Math.abs(tangent.y) > 0.92) {
+          reference = { x: 1, y: 0, z: 0 };
+        }
+        const normal = normalizeVector(crossProduct(tangent, reference));
+        const binormal = normalizeVector(crossProduct(tangent, normal));
+        const ring = [];
+        for (let side = 0; side < tubeSides; side += 1) {
+          const angle = (side / tubeSides) * Math.PI * 2;
+          const cos = Math.cos(angle) * wireRadius;
+          const sin = Math.sin(angle) * wireRadius;
+          ring.push({
+            x: point.x + normal.x * cos + binormal.x * sin,
+            y: point.y + normal.y * cos + binormal.y * sin,
+            z: point.z + normal.z * cos + binormal.z * sin,
+          });
+        }
+        return ring;
+      }
+
+      const faces = [];
+      let previousRing = ringAt(0);
+      for (let index = 1; index < centerline.length; index += 1) {
+        const currentRing = ringAt(index);
+        for (let side = 0; side < tubeSides; side += 1) {
+          const nextSide = (side + 1) % tubeSides;
+          faces.push(
+            makeFace(
+              [previousRing[side], currentRing[side], currentRing[nextSide], previousRing[nextSide]],
+              color
+            )
+          );
+        }
+        previousRing = currentRing;
+      }
+
+      return { faces };
+    }
+
+    function crossProduct(a, b) {
+      return {
+        x: a.y * b.z - a.z * b.y,
+        y: a.z * b.x - a.x * b.z,
+        z: a.x * b.y - a.y * b.x,
       };
     }
 

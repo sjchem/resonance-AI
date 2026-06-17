@@ -20,6 +20,7 @@ class CADGeometry(BaseModel):
     thickness_mm: float | None = None
     chamfer_mm: float | None = None
     fillet_mm: float | None = 0
+    coil_count: int | None = None
 
 
 class CADMaterial(BaseModel):
@@ -47,7 +48,7 @@ class CADPromptOutput(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    part_type: Literal["bushing", "rubber_mount", "plate", "bracket", "unknown"]
+    part_type: Literal["bushing", "rubber_mount", "plate", "bracket", "spring", "unknown"]
     geometry: CADGeometry
     material: CADMaterial
     simulation_hints: SimulationHints
