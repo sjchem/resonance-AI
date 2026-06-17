@@ -26,6 +26,10 @@ class CADGeometry(BaseModel):
     metal_sleeve_thickness_mm: float | None = None
     inner_sleeve_thickness_mm: float | None = None
     bore_offset_mm: float | None = None
+    arm_length_mm: float | None = None
+    arm_width_mm: float | None = None
+    arm_thickness_mm: float | None = None
+    arm_position: Literal["centered", "top", "bottom"] | None = None
 
 
 class CADMaterial(BaseModel):

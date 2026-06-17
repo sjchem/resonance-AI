@@ -1581,6 +1581,8 @@ UI_HTML = """<!doctype html>
       const flangeDiameter = readPositive(geometry.flange_diameter_mm, 0);
       const flangeThickness = readPositive(geometry.flange_thickness_mm, 0);
       const boreOffset = Number(geometry.bore_offset_mm) || 0;
+      const chamferSize = Math.max(0, Number(geometry.chamfer_mm) || 0);
+      const filletSize = Math.max(0, Number(geometry.fillet_mm) || 0);
 
       // Clamp shells so they never overlap.
       const safeSleeveOuter = Math.min(sleeveOuter, (outerRadius - innerRadius) * 0.45);
@@ -1592,6 +1594,17 @@ UI_HTML = """<!doctype html>
       const rRubberInner = innerRadius + safeSleeveInner;
       const rInner = innerRadius;
       const offsetX = Math.max(-Math.abs(rRubberInner - rInner) - (rRubberInner - 1), Math.min(boreOffset, rRubberInner - 1));
+
+      // Clamp edge break so it never collapses the rubber wall or eats the height.
+      const rubberThickness = Math.max(rRubberOuter - rRubberInner, 0.5);
+      const maxEdgeBreak = Math.min(height * 0.45, rubberThickness * 0.45);
+      const safeChamfer = Math.min(chamferSize, maxEdgeBreak);
+      const safeFillet = Math.min(filletSize, maxEdgeBreak);
+      // Fillet wins if both are set; otherwise chamfer.
+      const useFillet = safeFillet > 0;
+      const useChamfer = !useFillet && safeChamfer > 0;
+      const edgeBreak = useFillet ? safeFillet : safeChamfer;
+      const filletSteps = 4;
 
       const colorMetal = "#9aa6b4";
       const colorMetalTop = "#b6c1ce";
@@ -1626,13 +1639,127 @@ UI_HTML = """<!doctype html>
         }
       }
 
+      // Build the side wall as a stack of horizontal rings so chamfers / fillets
+      // can be applied to the top and bottom edges of both the outer and inner walls.
+      function buildProfile() {
+        if (edgeBreak <= 0) {
+          return {
+            outer: [
+              { y: topY, dr: 0 },
+              { y: bottomY, dr: 0 },
+            ],
+            inner: [
+              { y: topY, dr: 0 },
+              { y: bottomY, dr: 0 },
+            ],
+          };
+        }
+        if (useChamfer) {
+          const c = edgeBreak;
+          return {
+            outer: [
+              { y: topY, dr: -c },
+              { y: topY - c, dr: 0 },
+              { y: bottomY + c, dr: 0 },
+              { y: bottomY, dr: -c },
+            ],
+            inner: [
+              { y: topY, dr: c },
+              { y: topY - c, dr: 0 },
+              { y: bottomY + c, dr: 0 },
+              { y: bottomY, dr: c },
+            ],
+          };
+        }
+        // Fillet: quarter-circle sweep with `filletSteps` segments at each corner.
+        const r = edgeBreak;
+        const outer = [];
+        const inner = [];
+        for (let step = 0; step <= filletSteps; step += 1) {
+          const t = step / filletSteps;
+          const angle = (Math.PI / 2) * t;
+          const dx = r - r * Math.cos(angle);
+          const dy = r * Math.sin(angle);
+          outer.push({ y: topY - dy, dr: -dx });
+          inner.push({ y: topY - dy, dr: dx });
+        }
+        for (let step = 0; step <= filletSteps; step += 1) {
+          const t = step / filletSteps;
+          const angle = (Math.PI / 2) * t;
+          const dy = r * Math.sin(angle);
+          const dx = r - r * Math.cos(angle);
+          outer.push({ y: bottomY + dy - 1e-6, dr: -dx });
+          inner.push({ y: bottomY + dy - 1e-6, dr: dx });
+        }
+        // Add the actual bottom edge so the wall closes.
+        outer.push({ y: bottomY, dr: -r });
+        inner.push({ y: bottomY, dr: r });
+        return { outer, inner };
+      }
+
+      // Add a rubber annulus whose outer + inner edges can carry a chamfer or fillet.
+      function addProfiledAnnulus(rOutBase, rInBase, centerOutX, centerInX, color, topColor, bottomColor) {
+        const profile = buildProfile();
+        const outerRings = profile.outer.map((row) => ({
+          y: row.y,
+          radius: Math.max(rOutBase + row.dr, rInBase + 0.4),
+        }));
+        const innerRings = profile.inner.map((row) => ({
+          y: row.y,
+          radius: Math.min(rInBase + row.dr, rOutBase - 0.4),
+        }));
+
+        function sweepWall(rings, centerX, isOuter) {
+          for (let level = 0; level < rings.length - 1; level += 1) {
+            const ringA = rings[level];
+            const ringB = rings[level + 1];
+            for (let index = 0; index < segments; index += 1) {
+              const thetaA = (index / segments) * Math.PI * 2;
+              const thetaB = ((index + 1) / segments) * Math.PI * 2;
+              const a1 = pointOnRing(ringA.radius, thetaA, ringA.y, centerX);
+              const a2 = pointOnRing(ringA.radius, thetaB, ringA.y, centerX);
+              const b1 = pointOnRing(ringB.radius, thetaA, ringB.y, centerX);
+              const b2 = pointOnRing(ringB.radius, thetaB, ringB.y, centerX);
+              const shade = level === 0 || level === rings.length - 2 ? topColor : color;
+              const face = isOuter
+                ? [a1, a2, b2, b1]
+                : [a2, a1, b1, b2];
+              faces.push(makeFace(face, shade));
+            }
+          }
+        }
+
+        sweepWall(outerRings, centerOutX, true);
+        sweepWall(innerRings, centerInX, false);
+
+        // Cap top + bottom annulus rings between the (possibly shrunk) outer/inner edges.
+        const topOuter = outerRings[0];
+        const topInner = innerRings[0];
+        const bottomOuter = outerRings[outerRings.length - 1];
+        const bottomInner = innerRings[innerRings.length - 1];
+        for (let index = 0; index < segments; index += 1) {
+          const thetaA = (index / segments) * Math.PI * 2;
+          const thetaB = ((index + 1) / segments) * Math.PI * 2;
+          const tOA = pointOnRing(topOuter.radius, thetaA, topOuter.y, centerOutX);
+          const tOB = pointOnRing(topOuter.radius, thetaB, topOuter.y, centerOutX);
+          const tIA = pointOnRing(topInner.radius, thetaA, topInner.y, centerInX);
+          const tIB = pointOnRing(topInner.radius, thetaB, topInner.y, centerInX);
+          const bOA = pointOnRing(bottomOuter.radius, thetaA, bottomOuter.y, centerOutX);
+          const bOB = pointOnRing(bottomOuter.radius, thetaB, bottomOuter.y, centerOutX);
+          const bIA = pointOnRing(bottomInner.radius, thetaA, bottomInner.y, centerInX);
+          const bIB = pointOnRing(bottomInner.radius, thetaB, bottomInner.y, centerInX);
+          faces.push(makeFace([tOA, tIA, tIB, tOB], topColor));
+          faces.push(makeFace([bOB, bIB, bIA, bOA], bottomColor));
+        }
+      }
+
       // Outer metal sleeve (bonded).
       if (safeSleeveOuter > 0) {
         addAnnulus(rOuter, rRubberOuter, 0, 0, colorMetal, colorMetalTop, colorMetalBottom);
       }
 
       // Rubber middle layer (the main visible body for Vibracoustic bushings).
-      addAnnulus(rRubberOuter, rRubberInner, 0, offsetX, colorRubber, colorRubberTop, colorRubberBottom);
+      addProfiledAnnulus(rRubberOuter, rRubberInner, 0, offsetX, colorRubber, colorRubberTop, colorRubberBottom);
 
       // Inner metal sleeve (bonded around the bore).
       if (safeSleeveInner > 0) {
@@ -1664,6 +1791,35 @@ UI_HTML = """<!doctype html>
           // Underside ring sitting on the bushing's outer wall
           faces.push(makeFace([outerBottomB, innerBottomB, innerBottomA, outerBottomA], colorMetalBottom));
         }
+      }
+
+      // Optional arm / tab / lug attached to the outside of the bushing.
+      const armLength = readPositive(geometry.arm_length_mm, 0);
+      const armWidth = readPositive(geometry.arm_width_mm, 0);
+      const armThickness = readPositive(geometry.arm_thickness_mm, 0);
+      if (armLength > 0 && armWidth > 0 && armThickness > 0) {
+        const armPosition = geometry.arm_position || "centered";
+        const halfThickness = armThickness / 2;
+        let centerY;
+        if (armPosition === "top") {
+          centerY = topY - halfThickness;
+        } else if (armPosition === "bottom") {
+          centerY = bottomY + halfThickness;
+        } else {
+          centerY = 0;
+        }
+        const armCenterX = rOuter + armLength / 2;
+        // Arm sits along +X, length is radial, width is along Z, thickness is along Y.
+        const armColor = safeSleeveOuter > 0 ? colorMetal : colorRubber;
+        faces.push(
+          ...createBoxFaces(
+            armLength,
+            armThickness,
+            armWidth,
+            { x: armCenterX, y: centerY, z: 0 },
+            armColor
+          )
+        );
       }
 
       return { faces };

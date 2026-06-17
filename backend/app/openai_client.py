@@ -58,6 +58,8 @@ Bushing variants:
 - "rubber-metal bonded", "bonded bushing", or an outer metal sleeve thickness (e.g. "outer sleeve 2 mm") means there is a bonded outer steel sleeve. Map to geometry.metal_sleeve_thickness_mm.
 - An inner steel sleeve / inner pipe (e.g. "inner sleeve 1.5 mm") maps to geometry.inner_sleeve_thickness_mm.
 - "eccentric bore", "offset bore", or "bore offset 3 mm" means the inner bore is shifted from center. Map to geometry.bore_offset_mm.
+- A chamfer or fillet on the bushing edges is applied to BOTH the inner and outer top/bottom edges of the rubber body by default. Use geometry.chamfer_mm or geometry.fillet_mm for the size. If the user is ambiguous about which edges, do not put it in missing_information unless they actually ask.
+- An arm, tab, lug, bracket arm, or side ear attached to the bushing maps to geometry.arm_length_mm, geometry.arm_width_mm, geometry.arm_thickness_mm. "centered on height" / "in the middle" -> arm_position is "centered". "at the top" -> "top". "at the bottom" -> "bottom". If position is not given, default arm_position to "centered".
 
 Spring details:
 - "spring", "compression spring", "coil spring", "helical spring" means part_type is "spring".
