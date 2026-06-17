@@ -21,6 +21,11 @@ class CADGeometry(BaseModel):
     chamfer_mm: float | None = None
     fillet_mm: float | None = 0
     coil_count: int | None = None
+    flange_diameter_mm: float | None = None
+    flange_thickness_mm: float | None = None
+    metal_sleeve_thickness_mm: float | None = None
+    inner_sleeve_thickness_mm: float | None = None
+    bore_offset_mm: float | None = None
 
 
 class CADMaterial(BaseModel):

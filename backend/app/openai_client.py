@@ -45,12 +45,19 @@ Rules:
 Extraction details:
 - "rubber bushing" means part_type is "bushing" and material.name is "rubber".
 - "rubber mount" means part_type is "rubber_mount" and material.name is "rubber".
+- Vibracoustic bushings are almost always rubber or rubber-metal bonded. If the user says "bushing" without a material, set material.name to "rubber" by default. Only use a different material when the user explicitly says steel, aluminum, plastic, etc.
 - "outer diameter 60 mm" means geometry.outer_diameter_mm is 60.
 - "inner diameter 20 mm" means geometry.inner_diameter_mm is 20.
 - "height 40 mm" means geometry.height_mm is 40.
 - "chamfer 2 mm" means geometry.chamfer_mm is 2.
 - "fillet 2 mm" means geometry.fillet_mm is 2.
 - If chamfer or fillet size is given but location is not given, still extract the size. You may add the missing location to missing_information.
+
+Bushing variants:
+- "flanged bushing" or "flange diameter 90 mm" / "flange thickness 5 mm" means the bushing has a flange. Map to geometry.flange_diameter_mm and geometry.flange_thickness_mm.
+- "rubber-metal bonded", "bonded bushing", or an outer metal sleeve thickness (e.g. "outer sleeve 2 mm") means there is a bonded outer steel sleeve. Map to geometry.metal_sleeve_thickness_mm.
+- An inner steel sleeve / inner pipe (e.g. "inner sleeve 1.5 mm") maps to geometry.inner_sleeve_thickness_mm.
+- "eccentric bore", "offset bore", or "bore offset 3 mm" means the inner bore is shifted from center. Map to geometry.bore_offset_mm.
 
 Spring details:
 - "spring", "compression spring", "coil spring", "helical spring" means part_type is "spring".

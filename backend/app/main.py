@@ -662,6 +662,47 @@ UI_HTML = """<!doctype html>
     .preview-progress.error .preview-progress-fill {
       background: linear-gradient(90deg, #d8222a, #ef6a6f);
     }
+    .category-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 10px;
+    }
+    .category-chip {
+      width: auto;
+      margin: 0;
+      padding: 12px 14px;
+      display: grid;
+      gap: 4px;
+      text-align: left;
+      background: #f4f9ff;
+      color: var(--brand);
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      cursor: pointer;
+      transition: background 160ms ease, border-color 160ms ease, transform 160ms ease;
+    }
+    .category-chip strong {
+      font-size: 14px;
+      font-weight: 750;
+      color: var(--brand);
+    }
+    .category-chip span {
+      font-size: 12px;
+      color: var(--muted);
+      font-weight: 500;
+    }
+    .category-chip:hover {
+      background: #e7f0fb;
+      border-color: #b8c8da;
+    }
+    .category-chip.active {
+      background: var(--brand);
+      border-color: var(--brand);
+    }
+    .category-chip.active strong,
+    .category-chip.active span {
+      color: #fff;
+    }
     .summary-box {
       border: 1px solid var(--line);
       border-left: 4px solid var(--accent);
@@ -855,6 +896,38 @@ UI_HTML = """<!doctype html>
       </section>
 
       <section class="stack">
+        <div class="panel" id="categoryPanel">
+          <div class="section-title">
+            <strong>Product family</strong>
+            <span class="muted">Pick to load a starter prompt</span>
+          </div>
+          <div class="category-grid" id="categoryGrid">
+            <button type="button" class="category-chip" data-category="bushing">
+              <strong>Rubber bushing</strong>
+              <span>Suspension &amp; chassis bushings</span>
+            </button>
+            <button type="button" class="category-chip" data-category="bonded-bushing">
+              <strong>Bonded bushing</strong>
+              <span>Rubber-metal bonded sleeve</span>
+            </button>
+            <button type="button" class="category-chip" data-category="flanged-bushing">
+              <strong>Flanged bushing</strong>
+              <span>Bushing with mounting flange</span>
+            </button>
+            <button type="button" class="category-chip" data-category="air-spring">
+              <strong>Air spring</strong>
+              <span>Air suspension element</span>
+            </button>
+            <button type="button" class="category-chip" data-category="coil-spring">
+              <strong>Coil spring</strong>
+              <span>Helical compression spring</span>
+            </button>
+            <button type="button" class="category-chip" data-category="damper">
+              <strong>Damper / decoupler</strong>
+              <span>Vibration damper element</span>
+            </button>
+          </div>
+        </div>
         <div class="panel">
           <div class="section-title">
             <strong>3D CAD Model</strong>
@@ -905,6 +978,7 @@ UI_HTML = """<!doctype html>
     const contextFile = document.getElementById("contextFile");
     const uploadContextButton = document.getElementById("uploadContextButton");
     const attachmentList = document.getElementById("attachmentList");
+    const categoryGrid = document.getElementById("categoryGrid");
     let activeViewer = null;
     let activityTimer = null;
     let requestContext = [];
@@ -927,6 +1001,30 @@ UI_HTML = """<!doctype html>
     chatInput.addEventListener("input", autoResizeChatInput);
     autoResizeChatInput();
     syncChatState();
+
+    const categoryStarters = {
+      "bushing": "I want a rubber suspension bushing. Outer diameter 60 mm, inner diameter 20 mm, height 40 mm. Material: rubber, Shore A 55. Please ask me anything else needed (chamfer, fillet, load direction).",
+      "bonded-bushing": "I want a rubber-metal bonded bushing. Outer diameter 60 mm with a 2 mm outer steel sleeve, inner diameter 20 mm with a 1.5 mm inner steel sleeve, height 40 mm. Rubber Shore A 55 in between. Ask me for any missing details.",
+      "flanged-bushing": "I want a flanged rubber bushing. Outer diameter 50 mm, inner diameter 16 mm, height 35 mm, flange diameter 70 mm, flange thickness 4 mm. Rubber Shore A 60. Ask me for any missing details.",
+      "air-spring": "I want an air spring element for light-vehicle suspension. Top mounting diameter 120 mm, bellows diameter 150 mm, free height 180 mm, internal pressure 6 bar. Ask me for any missing geometry or mounting details.",
+      "coil-spring": "I want a steel compression coil spring. Coil diameter 40 mm, free length 80 mm, wire thickness 4 mm, 8 coils, material steel. Ask me for any missing details.",
+      "damper": "I want a hydraulic damper / decoupler mount. Body diameter 50 mm, height 60 mm, rubber Shore A 50, with an inner steel sleeve 12 mm bore. Ask me for any missing details."
+    };
+
+    categoryGrid.addEventListener("click", (event) => {
+      const button = event.target.closest(".category-chip");
+      if (!button) return;
+      const key = button.dataset.category;
+      const starter = categoryStarters[key];
+      if (!starter) return;
+      for (const chip of categoryGrid.querySelectorAll(".category-chip")) {
+        chip.classList.toggle("active", chip === button);
+      }
+      chatInput.value = starter;
+      autoResizeChatInput();
+      chatInput.focus();
+      chatInput.setSelectionRange(chatInput.value.length, chatInput.value.length);
+    });
 
     chatForm.addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -1473,28 +1571,99 @@ UI_HTML = """<!doctype html>
       const outerRadius = Math.max(outerDiameter / 2, 5);
       const innerRadius = Math.min(Math.max(innerDiameter / 2, 2), outerRadius - 1);
 
-      const segments = 28;
-      const faces = [];
+      const segments = 36;
       const topY = height / 2;
       const bottomY = -height / 2;
-      const color = "#7f9bbd";
 
-      for (let index = 0; index < segments; index += 1) {
-        const thetaA = (index / segments) * Math.PI * 2;
-        const thetaB = ((index + 1) / segments) * Math.PI * 2;
-        const outerTopA = pointOnRing(outerRadius, thetaA, topY);
-        const outerTopB = pointOnRing(outerRadius, thetaB, topY);
-        const outerBottomA = pointOnRing(outerRadius, thetaA, bottomY);
-        const outerBottomB = pointOnRing(outerRadius, thetaB, bottomY);
-        const innerTopA = pointOnRing(innerRadius, thetaA, topY);
-        const innerTopB = pointOnRing(innerRadius, thetaB, topY);
-        const innerBottomA = pointOnRing(innerRadius, thetaA, bottomY);
-        const innerBottomB = pointOnRing(innerRadius, thetaB, bottomY);
+      // Optional Vibracoustic-style features.
+      const sleeveOuter = Math.max(0, geometry.metal_sleeve_thickness_mm || 0);
+      const sleeveInner = Math.max(0, geometry.inner_sleeve_thickness_mm || 0);
+      const flangeDiameter = readPositive(geometry.flange_diameter_mm, 0);
+      const flangeThickness = readPositive(geometry.flange_thickness_mm, 0);
+      const boreOffset = Number(geometry.bore_offset_mm) || 0;
 
-        faces.push(makeFace([outerTopA, outerTopB, outerBottomB, outerBottomA], color));
-        faces.push(makeFace([innerTopB, innerTopA, innerBottomA, innerBottomB], "#6f89a8"));
-        faces.push(makeFace([outerTopA, innerTopA, innerTopB, outerTopB], "#97b3cf"));
-        faces.push(makeFace([outerBottomB, innerBottomB, innerBottomA, outerBottomA], "#6681a2"));
+      // Clamp shells so they never overlap.
+      const safeSleeveOuter = Math.min(sleeveOuter, (outerRadius - innerRadius) * 0.45);
+      const safeSleeveInner = Math.min(sleeveInner, (outerRadius - innerRadius) * 0.45);
+
+      // Concentric shell radii (outer -> inner).
+      const rOuter = outerRadius;
+      const rRubberOuter = outerRadius - safeSleeveOuter;
+      const rRubberInner = innerRadius + safeSleeveInner;
+      const rInner = innerRadius;
+      const offsetX = Math.max(-Math.abs(rRubberInner - rInner) - (rRubberInner - 1), Math.min(boreOffset, rRubberInner - 1));
+
+      const colorMetal = "#9aa6b4";
+      const colorMetalTop = "#b6c1ce";
+      const colorMetalBottom = "#7f8a98";
+      const colorRubber = "#3b3a3a";
+      const colorRubberTop = "#525151";
+      const colorRubberBottom = "#2a2929";
+
+      const faces = [];
+
+      // Add a coaxial annulus shell: side walls + top/bottom rings.
+      function addAnnulus(rOut, rIn, centerOutX, centerInX, color, topColor, bottomColor) {
+        for (let index = 0; index < segments; index += 1) {
+          const thetaA = (index / segments) * Math.PI * 2;
+          const thetaB = ((index + 1) / segments) * Math.PI * 2;
+          const outerTopA = pointOnRing(rOut, thetaA, topY, centerOutX);
+          const outerTopB = pointOnRing(rOut, thetaB, topY, centerOutX);
+          const outerBottomA = pointOnRing(rOut, thetaA, bottomY, centerOutX);
+          const outerBottomB = pointOnRing(rOut, thetaB, bottomY, centerOutX);
+          const innerTopA = pointOnRing(rIn, thetaA, topY, centerInX);
+          const innerTopB = pointOnRing(rIn, thetaB, topY, centerInX);
+          const innerBottomA = pointOnRing(rIn, thetaA, bottomY, centerInX);
+          const innerBottomB = pointOnRing(rIn, thetaB, bottomY, centerInX);
+          // Outer wall
+          faces.push(makeFace([outerTopA, outerTopB, outerBottomB, outerBottomA], color));
+          // Inner wall (reversed winding so the bore looks correct)
+          faces.push(makeFace([innerTopB, innerTopA, innerBottomA, innerBottomB], shadeColor(color, 0.85)));
+          // Top annular ring
+          faces.push(makeFace([outerTopA, innerTopA, innerTopB, outerTopB], topColor));
+          // Bottom annular ring
+          faces.push(makeFace([outerBottomB, innerBottomB, innerBottomA, outerBottomA], bottomColor));
+        }
+      }
+
+      // Outer metal sleeve (bonded).
+      if (safeSleeveOuter > 0) {
+        addAnnulus(rOuter, rRubberOuter, 0, 0, colorMetal, colorMetalTop, colorMetalBottom);
+      }
+
+      // Rubber middle layer (the main visible body for Vibracoustic bushings).
+      addAnnulus(rRubberOuter, rRubberInner, 0, offsetX, colorRubber, colorRubberTop, colorRubberBottom);
+
+      // Inner metal sleeve (bonded around the bore).
+      if (safeSleeveInner > 0) {
+        addAnnulus(rRubberInner, rInner, offsetX, offsetX, colorMetal, colorMetalTop, colorMetalBottom);
+      } else if (safeSleeveOuter > 0) {
+        // Bore wall when only outer sleeve is set so the inside still looks like a hole.
+        addAnnulus(rRubberInner, Math.max(rInner, 0.5), offsetX, offsetX, colorRubber, colorRubberTop, colorRubberBottom);
+      }
+
+      // Optional flange (a thin disk sitting on top of the bushing).
+      if (flangeDiameter > outerDiameter && flangeThickness > 0) {
+        const flangeOuterRadius = flangeDiameter / 2;
+        const flangeTopY = topY + flangeThickness;
+        for (let index = 0; index < segments; index += 1) {
+          const thetaA = (index / segments) * Math.PI * 2;
+          const thetaB = ((index + 1) / segments) * Math.PI * 2;
+          const outerTopA = pointOnRing(flangeOuterRadius, thetaA, flangeTopY);
+          const outerTopB = pointOnRing(flangeOuterRadius, thetaB, flangeTopY);
+          const outerBottomA = pointOnRing(flangeOuterRadius, thetaA, topY);
+          const outerBottomB = pointOnRing(flangeOuterRadius, thetaB, topY);
+          const innerTopA = pointOnRing(rInner, thetaA, flangeTopY, offsetX);
+          const innerTopB = pointOnRing(rInner, thetaB, flangeTopY, offsetX);
+          const innerBottomA = pointOnRing(rOuter, thetaA, topY);
+          const innerBottomB = pointOnRing(rOuter, thetaB, topY);
+          // Outer wall of flange
+          faces.push(makeFace([outerTopA, outerTopB, outerBottomB, outerBottomA], colorMetal));
+          // Top face (annulus around the bore)
+          faces.push(makeFace([outerTopA, innerTopA, innerTopB, outerTopB], colorMetalTop));
+          // Underside ring sitting on the bushing's outer wall
+          faces.push(makeFace([outerBottomB, innerBottomB, innerBottomA, outerBottomA], colorMetalBottom));
+        }
       }
 
       return { faces };
@@ -1647,9 +1816,10 @@ UI_HTML = """<!doctype html>
       return { points, color };
     }
 
-    function pointOnRing(radius, angle, y) {
+    function pointOnRing(radius, angle, y, centerX) {
+      const cx = centerX || 0;
       return {
-        x: Math.cos(angle) * radius,
+        x: cx + Math.cos(angle) * radius,
         y,
         z: Math.sin(angle) * radius,
       };
