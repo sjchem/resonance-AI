@@ -3,16 +3,27 @@
 from __future__ import annotations
 
 from app.cad_preview import build_preview_svg
-from app.openai_client import parse_cad_prompt
-from app.schemas import CADChatResponse, CADPromptOutput
+from app.openai_client import (
+    OpenAIConfigurationError,
+    OpenAIRequestError,
+    chat_reply,
+    parse_cad_prompt,
+)
+from app.schemas import CADChatResponse, CADPromptOutput, ChatMessage
 
 
-async def respond_to_cad_chat(message: str, prompt: str) -> CADChatResponse:
+async def respond_to_cad_chat(
+    message: str,
+    prompt: str,
+    history: list[ChatMessage] | None = None,
+) -> CADChatResponse:
     """Return a conversational reply plus the current CAD intent state."""
 
+    history = history or []
     parsed = await parse_cad_prompt(prompt)
     preview_ready = parsed.part_type != "unknown"
-    assistant_message = _build_assistant_message(parsed, message, preview_ready)
+
+    assistant_message = await _build_conversational_message(parsed, message, history)
     preview_svg = build_preview_svg(parsed) if preview_ready else None
     return CADChatResponse(
         assistant_message=assistant_message,
@@ -20,6 +31,27 @@ async def respond_to_cad_chat(message: str, prompt: str) -> CADChatResponse:
         preview_ready=preview_ready,
         preview_svg=preview_svg,
     )
+
+
+async def _build_conversational_message(
+    parsed: CADPromptOutput,
+    message: str,
+    history: list[ChatMessage],
+) -> str:
+    """Generate a natural chat reply, falling back to a templated one on failure."""
+
+    turns = [{"role": turn.role, "content": turn.content} for turn in history]
+    if not turns or turns[-1].get("content") != message:
+        turns.append({"role": "user", "content": message})
+
+    try:
+        reply = await chat_reply(turns, parsed.model_dump_json(indent=2))
+    except (OpenAIConfigurationError, OpenAIRequestError):
+        reply = None
+
+    if reply:
+        return reply
+    return _build_assistant_message(parsed, message, parsed.part_type != "unknown")
 
 
 def _build_assistant_message(parsed: CADPromptOutput, message: str, preview_ready: bool) -> str:

@@ -53,6 +53,34 @@ Extraction details:
 - If chamfer or fillet size is given but location is not given, still extract the size. You may add the missing location to missing_information.
 """
 
+CHAT_SYSTEM_PROMPT = """You are Resonance AI, a friendly and concise CAD engineering assistant for \
+vibroacoustic and mechanical components (bushings, rubber mounts, plates, brackets).
+
+You are having a natural, interactive conversation with an engineer, similar to ChatGPT or Claude. \
+Your job is to guide them step by step toward a complete CAD intent before the model is generated.
+
+You will be given the conversation so far and the current parsed CAD intent (as JSON). Reply with a \
+short, natural chat message. Follow this conversational flow:
+
+1. First, briefly acknowledge what the user said and confirm your understanding of the part and any \
+dimensions captured so far.
+2. If important details are still missing (dimensions, shape, material grade/Shore A, chamfer/fillet, \
+holes, features), ask for them — but ask only for the 2-3 most important missing items at a time, as a \
+short friendly question. Do not dump a long list.
+3. Once you have the part type and the core dimensions needed to build it, summarize the full spec in \
+one or two lines and ask the user to confirm, e.g. "Shall I go ahead and generate this CAD model? \
+Reply 'proceed' to confirm."
+4. If the user confirms (proceed / yes / go ahead / generate), reply that you are generating the CAD \
+model now and that the preview and structured JSON are updated on the right.
+
+Rules:
+- Be warm, conversational, and brief (2-5 sentences). Use plain language, not bullet dumps.
+- Ask follow-up questions naturally instead of listing every missing field.
+- Never output JSON or code. Just the chat message.
+- If the user changes or corrects something, acknowledge the change and continue.
+- If the part is still unknown, ask the user what kind of part it is.
+"""
+
 
 class OpenAIConfigurationError(RuntimeError):
     """Raised when OpenAI or Azure OpenAI configuration is missing."""
@@ -118,6 +146,53 @@ async def parse_cad_prompt(prompt: str) -> CADPromptOutput:
         return CADPromptOutput.model_validate(parsed)
     except ValidationError as exc:
         raise CADValidationError(str(exc)) from exc
+
+
+async def chat_reply(
+    history: list[dict[str, str]],
+    cad_intent_json: str,
+) -> str | None:
+    """Generate a natural, conversational assistant reply for the chat panel.
+
+    `history` is a list of {"role": "user"|"assistant", "content": str} turns, with the
+    latest user message last. `cad_intent_json` is the current parsed CAD intent so the
+    model can ground its reply in what has actually been captured.
+    """
+
+    client, model, provider = _build_client()
+
+    context_message = {
+        "role": "system",
+        "content": (
+            "Current parsed CAD intent (JSON). Use this to decide what is already known "
+            "and what is still missing:\n" + cad_intent_json
+        ),
+    }
+    messages = [
+        {"role": "system", "content": CHAT_SYSTEM_PROMPT},
+        context_message,
+        *history,
+    ]
+
+    try:
+        completion = await client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=0.4,
+        )
+    except AuthenticationError as exc:
+        raise OpenAIConfigurationError(
+            "OpenAI authentication failed. Check the configured API key."
+        ) from exc
+    except APIConnectionError as exc:
+        raise OpenAIRequestError("Could not connect to the OpenAI API.") from exc
+    except APIStatusError as exc:
+        raise OpenAIRequestError(f"OpenAI API error {exc.status_code}: {exc.message}") from exc
+    except OpenAIError as exc:
+        raise OpenAIRequestError(str(exc)) from exc
+
+    content = completion.choices[0].message.content
+    return content.strip() if content else None
 
 
 async def _parse_with_openai_responses(

@@ -1,21 +1,25 @@
 # VC.ResonanceAI
 
-Local prototype for a text-to-CAD plus simulation-surrogate workflow.
+POC for a text-to-CAD plus simulation-surrogate workflow.
 
 ## OpenAI CAD Prompt Parser
 
 This POC backend uses Azure OpenAI or the public OpenAI API with Structured
 Outputs. It converts a natural-language CAD prompt into validated structured
-JSON and returns a simple CAD-style SVG preview.
+JSON and returns an interactive preview in the web app.
 
-For Azure OpenAI, configure:
+For Azure deployment, configure:
 
 ```text
 AZURE_OPENAI_API_KEY=<your-azure-openai-key>
-AZURE_OPENAI_ENDPOINT=https://<resource-name>.openai.azure.com
+AZURE_OPENAI_ENDPOINT=https://<resource-name>.services.ai.azure.com/
 AZURE_OPENAI_DEPLOYMENT=<deployment-name>
 AZURE_OPENAI_API_VERSION=2024-10-21
 ```
+
+The app also accepts an Azure AI Foundry project URL such as
+`https://<resource-name>.services.ai.azure.com/api/projects/<project-name>`.
+It normalizes that to the OpenAI-compatible inference base automatically.
 
 For the public OpenAI API instead, configure:
 
@@ -64,7 +68,7 @@ curl -X POST http://localhost:8000/generate-cad \
   }'
 ```
 
-Open the local UI:
+Open the UI locally only if you need to test the same flow as the deployed POC:
 
 ```text
 http://localhost:8000/ui
@@ -179,6 +183,101 @@ Open the Phase B viewer:
 ```bash
 python -m text_to_cad.open_viewer outputs/phase_b/bracket/viewer.html
 ```
+
+## Phase C: Simulation (STEP to natural frequencies)
+
+Phase C runs a local NVH modal analysis on any generated STEP file using the
+open-source toolchain: **Gmsh** for meshing and **CalculiX** for solving. The
+full workflow is:
+
+```text
+STEP -> tetra mesh (Gmsh) -> clean -> quality check -> CalculiX modal -> frequencies (Hz)
+```
+
+### System dependencies
+
+The mesher and solver are native tools, not pip packages:
+
+```bash
+sudo apt-get install -y libglu1-mesa calculix-ccx
+pip install -r requirements.txt
+```
+
+`libglu1-mesa` is required by the Gmsh Python binding; `calculix-ccx` provides
+the `ccx` solver.
+
+### One command: full pipeline
+
+```bash
+python -m simulate.pipeline outputs/phase_a/bracket/bracket.step \
+  --output-dir outputs/simulation/bracket \
+  --modes 8 \
+  --boundary fixed_bottom
+```
+
+The material is auto-detected from a sibling `spec.json` (`material_hint`) when
+present, or set it explicitly with `--material steel`. Boundary presets are
+`free`, `fixed_bottom`, `fixed_top`, and `encastre`.
+
+Expected output:
+
+```text
+[1/5] Meshing bracket.step ...
+[2/5] Cleaning mesh ...
+[3/5] Checking mesh quality ...
+[4/5] Solving modal analysis with CalculiX (steel) ...
+[5/5] Extracting natural frequencies ...
+
+Natural frequencies from bracket.dat:
+  Mode  1:   3155.654 Hz
+  ...
+Fundamental flexible frequency: 3155.654 Hz
+```
+
+Generated files in the output directory:
+
+```text
+outputs/simulation/bracket/
+├── bracket.msh          # Gmsh volume mesh
+├── bracket_clean.vtk    # cleaned mesh
+├── bracket.inp          # CalculiX input deck
+├── bracket.dat          # solver eigenvalue output
+├── bracket.frd          # mode shapes (open in ParaView / CalculiX cgx)
+└── bracket_modal.json   # parsed natural frequencies
+```
+
+### Individual stages
+
+Each stage is also runnable on its own:
+
+```bash
+# 1. STEP -> volume mesh
+python -m geometry.step_to_mesh outputs/phase_a/bracket/bracket.step outputs/simulation/bracket/bracket.msh
+
+# 2. Clean the mesh
+python -m geometry.mesh_cleaner outputs/simulation/bracket/bracket.msh outputs/simulation/bracket/bracket_clean.vtk
+
+# 3. Check mesh quality
+python -m geometry.mesh_quality outputs/simulation/bracket/bracket_clean.vtk
+
+# 4. Run the modal solver
+python -m simulate.modal_solver outputs/simulation/bracket/bracket_clean.vtk --material steel --modes 8
+
+# 5. Parse natural frequencies
+python -m simulate.results outputs/simulation/bracket/modal.dat --json report.json
+```
+
+### Visualize mode shapes
+
+Open the `.frd` file in [ParaView](https://www.paraview.org/) or CalculiX `cgx`:
+
+```bash
+cgx -o outputs/simulation/bracket/bracket.frd
+```
+
+> Units: geometry is in millimetres, so the solver uses a tonne-mm-s unit
+> system and natural frequencies are reported directly in Hz. Rubber/EPDM are
+> modelled as soft linear-elastic solids for a first-pass estimate.
 
 ## Resonance CAD MCP Server
 

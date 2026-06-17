@@ -62,6 +62,15 @@ class CADPromptRequest(BaseModel):
     prompt: str = Field(min_length=1)
 
 
+class ChatMessage(BaseModel):
+    """A single turn in the engineering chat conversation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    role: Literal["user", "assistant"]
+    content: str
+
+
 class CADChatRequest(BaseModel):
     """Incoming engineering chat message plus compiled CAD context."""
 
@@ -69,6 +78,7 @@ class CADChatRequest(BaseModel):
 
     message: str = Field(min_length=1)
     prompt: str = Field(min_length=1)
+    history: list[ChatMessage] = Field(default_factory=list)
 
 
 class CADChatResponse(BaseModel):

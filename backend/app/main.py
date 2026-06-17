@@ -68,7 +68,7 @@ async def chat_cad(request: CADChatRequest) -> CADChatResponse:
     """Return an interactive chat reply plus the current CAD state."""
 
     try:
-        return await respond_to_cad_chat(request.message, request.prompt)
+        return await respond_to_cad_chat(request.message, request.prompt, request.history)
     except OpenAIConfigurationError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except OpenAIRequestError as exc:
@@ -850,6 +850,7 @@ UI_HTML = """<!doctype html>
     let requestContext = [];
     let attachmentContexts = [];
     let pendingDraftPrompt = "";
+    let chatHistory = [];
 
     uploadContextButton.addEventListener("click", uploadContextFile);
     contextFile.addEventListener("change", () => {
@@ -872,6 +873,7 @@ UI_HTML = """<!doctype html>
       const text = chatInput.value.trim();
       if (!text) return;
       appendMsg("user", text);
+      chatHistory.push({role: "user", content: text});
       const approvedDraft = pendingDraftPrompt && isApproval(text);
       const requestText = approvedDraft ? pendingDraftPrompt : text;
       requestContext.push(requestText);
@@ -893,7 +895,7 @@ UI_HTML = """<!doctype html>
         const response = await fetch("/chat-cad", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({message: text, prompt})
+          body: JSON.stringify({message: text, prompt, history: chatHistory.slice(0, -1)})
         });
         const payload = await response.json();
         if (!response.ok) {
@@ -915,6 +917,7 @@ UI_HTML = """<!doctype html>
         }
         updateSummary(intent);
         thinking.textContent = payload.assistant_message || formatChatSummary(intent);
+        chatHistory.push({role: "assistant", content: thinking.textContent});
         completeActivity(previewReady ? "Preview updated" : "More detail needed");
       } catch (error) {
         thinking.classList.add("err");

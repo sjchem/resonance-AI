@@ -17,3 +17,8 @@ numpy
 pandas
 scikit-learn
 jupyterlab
+
+# Phase C simulation requires native (non-pip) system packages:
+#   sudo apt-get install -y libglu1-mesa calculix-ccx
+# libglu1-mesa: shared library needed by the gmsh Python binding
+# calculix-ccx: the 'ccx' finite-element solver used by simulate.modal_solver
