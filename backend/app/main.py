@@ -1793,12 +1793,33 @@ UI_HTML = """<!doctype html>
         }
       }
 
-      // Optional arm / tab / lug attached to the outside of the bushing.
-      const armLength = readPositive(geometry.arm_length_mm, 0);
-      const armWidth = readPositive(geometry.arm_width_mm, 0);
-      const armThickness = readPositive(geometry.arm_thickness_mm, 0);
-      if (armLength > 0 && armWidth > 0 && armThickness > 0) {
-        const armPosition = geometry.arm_position || "centered";
+      // Arms / tabs / lugs attached to the outside of the bushing.
+      // Prefer the new list (geometry.arms); fall back to the legacy single-arm fields.
+      const armColor = safeSleeveOuter > 0 ? colorMetal : colorRubber;
+      const armList = Array.isArray(geometry.arms) ? geometry.arms.slice() : [];
+      if (armList.length === 0) {
+        const legacyLength = readPositive(geometry.arm_length_mm, 0);
+        const legacyWidth = readPositive(geometry.arm_width_mm, 0);
+        const legacyThickness = readPositive(geometry.arm_thickness_mm, 0);
+        if (legacyLength > 0 && legacyWidth > 0 && legacyThickness > 0) {
+          armList.push({
+            length_mm: legacyLength,
+            width_mm: legacyWidth,
+            thickness_mm: legacyThickness,
+            angle_deg: 0,
+            position: geometry.arm_position || "centered",
+          });
+        }
+      }
+
+      for (const arm of armList) {
+        const armLength = readPositive(arm.length_mm, 0);
+        const armWidth = readPositive(arm.width_mm, 0);
+        const armThickness = readPositive(arm.thickness_mm, 0);
+        if (armLength <= 0 || armWidth <= 0 || armThickness <= 0) {
+          continue;
+        }
+        const armPosition = arm.position || "centered";
         const halfThickness = armThickness / 2;
         let centerY;
         if (armPosition === "top") {
@@ -1809,17 +1830,87 @@ UI_HTML = """<!doctype html>
           centerY = 0;
         }
         const armCenterX = rOuter + armLength / 2;
-        // Arm sits along +X, length is radial, width is along Z, thickness is along Y.
-        const armColor = safeSleeveOuter > 0 ? colorMetal : colorRubber;
-        faces.push(
-          ...createBoxFaces(
-            armLength,
-            armThickness,
-            armWidth,
-            { x: armCenterX, y: centerY, z: 0 },
-            armColor
-          )
+        const boxFaces = createBoxFaces(
+          armLength,
+          armThickness,
+          armWidth,
+          { x: armCenterX, y: centerY, z: 0 },
+          armColor
         );
+        const angleRad = ((Number(arm.angle_deg) || 0) * Math.PI) / 180;
+        if (Math.abs(angleRad) < 1e-6) {
+          faces.push(...boxFaces);
+        } else {
+          const cos = Math.cos(angleRad);
+          const sin = Math.sin(angleRad);
+          const rotated = boxFaces.map((face) => ({
+            color: face.color,
+            points: face.points.map((p) => ({
+              x: p.x * cos + p.z * sin,
+              y: p.y,
+              z: -p.x * sin + p.z * cos,
+            })),
+          }));
+          faces.push(...rotated);
+        }
+      }
+
+      // Bolt holes through the top face (visualized as dark cylindrical pockets).
+      const holeList = Array.isArray(geometry.holes) ? geometry.holes : [];
+      const topPlateY = flangeDiameter > outerDiameter && flangeThickness > 0
+        ? topY + flangeThickness
+        : topY;
+      const holeColor = "#1b1b1b";
+      const holeSides = 16;
+      for (const hole of holeList) {
+        const holeDiameter = readPositive(hole.diameter_mm, 0);
+        const pcd = readPositive(hole.pitch_circle_diameter_mm, 0);
+        const count = Math.max(1, Math.round(Number(hole.count) || 1));
+        const startAngle = ((Number(hole.start_angle_deg) || 0) * Math.PI) / 180;
+        if (holeDiameter <= 0 || pcd <= 0) {
+          continue;
+        }
+        const holeRadius = holeDiameter / 2;
+        const pcdRadius = pcd / 2;
+        const holeDepth = Math.max(flangeThickness, 1.5);
+        const holeTopY = topPlateY + 0.05;
+        const holeBottomY = topPlateY - holeDepth;
+        for (let pick = 0; pick < count; pick += 1) {
+          const angle = startAngle + (pick / count) * Math.PI * 2;
+          const cx = Math.cos(angle) * pcdRadius;
+          const cz = Math.sin(angle) * pcdRadius;
+          for (let side = 0; side < holeSides; side += 1) {
+            const a = (side / holeSides) * Math.PI * 2;
+            const b = ((side + 1) / holeSides) * Math.PI * 2;
+            const ax = cx + Math.cos(a) * holeRadius;
+            const az = cz + Math.sin(a) * holeRadius;
+            const bx = cx + Math.cos(b) * holeRadius;
+            const bz = cz + Math.sin(b) * holeRadius;
+            // Pocket side wall
+            faces.push(
+              makeFace(
+                [
+                  { x: ax, y: holeTopY, z: az },
+                  { x: bx, y: holeTopY, z: bz },
+                  { x: bx, y: holeBottomY, z: bz },
+                  { x: ax, y: holeBottomY, z: az },
+                ],
+                holeColor
+              )
+            );
+            // Pocket floor wedge
+            faces.push(
+              makeFace(
+                [
+                  { x: cx, y: holeBottomY, z: cz },
+                  { x: ax, y: holeBottomY, z: az },
+                  { x: bx, y: holeBottomY, z: bz },
+                ],
+                "#0e0e0e"
+              )
+            );
+          }
+        }
       }
 
       return { faces };

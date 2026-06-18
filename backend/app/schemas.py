@@ -7,6 +7,29 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class BushingArm(BaseModel):
+    """A small arm / tab / lug attached to the outside of a bushing."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    length_mm: float
+    width_mm: float
+    thickness_mm: float
+    angle_deg: float = 0.0
+    position: Literal["centered", "top", "bottom"] = "centered"
+
+
+class BushingHole(BaseModel):
+    """A through hole on a bushing (typically on the flange or top face)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    diameter_mm: float
+    pitch_circle_diameter_mm: float
+    count: int = 1
+    start_angle_deg: float = 0.0
+
+
 class CADGeometry(BaseModel):
     """Normalized dimensions extracted from a CAD prompt."""
 
@@ -30,6 +53,8 @@ class CADGeometry(BaseModel):
     arm_width_mm: float | None = None
     arm_thickness_mm: float | None = None
     arm_position: Literal["centered", "top", "bottom"] | None = None
+    arms: list[BushingArm] = Field(default_factory=list)
+    holes: list[BushingHole] = Field(default_factory=list)
 
 
 class CADMaterial(BaseModel):

@@ -61,6 +61,18 @@ Bushing variants:
 - A chamfer or fillet on the bushing edges is applied to BOTH the inner and outer top/bottom edges of the rubber body by default. Use geometry.chamfer_mm or geometry.fillet_mm for the size. If the user is ambiguous about which edges, do not put it in missing_information unless they actually ask.
 - An arm, tab, lug, bracket arm, or side ear attached to the bushing maps to geometry.arm_length_mm, geometry.arm_width_mm, geometry.arm_thickness_mm. "centered on height" / "in the middle" -> arm_position is "centered". "at the top" -> "top". "at the bottom" -> "bottom". If position is not given, default arm_position to "centered".
 
+Multiple arms (geometry.arms):
+- When the user wants more than one arm, OR an arm at a specific angle, OR arms on opposite sides, populate geometry.arms with one entry per arm (do NOT use the legacy arm_* fields).
+- Each entry has length_mm, width_mm, thickness_mm, angle_deg (0 = +X, 90 = +Z, 180 = -X, 270 = -Z, measured around the bushing axis), and position (centered/top/bottom).
+- "opposite side" / "180 degrees apart" -> two entries with angle_deg 0 and 180 sharing the same size/position.
+- "three arms equally spaced" -> three entries at 0, 120, 240.
+- "four arms equally spaced" -> four entries at 0, 90, 180, 270.
+- If the user says "add another arm same size on the opposite side", read the existing arm from the prior conversation/JSON and emit TWO entries: one at the original angle (0 if not stated) and one at angle + 180. Always re-emit the full arms list, not just the new arm.
+
+Bolt holes (geometry.holes):
+- When the user asks for bolt holes / mounting holes / fixing holes on a flange or on the top face, populate geometry.holes with one entry per hole pattern.
+- Each entry has diameter_mm, pitch_circle_diameter_mm (the PCD), count, and start_angle_deg. "4 M8 holes on a 50 mm PCD" -> diameter_mm 8.5, pitch_circle_diameter_mm 50, count 4, start_angle_deg 0.
+
 Spring details:
 - "spring", "compression spring", "coil spring", "helical spring" means part_type is "spring".
 - The coil/mean diameter (e.g. "coil diameter 40 mm" or "radius 2 cm") maps to geometry.outer_diameter_mm (convert radius to diameter, cm to mm).
