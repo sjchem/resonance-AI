@@ -71,7 +71,7 @@ def _generate(prompt: str, name: str, provider: str) -> dict[str, Any]:
             prompt=prompt,
             output_dir=output_dir,
             output_name=output_name,
-            provider=provider if provider in {"auto", "azure", "ollama", "fallback"} else "auto",
+            provider=provider if provider in {"auto", "azure", "fallback"} else "auto",
             execute=True,
         )
     except Exception as exc:
@@ -110,7 +110,6 @@ def _page(
         for value, label in [
             ("auto", "Auto: Azure when configured, fallback otherwise"),
             ("azure", "Azure OpenAI"),
-            ("ollama", "Ollama Qwen2.5-Coder"),
             ("fallback", "Deterministic fallback"),
         ]
     )

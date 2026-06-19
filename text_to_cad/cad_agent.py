@@ -22,7 +22,6 @@ try:
         LlmConfigurationError,
         azure_openai_configured,
         generate_json_with_azure,
-        generate_json_with_ollama,
         load_prompt_template,
     )
     from text_to_cad.viewer import write_viewer
@@ -37,7 +36,6 @@ except ModuleNotFoundError:
         LlmConfigurationError,
         azure_openai_configured,
         generate_json_with_azure,
-        generate_json_with_ollama,
         load_prompt_template,
     )
     from viewer import write_viewer
@@ -94,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--name", default=None, help="Output basename for STEP/STL files.")
     parser.add_argument(
         "--provider",
-        choices=("auto", "azure", "ollama", "fallback"),
+        choices=("auto", "azure", "fallback"),
         default="auto",
         help="CAD document source. auto uses Azure when configured, otherwise fallback.",
     )
@@ -123,11 +121,6 @@ def create_document_for_prompt(prompt: str, output_name: str, provider: str = "a
 
 
 def _create_document(prompt: str, output_name: str, provider: str) -> tuple[AgentCadDocument, str]:
-    if provider == "ollama":
-        system_prompt = augment_system_prompt(load_prompt_template(DEFAULT_SYSTEM_PROMPT))
-        payload = generate_json_with_ollama(system_prompt, prompt)
-        return AgentCadDocument.model_validate(payload), "ollama"
-
     use_azure = provider == "azure" or (provider == "auto" and azure_openai_configured())
     if use_azure:
         try:

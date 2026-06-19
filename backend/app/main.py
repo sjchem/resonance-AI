@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import re
+import sys
+import tempfile
+from pathlib import Path
+
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 
 from app.cad_preview import build_preview_svg
 from app.chat_logic import respond_to_cad_chat
@@ -110,6 +115,61 @@ async def upload_context(file: UploadFile = File(...)) -> UploadContext:
         raise HTTPException(status_code=413, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"Could not read uploaded file: {exc}") from exc
+
+
+def _safe_export_name(name: str) -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9_-]+", "_", (name or "model").strip()).strip("_")
+    return cleaned[:60] or "model"
+
+
+@app.post("/export/step")
+async def export_step(payload: dict) -> FileResponse:
+    """Generate a real STEP file from the CAD prompt via the CadQuery pipeline.
+
+    STEP is a B-Rep exchange format that cannot be produced from the browser
+    preview mesh, so it is generated server-side. This requires the optional
+    CadQuery dependency; when it is not installed the endpoint returns 501 and
+    the UI falls back to the client-side formats (STL, GLB, DXF, PNG, PDF, JSON).
+    """
+
+    prompt = str(payload.get("prompt", "")).strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="A prompt is required to generate a STEP file.")
+
+    name = _safe_export_name(str(payload.get("name", "model")))
+
+    repo_root = Path(__file__).resolve().parents[2]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+
+    try:
+        from text_to_cad.cad_agent import generate_with_agent
+    except ModuleNotFoundError as exc:
+        raise HTTPException(
+            status_code=501,
+            detail=(
+                "STEP export needs the CadQuery pipeline, which is not installed in this "
+                "deployment. Use STL, GLB, DXF, PNG, PDF, or JSON instead."
+            ),
+        ) from exc
+
+    output_dir = Path(tempfile.mkdtemp(prefix="resonance_step_"))
+    try:
+        code = generate_with_agent(
+            prompt=prompt,
+            output_dir=output_dir,
+            output_name=name,
+            provider="auto",
+            execute=True,
+        )
+    except Exception as exc:  # noqa: BLE001 - surface any pipeline failure to the client
+        raise HTTPException(status_code=500, detail=f"STEP generation failed: {exc}") from exc
+
+    step_path = output_dir / f"{name}.step"
+    if code != 0 or not step_path.exists():
+        raise HTTPException(status_code=500, detail="STEP generation did not produce a file.")
+
+    return FileResponse(step_path, media_type="application/step", filename=f"{name}.step")
 
 
 UI_HTML = """<!doctype html>
@@ -293,6 +353,76 @@ UI_HTML = """<!doctype html>
       color: var(--brand);
       font-size: 16px;
     }
+    .title-head {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .download {
+      position: relative;
+    }
+    .download-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      border: 1px solid var(--line, #d8e0ea);
+      background: #fff;
+      color: var(--brand);
+      font: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      padding: 7px 12px;
+      border-radius: 9px;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    .download-btn:hover { background: #f3f6fb; }
+    .download-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .download-btn .chev { font-size: 10px; }
+    .download-menu {
+      position: absolute;
+      top: calc(100% + 6px);
+      right: 0;
+      z-index: 30;
+      width: 290px;
+      background: #fff;
+      border: 1px solid var(--line, #d8e0ea);
+      border-radius: 12px;
+      box-shadow: 0 18px 40px rgba(15, 36, 64, 0.18);
+      padding: 8px;
+      display: none;
+    }
+    .download-menu.open { display: block; }
+    .download-group + .download-group {
+      margin-top: 6px;
+      border-top: 1px solid #eef2f7;
+      padding-top: 6px;
+    }
+    .download-group-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      padding: 4px 8px;
+    }
+    .download-item {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      width: 100%;
+      text-align: left;
+      border: none;
+      background: none;
+      font: inherit;
+      padding: 8px;
+      border-radius: 8px;
+      cursor: pointer;
+      color: var(--ink, #1c2733);
+    }
+    .download-item:hover { background: #f3f6fb; }
+    .download-item .fmt { font-weight: 700; font-size: 13px; min-width: 44px; }
+    .download-item .desc { font-size: 12px; color: var(--muted); }
+    .download-item:disabled { opacity: 0.5; cursor: not-allowed; }
     .status-pill {
       display: inline-flex;
       align-items: center;
@@ -930,8 +1060,34 @@ UI_HTML = """<!doctype html>
         </div>
         <div class="panel">
           <div class="section-title">
-            <strong>3D CAD Model</strong>
-            <span class="muted">Interactive preview</span>
+            <div class="title-head">
+              <strong>3D CAD Model</strong>
+              <span class="muted">Interactive preview</span>
+            </div>
+            <div class="download">
+              <button type="button" id="downloadBtn" class="download-btn" aria-haspopup="true" aria-expanded="false" disabled>
+                Download <span class="chev">&#9662;</span>
+              </button>
+              <div id="downloadMenu" class="download-menu" role="menu">
+                <div class="download-group">
+                  <div class="download-group-label">CAD model</div>
+                  <button type="button" class="download-item" data-format="step" role="menuitem"><span class="fmt">STEP</span><span class="desc">Engineering CAD exchange (.step)</span></button>
+                  <button type="button" class="download-item" data-format="stl" role="menuitem"><span class="fmt">STL</span><span class="desc">3D printing / mesh (.stl)</span></button>
+                  <button type="button" class="download-item" data-format="glb" role="menuitem"><span class="fmt">GLB</span><span class="desc">Interactive 3D sharing (.glb)</span></button>
+                  <button type="button" class="download-item" data-format="dxf" role="menuitem"><span class="fmt">DXF</span><span class="desc">2D profile / drawing (.dxf)</span></button>
+                </div>
+                <div class="download-group">
+                  <div class="download-group-label">Documentation</div>
+                  <button type="button" class="download-item" data-format="png" role="menuitem"><span class="fmt">PNG</span><span class="desc">CAD preview image (.png)</span></button>
+                  <button type="button" class="download-item" data-format="pdf" role="menuitem"><span class="fmt">PDF</span><span class="desc">Technical summary (.pdf)</span></button>
+                  <button type="button" class="download-item" data-format="json" role="menuitem"><span class="fmt">JSON</span><span class="desc">CAD parameters (.json)</span></button>
+                </div>
+                <div class="download-group">
+                  <div class="download-group-label">Convenience</div>
+                  <button type="button" class="download-item" data-format="zip" role="menuitem"><span class="fmt">ZIP</span><span class="desc">Download all files (.zip)</span></button>
+                </div>
+              </div>
+            </div>
           </div>
           <div id="previewProgress" class="preview-progress" aria-live="polite">
             <div class="preview-progress-head">
@@ -979,12 +1135,15 @@ UI_HTML = """<!doctype html>
     const uploadContextButton = document.getElementById("uploadContextButton");
     const attachmentList = document.getElementById("attachmentList");
     const categoryGrid = document.getElementById("categoryGrid");
+    const downloadBtn = document.getElementById("downloadBtn");
+    const downloadMenu = document.getElementById("downloadMenu");
     let activeViewer = null;
     let activityTimer = null;
     let requestContext = [];
     let attachmentContexts = [];
     let pendingDraftPrompt = "";
     let chatHistory = [];
+    let lastExport = { mesh: null, canvas: null, intent: null, prompt: "", name: "model" };
 
     uploadContextButton.addEventListener("click", uploadContextFile);
     contextFile.addEventListener("change", () => {
@@ -1026,6 +1185,28 @@ UI_HTML = """<!doctype html>
       chatInput.setSelectionRange(chatInput.value.length, chatInput.value.length);
     });
 
+    downloadBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (downloadBtn.disabled) return;
+      const open = downloadMenu.classList.toggle("open");
+      downloadBtn.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+    document.addEventListener("click", (event) => {
+      if (!downloadMenu.contains(event.target) && event.target !== downloadBtn) {
+        downloadMenu.classList.remove("open");
+        downloadBtn.setAttribute("aria-expanded", "false");
+      }
+    });
+    downloadMenu.addEventListener("click", (event) => {
+      const item = event.target.closest(".download-item");
+      if (!item) return;
+      downloadMenu.classList.remove("open");
+      downloadBtn.setAttribute("aria-expanded", "false");
+      Promise.resolve(handleDownload(item.dataset.format)).catch((error) => {
+        appendMsg("bot", "Download failed: " + (error && error.message ? error.message : error));
+      });
+    });
+
     chatForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       const text = chatInput.value.trim();
@@ -1062,6 +1243,10 @@ UI_HTML = """<!doctype html>
         const intent = payload.cad_intent || {};
         const previewReady = Boolean(payload.preview_ready);
         jsonOutput.textContent = JSON.stringify(intent, null, 2);
+        lastExport.intent = intent;
+        lastExport.prompt = prompt;
+        lastExport.name = exportBaseName(intent);
+        downloadBtn.disabled = !intent || Object.keys(intent).length === 0;
         if (previewReady) {
           try {
             await render3DPreview(intent);
@@ -1357,6 +1542,9 @@ UI_HTML = """<!doctype html>
       }
 
       const mesh = createPreviewMesh(cadIntent || {});
+      lastExport.mesh = mesh;
+      lastExport.canvas = canvas;
+      lastExport.intent = cadIntent || {};
       const bounds = computeMeshBounds(mesh.faces);
       const size = bounds.size;
       const extent = Math.max(size.x, size.y, size.z, 40);
@@ -2201,7 +2389,442 @@ UI_HTML = """<!doctype html>
       return Number.isFinite(numeric) && numeric > 0 ? numeric : fallback;
     }
 
+    // ===== Download / export helpers =====
+
+    function exportBaseName(intent) {
+      const type = String((intent && intent.part_type) || "model")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "_")
+        .replace(/^_+|_+$/g, "");
+      return type || "model";
+    }
+
+    async function handleDownload(format) {
+      const name = lastExport.name || "model";
+      switch (format) {
+        case "png": return downloadBlob(await canvasPngBlob(), name + ".png");
+        case "json": return downloadBlob(jsonBlob(), name + ".json");
+        case "stl": return downloadBlob(stlBlob(requireMesh(), name), name + ".stl");
+        case "glb": return downloadBlob(glbBlob(requireMesh()), name + ".glb");
+        case "dxf": return downloadBlob(dxfBlob(lastExport.intent || {}), name + ".dxf");
+        case "pdf": return downloadBlob(await pdfBlob(), name + ".pdf");
+        case "step": return downloadStep(name);
+        case "zip": return downloadAll(name);
+        default: throw new Error("Unknown format: " + format);
+      }
+    }
+
+    function requireMesh() {
+      if (!lastExport.mesh) throw new Error("Generate a 3D model first, then download.");
+      return lastExport.mesh;
+    }
+
+    function downloadBlob(blob, filename) {
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    function exNum(value, fallback) {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+    }
+
+    function concatBytes(arrays) {
+      let total = 0;
+      for (const part of arrays) total += part.length;
+      const out = new Uint8Array(total);
+      let offset = 0;
+      for (const part of arrays) {
+        out.set(part, offset);
+        offset += part.length;
+      }
+      return out;
+    }
+
+    function hexToRgb01(hex) {
+      const match = /^#?([0-9a-f]{6})$/i.exec(String(hex).trim());
+      if (!match) return [0.6, 0.6, 0.6];
+      const value = parseInt(match[1], 16);
+      return [((value >> 16) & 255) / 255, ((value >> 8) & 255) / 255, (value & 255) / 255];
+    }
+
+    function triNormal(a, b, c) {
+      const ux = b.x - a.x, uy = b.y - a.y, uz = b.z - a.z;
+      const vx = c.x - a.x, vy = c.y - a.y, vz = c.z - a.z;
+      const nx = uy * vz - uz * vy;
+      const ny = uz * vx - ux * vz;
+      const nz = ux * vy - uy * vx;
+      const len = Math.hypot(nx, ny, nz) || 1;
+      return [nx / len, ny / len, nz / len];
+    }
+
+    function triangulateMesh(mesh) {
+      const positions = [];
+      const colors = [];
+      if (!mesh || !Array.isArray(mesh.faces)) return { positions, colors };
+      for (const face of mesh.faces) {
+        const pts = face.points;
+        if (!pts || pts.length < 3) continue;
+        const [r, g, b] = hexToRgb01(face.color || "#999999");
+        for (let i = 1; i < pts.length - 1; i += 1) {
+          for (const point of [pts[0], pts[i], pts[i + 1]]) {
+            positions.push(point.x, point.y, point.z);
+            colors.push(r, g, b);
+          }
+        }
+      }
+      return { positions, colors };
+    }
+
+    function jsonBlob() {
+      const data = JSON.stringify(lastExport.intent || {}, null, 2);
+      return new Blob([data], { type: "application/json" });
+    }
+
+    function canvasPngBlob() {
+      const canvas = lastExport.canvas;
+      if (!canvas) throw new Error("Generate a 3D model first, then download.");
+      const flat = flattenCanvas(canvas);
+      return new Promise((resolve, reject) => {
+        flat.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("Could not render PNG."))), "image/png");
+      });
+    }
+
+    function flattenCanvas(canvas) {
+      const off = document.createElement("canvas");
+      off.width = canvas.width;
+      off.height = canvas.height;
+      const ctx = off.getContext("2d");
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, off.width, off.height);
+      ctx.drawImage(canvas, 0, 0);
+      return off;
+    }
+
+    function stlBlob(mesh, name) {
+      const lines = ["solid " + name];
+      for (const face of mesh.faces) {
+        const pts = face.points;
+        if (!pts || pts.length < 3) continue;
+        for (let i = 1; i < pts.length - 1; i += 1) {
+          const a = pts[0], b = pts[i], c = pts[i + 1];
+          const nrm = triNormal(a, b, c);
+          lines.push("  facet normal " + nrm[0] + " " + nrm[1] + " " + nrm[2]);
+          lines.push("    outer loop");
+          for (const point of [a, b, c]) lines.push("      vertex " + point.x + " " + point.y + " " + point.z);
+          lines.push("    endloop");
+          lines.push("  endfacet");
+        }
+      }
+      lines.push("endsolid " + name);
+      return new Blob([lines.join("\\n")], { type: "model/stl" });
+    }
+
+    function align4(value) { return (value + 3) & ~3; }
+
+    function glbBlob(mesh) {
+      const { positions, colors } = triangulateMesh(mesh);
+      if (!positions.length) throw new Error("No geometry to export.");
+      const posArray = new Float32Array(positions);
+      const colArray = new Float32Array(colors);
+      const count = posArray.length / 3;
+      const min = [Infinity, Infinity, Infinity];
+      const max = [-Infinity, -Infinity, -Infinity];
+      for (let i = 0; i < posArray.length; i += 3) {
+        for (let k = 0; k < 3; k += 1) {
+          const value = posArray[i + k];
+          if (value < min[k]) min[k] = value;
+          if (value > max[k]) max[k] = value;
+        }
+      }
+      const posBytes = posArray.byteLength;
+      const colBytes = colArray.byteLength;
+      const colOffset = align4(posBytes);
+      const binLength = align4(colOffset + colBytes);
+      const bin = new Uint8Array(binLength);
+      bin.set(new Uint8Array(posArray.buffer), 0);
+      bin.set(new Uint8Array(colArray.buffer), colOffset);
+
+      const gltf = {
+        asset: { version: "2.0", generator: "Resonance AI" },
+        scene: 0,
+        scenes: [{ nodes: [0] }],
+        nodes: [{ mesh: 0, name: lastExport.name || "model" }],
+        meshes: [{ primitives: [{ attributes: { POSITION: 0, COLOR_0: 1 }, material: 0, mode: 4 }] }],
+        materials: [{ name: "vertexColor", pbrMetallicRoughness: { metallicFactor: 0.1, roughnessFactor: 0.8 } }],
+        buffers: [{ byteLength: binLength }],
+        bufferViews: [
+          { buffer: 0, byteOffset: 0, byteLength: posBytes, target: 34962 },
+          { buffer: 0, byteOffset: colOffset, byteLength: colBytes, target: 34962 }
+        ],
+        accessors: [
+          { bufferView: 0, componentType: 5126, count, type: "VEC3", min, max },
+          { bufferView: 1, componentType: 5126, count, type: "VEC3" }
+        ]
+      };
+
+      let jsonBytes = new TextEncoder().encode(JSON.stringify(gltf));
+      const jsonPad = align4(jsonBytes.length) - jsonBytes.length;
+      if (jsonPad) {
+        const padded = new Uint8Array(jsonBytes.length + jsonPad);
+        padded.set(jsonBytes);
+        padded.fill(0x20, jsonBytes.length);
+        jsonBytes = padded;
+      }
+      const totalLength = 12 + 8 + jsonBytes.length + 8 + bin.length;
+      const buffer = new ArrayBuffer(totalLength);
+      const dv = new DataView(buffer);
+      let off = 0;
+      dv.setUint32(off, 0x46546c67, true); off += 4;
+      dv.setUint32(off, 2, true); off += 4;
+      dv.setUint32(off, totalLength, true); off += 4;
+      dv.setUint32(off, jsonBytes.length, true); off += 4;
+      dv.setUint32(off, 0x4e4f534a, true); off += 4;
+      new Uint8Array(buffer, off, jsonBytes.length).set(jsonBytes); off += jsonBytes.length;
+      dv.setUint32(off, bin.length, true); off += 4;
+      dv.setUint32(off, 0x004e4942, true); off += 4;
+      new Uint8Array(buffer, off, bin.length).set(bin);
+      return new Blob([buffer], { type: "model/gltf-binary" });
+    }
+
+    function dxfBlob(intent) {
+      const geometry = (intent && intent.geometry) || {};
+      const type = String((intent && intent.part_type) || "").toLowerCase();
+      const entities = [];
+      const circle = (cx, cy, r) => {
+        if (!(r > 0)) return;
+        entities.push("0", "CIRCLE", "8", "PROFILE", "10", String(cx), "20", String(cy), "30", "0", "40", String(r));
+      };
+      const rect = (w, h) => {
+        const x = w / 2, y = h / 2;
+        entities.push("0", "LWPOLYLINE", "8", "PROFILE", "90", "4", "70", "1");
+        for (const [px, py] of [[-x, -y], [x, -y], [x, y], [-x, y]]) entities.push("10", String(px), "20", String(py));
+      };
+      if (type === "bushing" || type === "rubber_mount") {
+        const od = exNum(geometry.outer_diameter_mm, 60);
+        const id = exNum(geometry.inner_diameter_mm, 20);
+        const fd = exNum(geometry.flange_diameter_mm, 0);
+        if (fd > od) circle(0, 0, fd / 2);
+        circle(0, 0, od / 2);
+        circle(0, 0, id / 2);
+      } else if (type === "plate" || type === "bracket") {
+        rect(exNum(geometry.length_mm, 120), exNum(geometry.width_mm, 80));
+        const holes = Array.isArray(geometry.holes) ? geometry.holes : [];
+        for (const hole of holes) circle(0, 0, exNum(hole.diameter_mm, 0) / 2);
+      } else if (type === "spring") {
+        circle(0, 0, exNum(geometry.outer_diameter_mm, exNum(geometry.coil_diameter_mm, 40)) / 2);
+      } else {
+        rect(exNum(geometry.length_mm, 60), exNum(geometry.width_mm, 40));
+      }
+      const dxf = ["0", "SECTION", "2", "ENTITIES", ...entities, "0", "ENDSEC", "0", "EOF"].join("\\n");
+      return new Blob([dxf], { type: "application/dxf" });
+    }
+
+    function pdfSummaryLines(intent) {
+      const geometry = (intent && intent.geometry) || {};
+      const lines = [];
+      lines.push("Part type: " + ((intent && intent.part_type) || "unknown"));
+      const material = (intent && intent.material) || {};
+      if (material.name) {
+        lines.push("Material: " + material.name + (material.shore_a ? " (Shore A " + material.shore_a + ")" : ""));
+      }
+      lines.push("");
+      lines.push("Dimensions (mm):");
+      const dimKeys = [
+        ["outer_diameter_mm", "Outer diameter"], ["inner_diameter_mm", "Inner diameter"],
+        ["height_mm", "Height"], ["length_mm", "Length"], ["width_mm", "Width"],
+        ["thickness_mm", "Thickness"], ["flange_diameter_mm", "Flange diameter"],
+        ["flange_thickness_mm", "Flange thickness"], ["chamfer_mm", "Chamfer"],
+        ["fillet_mm", "Fillet"], ["coil_count", "Coil count"]
+      ];
+      for (const [key, label] of dimKeys) {
+        if (geometry[key] !== undefined && geometry[key] !== null && geometry[key] !== "" && Number(geometry[key]) > 0) {
+          lines.push("  " + label + ": " + geometry[key]);
+        }
+      }
+      const missing = (intent && intent.missing_information) || [];
+      if (Array.isArray(missing) && missing.length) {
+        lines.push("");
+        lines.push("Assumptions / open items:");
+        for (const item of missing) lines.push("  - " + item);
+      }
+      lines.push("");
+      lines.push("Generated by Resonance AI on " + new Date().toISOString().slice(0, 10));
+      return lines;
+    }
+
+    function pdfEscape(text) {
+      return String(text).replace(/\\\\/g, "\\\\\\\\").replace(/\\(/g, "\\\\(").replace(/\\)/g, "\\\\)");
+    }
+
+    function dataUrlToUint8(dataUrl) {
+      const base64 = dataUrl.split(",")[1] || "";
+      const binary = atob(base64);
+      const out = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i += 1) out[i] = binary.charCodeAt(i);
+      return out;
+    }
+
+    async function pdfBlob() {
+      const intent = lastExport.intent || {};
+      const textLines = pdfSummaryLines(intent);
+      let jpeg = null, imgW = 0, imgH = 0;
+      if (lastExport.canvas) {
+        const flat = flattenCanvas(lastExport.canvas);
+        jpeg = dataUrlToUint8(flat.toDataURL("image/jpeg", 0.92));
+        imgW = flat.width;
+        imgH = flat.height;
+      }
+      return buildPdf(textLines, jpeg, imgW, imgH);
+    }
+
+    function buildPdf(textLines, jpeg, imgW, imgH) {
+      const enc = (text) => new TextEncoder().encode(text);
+      const pageWidth = 595.28, pageHeight = 841.89;
+      const hasImage = !!(jpeg && imgW && imgH);
+
+      let drawImage = "";
+      let textTop = pageHeight - 90;
+      if (hasImage) {
+        const maxW = pageWidth - 100;
+        const maxH = 300;
+        const ratio = Math.min(maxW / imgW, maxH / imgH);
+        const w = imgW * ratio, h = imgH * ratio;
+        const x = (pageWidth - w) / 2;
+        const y = pageHeight - 90 - h;
+        drawImage = "q " + w.toFixed(2) + " 0 0 " + h.toFixed(2) + " " + x.toFixed(2) + " " + y.toFixed(2) + " cm /Im0 Do Q\\n";
+        textTop = y - 28;
+      }
+
+      let content = "BT /F1 18 Tf 50 " + (pageHeight - 60).toFixed(2) + " Td (Resonance AI - CAD Technical Summary) Tj ET\\n";
+      content += drawImage;
+      content += "BT /F1 11 Tf 50 " + textTop.toFixed(2) + " Td 16 TL\\n";
+      for (const line of textLines) content += "(" + pdfEscape(line) + ") Tj T*\\n";
+      content += "ET\\n";
+      const contentBytes = enc(content);
+
+      const objBodies = [];
+      objBodies.push(enc("<< /Type /Catalog /Pages 2 0 R >>"));
+      objBodies.push(enc("<< /Type /Pages /Kids [3 0 R] /Count 1 >>"));
+      let resources = "<< /Font << /F1 5 0 R >>";
+      if (hasImage) resources += " /XObject << /Im0 6 0 R >>";
+      resources += " >>";
+      objBodies.push(enc("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 " + pageWidth + " " + pageHeight + "] /Resources " + resources + " /Contents 4 0 R >>"));
+      objBodies.push(concatBytes([enc("<< /Length " + contentBytes.length + " >>\\nstream\\n"), contentBytes, enc("\\nendstream")]));
+      objBodies.push(enc("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"));
+      if (hasImage) {
+        const header = enc("<< /Type /XObject /Subtype /Image /Width " + imgW + " /Height " + imgH + " /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length " + jpeg.length + " >>\\nstream\\n");
+        objBodies.push(concatBytes([header, jpeg, enc("\\nendstream")]));
+      }
+
+      const chunks = [];
+      let length = 0;
+      const offsets = [];
+      const push = (bytes) => { chunks.push(bytes); length += bytes.length; };
+      push(enc("%PDF-1.4\\n"));
+      push(new Uint8Array([0x25, 0xe2, 0xe3, 0xcf, 0xd3, 0x0a]));
+      for (let i = 0; i < objBodies.length; i += 1) {
+        offsets[i + 1] = length;
+        push(enc((i + 1) + " 0 obj\\n"));
+        push(objBodies[i]);
+        push(enc("\\nendobj\\n"));
+      }
+      const xrefStart = length;
+      const total = objBodies.length + 1;
+      let xref = "xref\\n0 " + total + "\\n0000000000 65535 f \\n";
+      for (let i = 1; i < total; i += 1) xref += String(offsets[i]).padStart(10, "0") + " 00000 n \\n";
+      push(enc(xref));
+      push(enc("trailer\\n<< /Size " + total + " /Root 1 0 R >>\\nstartxref\\n" + xrefStart + "\\n%%EOF"));
+      return new Blob([concatBytes(chunks)], { type: "application/pdf" });
+    }
+
+    async function downloadStep(name) {
+      startActivity("Generating STEP", ["Sending request", "Running CadQuery", "Packaging STEP"]);
+      try {
+        const response = await fetch("/export/step", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt: lastExport.prompt || "", intent: lastExport.intent || {}, name })
+        });
+        if (!response.ok) {
+          let detail = "STEP export is not available on this server.";
+          try { const payload = await response.json(); detail = payload.detail || detail; } catch (err) {}
+          throw new Error(detail);
+        }
+        downloadBlob(await response.blob(), name + ".step");
+        completeActivity("STEP ready");
+      } catch (error) {
+        completeActivity("STEP unavailable");
+        throw error;
+      }
+    }
+
+    function crc32(bytes) {
+      let crc = ~0;
+      for (let i = 0; i < bytes.length; i += 1) {
+        crc ^= bytes[i];
+        for (let j = 0; j < 8; j += 1) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+      }
+      return (~crc) >>> 0;
+    }
+
+    function zipStore(files) {
+      const encoder = new TextEncoder();
+      const u16 = (value) => new Uint8Array([value & 255, (value >> 8) & 255]);
+      const u32 = (value) => new Uint8Array([value & 255, (value >> 8) & 255, (value >> 16) & 255, (value >>> 24) & 255]);
+      const locals = [];
+      const central = [];
+      let offset = 0;
+      for (const file of files) {
+        const nameBytes = encoder.encode(file.name);
+        const crc = crc32(file.data);
+        const size = file.data.length;
+        const local = concatBytes([
+          u32(0x04034b50), u16(20), u16(0), u16(0), u16(0), u16(0),
+          u32(crc), u32(size), u32(size), u16(nameBytes.length), u16(0),
+          nameBytes, file.data
+        ]);
+        locals.push(local);
+        central.push(concatBytes([
+          u32(0x02014b50), u16(20), u16(20), u16(0), u16(0), u16(0), u16(0),
+          u32(crc), u32(size), u32(size), u16(nameBytes.length), u16(0), u16(0), u16(0), u16(0), u32(0),
+          u32(offset), nameBytes
+        ]));
+        offset += local.length;
+      }
+      const centralBytes = concatBytes(central);
+      const end = concatBytes([
+        u32(0x06054b50), u16(0), u16(0), u16(files.length), u16(files.length),
+        u32(centralBytes.length), u32(offset), u16(0)
+      ]);
+      return new Blob([concatBytes([...locals, centralBytes, end])], { type: "application/zip" });
+    }
+
+    async function downloadAll(name) {
+      const files = [];
+      const add = async (suffix, blob) => files.push({ name: name + suffix, data: new Uint8Array(await blob.arrayBuffer()) });
+      await add(".json", jsonBlob());
+      await add(".dxf", dxfBlob(lastExport.intent || {}));
+      if (lastExport.mesh) {
+        await add(".stl", stlBlob(lastExport.mesh, name));
+        await add(".glb", glbBlob(lastExport.mesh));
+      }
+      if (lastExport.canvas) {
+        await add(".png", await canvasPngBlob());
+        await add(".pdf", await pdfBlob());
+      }
+      downloadBlob(zipStore(files), name + ".zip");
+    }
+
     function cleanupViewer() {
+      lastExport.mesh = null;
+      lastExport.canvas = null;
       if (!activeViewer) {
         return;
       }
