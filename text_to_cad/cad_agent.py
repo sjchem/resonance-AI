@@ -14,6 +14,7 @@ os.environ.setdefault("MPLCONFIGDIR", str(Path("outputs") / ".matplotlib"))
 try:
     from text_to_cad.agent_renderer import render_agent_cadquery_script
     from text_to_cad.agent_schema import AgentCadDocument, document_from_spec, spec_from_document
+    from text_to_cad.cadquery_skill import augment_system_prompt
     from text_to_cad.cad_executor import run_script, write_script
     from text_to_cad.cad_templates import prompt_to_spec
     from text_to_cad.cad_generator import _write_preview
@@ -28,6 +29,7 @@ try:
 except ModuleNotFoundError:
     from agent_renderer import render_agent_cadquery_script
     from agent_schema import AgentCadDocument, document_from_spec, spec_from_document
+    from cadquery_skill import augment_system_prompt
     from cad_executor import run_script, write_script
     from cad_templates import prompt_to_spec
     from cad_generator import _write_preview
@@ -122,14 +124,14 @@ def create_document_for_prompt(prompt: str, output_name: str, provider: str = "a
 
 def _create_document(prompt: str, output_name: str, provider: str) -> tuple[AgentCadDocument, str]:
     if provider == "ollama":
-        system_prompt = load_prompt_template(DEFAULT_SYSTEM_PROMPT)
+        system_prompt = augment_system_prompt(load_prompt_template(DEFAULT_SYSTEM_PROMPT))
         payload = generate_json_with_ollama(system_prompt, prompt)
         return AgentCadDocument.model_validate(payload), "ollama"
 
     use_azure = provider == "azure" or (provider == "auto" and azure_openai_configured())
     if use_azure:
         try:
-            system_prompt = load_prompt_template(DEFAULT_SYSTEM_PROMPT)
+            system_prompt = augment_system_prompt(load_prompt_template(DEFAULT_SYSTEM_PROMPT))
             payload = generate_json_with_azure(system_prompt, prompt)
             return AgentCadDocument.model_validate(payload), "azure_openai"
         except (LlmConfigurationError, json.JSONDecodeError, ValueError, RuntimeError) as exc:
