@@ -1303,20 +1303,59 @@ UI_HTML = """<!doctype html>
         if (!response.ok) {
           throw new Error(payload.detail || "File upload failed");
         }
+        // Parse real geometry from STL uploads so the 3D viewer shows the actual part.
+        let meshNote = "";
+        const lowerName = (file.name || "").toLowerCase();
+        if (lowerName.endsWith(".stl")) {
+          try {
+            const buffer = await file.arrayBuffer();
+            const mesh = parseStlMesh(buffer, payload.filename);
+            if (mesh) {
+              payload.clientMesh = mesh;
+              payload.measured = measuredSummaryFromMesh(mesh);
+              const triNote = mesh.shown < mesh.original
+                ? ` (preview simplified to ${mesh.shown.toLocaleString()} of ${mesh.original.toLocaleString()} triangles)`
+                : ` (${mesh.original.toLocaleString()} triangles)`;
+              meshNote = `Loaded the actual STL geometry into the 3D viewer${triNote}.`;
+            } else {
+              meshNote = "The STL could not be parsed for an exact preview, so I will show a sized model instead.";
+            }
+          } catch (meshError) {
+            meshNote = "The STL could not be parsed for an exact preview, so I will show a sized model instead.";
+          }
+        } else if (lowerName.endsWith(".step") || lowerName.endsWith(".stp")) {
+          meshNote = "STEP file received. I can read its dimensions, but an exact surface preview needs the geometry kernel, so I will show a sized model for now.";
+        }
+
         attachmentContexts.push(payload);
         renderAttachmentList();
         pendingDraftPrompt = draftPromptFromAttachments();
-        appendMsg(
-          "bot",
-          `Extracted file context from ${payload.filename}.\\n${payload.summary}\\n\\nProposed short CAD prompt:\\n${pendingDraftPrompt}\\n\\nType "proceed" to create the final CAD summary and interactive preview, or type corrections/additional dimensions.`
-        );
+
+        if (payload.clientMesh) {
+          try {
+            await render3DPreview({ part_type: "uploaded", geometry: {} });
+            lastExport.name = exportBaseName({ part_type: payload.filename });
+            downloadBtn.disabled = false;
+          } catch (previewError) {
+            cleanupViewer();
+          }
+        }
+
+        const messageParts = [`Extracted file context from ${payload.filename}.`, payload.summary];
+        if (meshNote) {
+          messageParts.push(meshNote);
+        }
+        messageParts.push(`Proposed short CAD prompt:\\n${pendingDraftPrompt}`);
+        messageParts.push('Type "proceed" to create the structured CAD JSON and lock in the model, or type corrections/additional dimensions.');
+        appendMsg("bot", messageParts.join("\\n\\n"));
+
         summaryBox.innerHTML = `
           <p><strong>Awaiting approval.</strong> Review the proposed short prompt in the chat. Type "proceed" to generate the structured CAD result and preview, or add corrections.</p>
         `;
         chatInput.value = "proceed";
         autoResizeChatInput();
         contextFile.value = "";
-        completeActivity("Draft ready");
+        completeActivity(payload.clientMesh ? "Geometry loaded" : "Draft ready");
       } catch (error) {
         appendMsg("bot err", error.message);
         failActivity("Upload failed");
@@ -1349,12 +1388,22 @@ UI_HTML = """<!doctype html>
         return "";
       }
       const summaries = attachmentContexts.map((context) => context.summary).join(" ");
-      return [
+      const measured = attachmentContexts
+        .map((context) => context.measured)
+        .filter(Boolean)
+        .join(" ");
+      const lines = [
         "Create a CAD model from the uploaded engineering context.",
         summaries,
+      ];
+      if (measured) {
+        lines.push(measured);
+      }
+      lines.push(
         "Extract the part type, material, dimensions, chamfer/fillet details, and any status or validation hints from the uploaded file.",
         "If critical dimensions are missing, mark them as missing rather than inventing them."
-      ].join(" ");
+      );
+      return lines.join(" ");
     }
 
     function isApproval(value) {
@@ -1541,7 +1590,8 @@ UI_HTML = """<!doctype html>
         throw new Error("Canvas rendering is not available in this browser.");
       }
 
-      const mesh = createPreviewMesh(cadIntent || {});
+      const uploaded = pickUploadedMesh();
+      const mesh = uploaded ? { faces: uploaded.faces } : createPreviewMesh(cadIntent || {});
       lastExport.mesh = mesh;
       lastExport.canvas = canvas;
       lastExport.intent = cadIntent || {};
@@ -1732,6 +1782,128 @@ UI_HTML = """<!doctype html>
           canvas.removeEventListener("wheel", onWheel);
         },
       };
+    }
+
+    // ===== Uploaded mesh (real STL geometry) support =====
+    const UPLOAD_MESH_COLOR = "#8b929b";
+    const MAX_PREVIEW_TRIANGLES = 60000;
+
+    function parseStlMesh(buffer, sourceLabel) {
+      if (!buffer || buffer.byteLength < 84) {
+        return null;
+      }
+      const view = new DataView(buffer);
+      const headerCount = view.getUint32(80, true);
+      if (84 + headerCount * 50 === buffer.byteLength) {
+        return finalizeUploadedMesh(parseBinaryStl(view, headerCount), sourceLabel);
+      }
+      const text = new TextDecoder("utf-8").decode(new Uint8Array(buffer));
+      if (/facet\\s+normal/i.test(text)) {
+        return finalizeUploadedMesh(parseAsciiStl(text), sourceLabel);
+      }
+      if (headerCount > 0 && 84 + headerCount * 50 <= buffer.byteLength) {
+        return finalizeUploadedMesh(parseBinaryStl(view, headerCount), sourceLabel);
+      }
+      return null;
+    }
+
+    function parseBinaryStl(view, triCount) {
+      const faces = [];
+      const stride = triCount > MAX_PREVIEW_TRIANGLES ? Math.ceil(triCount / MAX_PREVIEW_TRIANGLES) : 1;
+      for (let i = 0; i < triCount; i += stride) {
+        const base = 84 + i * 50;
+        faces.push(makeStlFace(
+          readStlVec(view, base + 12),
+          readStlVec(view, base + 24),
+          readStlVec(view, base + 36)
+        ));
+      }
+      return { faces, original: triCount };
+    }
+
+    function readStlVec(view, offset) {
+      return {
+        x: view.getFloat32(offset, true),
+        y: view.getFloat32(offset + 4, true),
+        z: view.getFloat32(offset + 8, true),
+      };
+    }
+
+    function parseAsciiStl(text) {
+      const faces = [];
+      const verts = [];
+      const tokens = text.split(/\\s+/);
+      for (let i = 0; i < tokens.length; i += 1) {
+        if (tokens[i] !== "vertex") {
+          continue;
+        }
+        const x = parseFloat(tokens[i + 1]);
+        const y = parseFloat(tokens[i + 2]);
+        const z = parseFloat(tokens[i + 3]);
+        if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) {
+          verts.push({ x, y, z });
+          if (verts.length === 3) {
+            faces.push(makeStlFace(verts[0], verts[1], verts[2]));
+            verts.length = 0;
+          }
+        }
+      }
+      const original = faces.length;
+      let used = faces;
+      if (faces.length > MAX_PREVIEW_TRIANGLES) {
+        const stride = Math.ceil(faces.length / MAX_PREVIEW_TRIANGLES);
+        used = faces.filter((face, index) => index % stride === 0);
+      }
+      return { faces: used, original };
+    }
+
+    function makeStlFace(a, b, c) {
+      // Reverse winding to keep outward normals after the Z-up -> Y-up swap below.
+      return { color: UPLOAD_MESH_COLOR, points: [stlPoint(a), stlPoint(c), stlPoint(b)] };
+    }
+
+    function stlPoint(p) {
+      // STL is usually Z-up; the viewer is Y-up, so swap Y and Z.
+      return { x: p.x, y: p.z, z: p.y };
+    }
+
+    function finalizeUploadedMesh(parsed, sourceLabel) {
+      if (!parsed || !parsed.faces || !parsed.faces.length) {
+        return null;
+      }
+      const bounds = computeMeshBounds(parsed.faces);
+      return {
+        faces: parsed.faces,
+        bounds,
+        original: parsed.original || parsed.faces.length,
+        shown: parsed.faces.length,
+        source: sourceLabel || "stl",
+      };
+    }
+
+    function pickUploadedMesh() {
+      for (let i = attachmentContexts.length - 1; i >= 0; i -= 1) {
+        if (attachmentContexts[i] && attachmentContexts[i].clientMesh) {
+          return attachmentContexts[i].clientMesh;
+        }
+      }
+      return null;
+    }
+
+    function measuredSummaryFromMesh(mesh) {
+      if (!mesh || !mesh.bounds) {
+        return "";
+      }
+      const s = mesh.bounds.size;
+      const dx = Math.round(s.x * 100) / 100;
+      const dy = Math.round(s.y * 100) / 100;
+      const dz = Math.round(s.z * 100) / 100;
+      const envelope = Math.round(Math.max(s.x, s.y, s.z) * 100) / 100;
+      return (
+        "Measured from the uploaded geometry: bounding box approximately " +
+        dx + " x " + dy + " x " + dz + " mm; maximum envelope dimension about " +
+        envelope + " mm. Treat these as the real, measured dimensions and do not invent values."
+      );
     }
 
     function createPreviewMesh(cadIntent) {
