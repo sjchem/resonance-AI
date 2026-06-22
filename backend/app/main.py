@@ -1217,6 +1217,9 @@ UI_HTML = """<!doctype html>
     let currentEditIntent = null;
     let baseGeometry = null;
     let paramRenderQueued = false;
+    // When true, ignore the uploaded mesh and render the parametric model instead
+    // (set after "Convert to editable bushing").
+    let preferParametric = false;
 
     uploadContextButton.addEventListener("click", uploadContextFile);
     contextFile.addEventListener("change", () => {
@@ -1360,6 +1363,9 @@ UI_HTML = """<!doctype html>
         appendMsg("bot", "Choose a PDF, image, or CAD file first.");
         return;
       }
+
+      // A new upload starts from its exact mesh again (undo any prior convert).
+      preferParametric = false;
 
       uploadContextButton.disabled = true;
       uploadContextButton.textContent = "Reading...";
@@ -1668,7 +1674,7 @@ UI_HTML = """<!doctype html>
         throw new Error("Canvas rendering is not available in this browser.");
       }
 
-      const uploaded = pickUploadedMesh();
+      const uploaded = preferParametric ? null : pickUploadedMesh();
       const mesh = uploaded ? { faces: uploaded.faces } : createPreviewMesh(cadIntent || {});
       lastExport.mesh = mesh;
       lastExport.canvas = canvas;
@@ -1987,6 +1993,102 @@ UI_HTML = """<!doctype html>
       );
     }
 
+    // ===== Phase 2b: measure a bushing's OD/ID/height from the uploaded mesh =====
+    function percentile(sortedValues, fraction) {
+      if (!sortedValues.length) return 0;
+      const index = Math.min(
+        sortedValues.length - 1,
+        Math.max(0, Math.round(fraction * (sortedValues.length - 1)))
+      );
+      return sortedValues[index];
+    }
+
+    function measureBushingFromMesh(mesh) {
+      if (!mesh || !mesh.faces || !mesh.faces.length || !mesh.bounds) {
+        return null;
+      }
+      // The viewer Y axis is the bushing axis (STL Z-up was swapped to Y-up).
+      // Radial distance is measured in the X/Z plane about the part centroid.
+      let sumX = 0;
+      let sumZ = 0;
+      let count = 0;
+      for (const face of mesh.faces) {
+        for (const p of face.points) {
+          sumX += p.x;
+          sumZ += p.z;
+          count += 1;
+        }
+      }
+      if (!count) return null;
+      const centerX = sumX / count;
+      const centerZ = sumZ / count;
+
+      const radii = [];
+      for (const face of mesh.faces) {
+        for (const p of face.points) {
+          radii.push(Math.hypot(p.x - centerX, p.z - centerZ));
+        }
+      }
+      radii.sort((a, b) => a - b);
+
+      // Outer radius: high percentile to ignore stray spikes. Inner bore radius:
+      // low percentile, which lands on the bore wall (the closest material to the axis).
+      const outerRadius = percentile(radii, 0.99);
+      let innerRadius = percentile(radii, 0.03);
+      if (!(innerRadius > 0) || innerRadius >= outerRadius) {
+        innerRadius = outerRadius * 0.4;
+      }
+      const height = mesh.bounds.size.y;
+      if (!(outerRadius > 0) || !(height > 0)) {
+        return null;
+      }
+      const round = (v) => Math.round(v * 2) / 2; // nearest 0.5 mm
+      const outer = round(outerRadius * 2);
+      let inner = round(innerRadius * 2);
+      if (inner >= outer) inner = round(Math.max(1, outer - 1));
+      return {
+        outer_diameter_mm: outer,
+        inner_diameter_mm: Math.max(1, inner),
+        height_mm: round(height),
+      };
+    }
+
+    function convertUploadedToBushing() {
+      const uploaded = pickUploadedMesh();
+      const dims = measureBushingFromMesh(uploaded);
+      if (!dims) {
+        appendMsg("bot", "I could not measure clean bushing dimensions from this mesh.");
+        return;
+      }
+      const intent = {
+        part_type: "bushing",
+        material: { name: "rubber" },
+        geometry: {
+          outer_diameter_mm: dims.outer_diameter_mm,
+          inner_diameter_mm: dims.inner_diameter_mm,
+          height_mm: dims.height_mm,
+          arms: [],
+          holes: [],
+        },
+        simulation_hints: { target_output: "cad" },
+        missing_information: [],
+      };
+      preferParametric = true;
+      currentEditIntent = intent;
+      lastExport.intent = intent;
+      lastExport.name = exportBaseName(intent);
+      jsonOutput.textContent = JSON.stringify(intent, null, 2);
+      downloadBtn.disabled = false;
+      render3DPreview(intent).catch(() => {});
+      buildParamControls(intent);
+      appendMsg(
+        "bot",
+        "Converted the uploaded mesh into an editable bushing: outer diameter " +
+        dims.outer_diameter_mm + " mm, inner diameter " + dims.inner_diameter_mm +
+        " mm, height " + dims.height_mm + " mm. Drag the sliders to adjust, then use Download to export."
+      );
+    }
+
     // ===== Parametric editor (Phase 1): live dimension sliders =====
     const PARAM_FIELDS = {
       outer_diameter_mm:   { label: "Outer diameter", min: 5,   max: 400, step: 0.5, fallback: 60 },
@@ -2019,10 +2121,22 @@ UI_HTML = """<!doctype html>
       if (!paramControls) {
         return;
       }
-      const uploaded = pickUploadedMesh();
+      const uploaded = preferParametric ? null : pickUploadedMesh();
       if (uploaded) {
-        paramControls.innerHTML = '<p class="muted">This is an uploaded mesh, shown exactly as provided. Live parametric editing is available for AI-generated parts.</p>';
-        if (paramHint) paramHint.textContent = "Uploaded geometry is read-only.";
+        const dims = measureBushingFromMesh(uploaded);
+        if (dims) {
+          paramControls.innerHTML =
+            '<p class="muted">This is an uploaded mesh, shown exactly as provided. ' +
+            'Measured bushing dimensions: OD ' + dims.outer_diameter_mm + ' mm, ID ' +
+            dims.inner_diameter_mm + ' mm, height ' + dims.height_mm + ' mm.</p>' +
+            '<div class="param-actions"><button type="button" class="param-reset" id="convertBushingBtn">Convert to editable bushing</button></div>';
+          const convertBtn = document.getElementById("convertBushingBtn");
+          if (convertBtn) convertBtn.addEventListener("click", convertUploadedToBushing);
+          if (paramHint) paramHint.textContent = "Convert to edit OD / ID / height live.";
+        } else {
+          paramControls.innerHTML = '<p class="muted">This is an uploaded mesh, shown exactly as provided. Live parametric editing is available for AI-generated parts.</p>';
+          if (paramHint) paramHint.textContent = "Uploaded geometry is read-only.";
+        }
         return;
       }
       const type = String((intent && intent.part_type) || "unknown").toLowerCase();
