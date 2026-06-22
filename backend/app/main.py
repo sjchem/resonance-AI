@@ -917,6 +917,67 @@ UI_HTML = """<!doctype html>
       font-size: 13px;
       line-height: 1.45;
     }
+    .param-controls {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      max-height: 420px;
+      overflow: auto;
+    }
+    .param-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: center;
+      gap: 6px 12px;
+    }
+    .param-row .param-label {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--brand);
+    }
+    .param-row .param-value {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      justify-self: end;
+    }
+    .param-row .param-number {
+      width: 76px;
+      padding: 5px 7px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      font-size: 13px;
+      color: var(--brand);
+      text-align: right;
+      background: #fff;
+    }
+    .param-row .param-unit {
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .param-row .param-slider {
+      grid-column: 1 / -1;
+      width: 100%;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+    .param-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      padding-top: 4px;
+      border-top: 1px solid var(--line);
+    }
+    .param-reset {
+      background: #fff;
+      color: var(--brand);
+      border: 1px solid var(--line);
+      padding: 6px 14px;
+      font-size: 13px;
+    }
+    .param-reset:hover {
+      background: #eef3f9;
+    }
     .error-box {
       width: min(860px, 92%);
       margin: 0;
@@ -968,7 +1029,7 @@ UI_HTML = """<!doctype html>
         </div>
         <div class="hero-metrics" aria-label="Workflow summary">
           <div class="metric"><strong>01</strong><span>Prompt intake</span></div>
-          <div class="metric"><strong>02</strong><span>Structured CAD JSON</span></div>
+          <div class="metric"><strong>02</strong><span>Parametric editor</span></div>
           <div class="metric"><strong>03</strong><span>Preview review</span></div>
         </div>
       </div>
@@ -1106,9 +1167,13 @@ UI_HTML = """<!doctype html>
         </div>
         <div class="panel">
           <div class="section-title">
-            <strong>Structured CAD JSON</strong>
+            <strong>Parametric Editor</strong>
+            <span id="paramHint" class="muted">Drag a slider to resize the model live.</span>
           </div>
-          <pre id="jsonOutput">{}</pre>
+          <div id="paramControls" class="param-controls">
+            <p class="muted">Adjustable dimensions will appear here once a model is generated. Use the Download menu to export the edited part.</p>
+          </div>
+          <pre id="jsonOutput" hidden>{}</pre>
         </div>
       </section>
     </section>
@@ -1117,6 +1182,8 @@ UI_HTML = """<!doctype html>
   <script type="module">
     const preview = document.getElementById("preview");
     const jsonOutput = document.getElementById("jsonOutput");
+    const paramControls = document.getElementById("paramControls");
+    const paramHint = document.getElementById("paramHint");
     const summaryBox = document.getElementById("summaryBox");
     const chatShell = document.getElementById("chatShell");
     const chatForm = document.getElementById("chatForm");
@@ -1144,6 +1211,12 @@ UI_HTML = """<!doctype html>
     let pendingDraftPrompt = "";
     let chatHistory = [];
     let lastExport = { mesh: null, canvas: null, intent: null, prompt: "", name: "model" };
+    // Persistent camera so live parametric edits keep the same view angle.
+    let viewerCamera = { rotationX: -0.55, rotationY: 0.78, zoom: 1 };
+    // Parametric editor state.
+    let currentEditIntent = null;
+    let baseGeometry = null;
+    let paramRenderQueued = false;
 
     uploadContextButton.addEventListener("click", uploadContextFile);
     contextFile.addEventListener("change", () => {
@@ -1250,12 +1323,15 @@ UI_HTML = """<!doctype html>
         if (previewReady) {
           try {
             await render3DPreview(intent);
+            buildParamControls(intent);
           } catch (previewError) {
             cleanupViewer();
             preview.innerHTML = '<div class="placeholder"><p class="muted">The CAD intent was parsed, but the interactive preview library could not be loaded.</p></div>';
           }
         } else {
           cleanupViewer();
+          currentEditIntent = null;
+          buildParamControls(null);
           preview.innerHTML = '<div class="placeholder"><p class="muted">I need one more engineering detail before I can show a useful preview.</p></div>';
         }
         updateSummary(intent);
@@ -1336,6 +1412,8 @@ UI_HTML = """<!doctype html>
             await render3DPreview({ part_type: "uploaded", geometry: {} });
             lastExport.name = exportBaseName({ part_type: payload.filename });
             downloadBtn.disabled = false;
+            currentEditIntent = null;
+            buildParamControls(null);
           } catch (previewError) {
             cleanupViewer();
           }
@@ -1346,7 +1424,7 @@ UI_HTML = """<!doctype html>
           messageParts.push(meshNote);
         }
         messageParts.push(`Proposed short CAD prompt:\\n${pendingDraftPrompt}`);
-        messageParts.push('Type "proceed" to create the structured CAD JSON and lock in the model, or type corrections/additional dimensions.');
+        messageParts.push('Type "proceed" to apply the dimensions and lock in the model, or type corrections/additional dimensions.');
         appendMsg("bot", messageParts.join("\\n\\n"));
 
         summaryBox.innerHTML = `
@@ -1462,7 +1540,7 @@ UI_HTML = """<!doctype html>
           <dt>Part</dt><dd>${escapeHtml(formatPartName(intent.part_type))}</dd>
           <dt>Material</dt><dd>${escapeHtml(intent.material?.name || "Not specified")}</dd>
           <dt>Dimensions</dt><dd>${escapeHtml(formatDimensions(intent.geometry || {}))}</dd>
-          <dt>Output</dt><dd>Interactive preview and structured CAD JSON</dd>
+          <dt>Output</dt><dd>Interactive preview with live parametric editing</dd>
           <dt>Status</dt><dd>${missing.length ? escapeHtml("Clarification needed: " + missing.join("; ")) : "Ready for engineering review"}</dd>
         </dl>
       `;
@@ -1604,9 +1682,9 @@ UI_HTML = """<!doctype html>
       const state = {
         width: 0,
         height: 0,
-        rotationX: -0.55,
-        rotationY: 0.78,
-        zoom: 1,
+        rotationX: viewerCamera.rotationX,
+        rotationY: viewerCamera.rotationY,
+        zoom: viewerCamera.zoom,
         dragging: false,
         lastX: 0,
         lastY: 0,
@@ -1743,6 +1821,8 @@ UI_HTML = """<!doctype html>
         state.lastY = event.clientY;
         state.rotationY += deltaX * 0.01;
         state.rotationX = clamp(state.rotationX + deltaY * 0.01, -1.35, 1.35);
+        viewerCamera.rotationX = state.rotationX;
+        viewerCamera.rotationY = state.rotationY;
         scheduleRender();
       }
 
@@ -1757,6 +1837,7 @@ UI_HTML = """<!doctype html>
         event.preventDefault();
         const nextZoom = state.zoom * (event.deltaY > 0 ? 0.92 : 1.08);
         state.zoom = clamp(nextZoom, 0.55, 2.8);
+        viewerCamera.zoom = state.zoom;
         scheduleRender();
       }
 
@@ -1904,6 +1985,150 @@ UI_HTML = """<!doctype html>
         dx + " x " + dy + " x " + dz + " mm; maximum envelope dimension about " +
         envelope + " mm. Treat these as the real, measured dimensions and do not invent values."
       );
+    }
+
+    // ===== Parametric editor (Phase 1): live dimension sliders =====
+    const PARAM_FIELDS = {
+      outer_diameter_mm:   { label: "Outer diameter", min: 5,   max: 400, step: 0.5, fallback: 60 },
+      inner_diameter_mm:   { label: "Inner diameter", min: 1,   max: 400, step: 0.5, fallback: 20 },
+      height_mm:           { label: "Height",         min: 1,   max: 500, step: 0.5, fallback: 40 },
+      length_mm:           { label: "Length",         min: 1,   max: 600, step: 0.5, fallback: 80 },
+      width_mm:            { label: "Width",          min: 1,   max: 600, step: 0.5, fallback: 40 },
+      thickness_mm:        { label: "Thickness",      min: 0.1, max: 200, step: 0.1, fallback: 5 },
+      chamfer_mm:          { label: "Chamfer",        min: 0,   max: 30,  step: 0.1, fallback: 0 },
+      fillet_mm:           { label: "Fillet",         min: 0,   max: 30,  step: 0.1, fallback: 0 },
+      flange_diameter_mm:  { label: "Flange diameter",min: 5,   max: 500, step: 0.5, fallback: 0 },
+      flange_thickness_mm: { label: "Flange thickness",min: 0,  max: 60,  step: 0.1, fallback: 0 },
+      coil_count:          { label: "Coil count",     min: 1,   max: 50,  step: 1,   fallback: 8 },
+    };
+    const PART_FIELD_SETS = {
+      bushing:      { core: ["outer_diameter_mm", "inner_diameter_mm", "height_mm"], optional: ["chamfer_mm", "fillet_mm", "flange_diameter_mm", "flange_thickness_mm"] },
+      rubber_mount: { core: ["outer_diameter_mm", "inner_diameter_mm", "height_mm"], optional: ["chamfer_mm", "fillet_mm", "flange_diameter_mm", "flange_thickness_mm"] },
+      plate:        { core: ["length_mm", "width_mm", "thickness_mm"], optional: ["chamfer_mm", "fillet_mm"] },
+      bracket:      { core: ["length_mm", "width_mm", "thickness_mm"], optional: ["fillet_mm"] },
+      spring:       { core: ["outer_diameter_mm", "height_mm", "thickness_mm"], optional: ["coil_count"] },
+    };
+
+    function roundParam(value, step) {
+      const s = Number(step) || 0.1;
+      const decimals = (String(s).split(".")[1] || "").length;
+      return Number(value).toFixed(decimals);
+    }
+
+    function buildParamControls(intent) {
+      if (!paramControls) {
+        return;
+      }
+      const uploaded = pickUploadedMesh();
+      if (uploaded) {
+        paramControls.innerHTML = '<p class="muted">This is an uploaded mesh, shown exactly as provided. Live parametric editing is available for AI-generated parts.</p>';
+        if (paramHint) paramHint.textContent = "Uploaded geometry is read-only.";
+        return;
+      }
+      const type = String((intent && intent.part_type) || "unknown").toLowerCase();
+      const spec = PART_FIELD_SETS[type];
+      if (!intent || !spec) {
+        paramControls.innerHTML = '<p class="muted">Adjustable dimensions will appear here once a model is generated. Use the Download menu to export the edited part.</p>';
+        if (paramHint) paramHint.textContent = "";
+        return;
+      }
+
+      currentEditIntent = intent;
+      baseGeometry = Object.assign({}, intent.geometry || {});
+      const geom = intent.geometry || {};
+
+      const fields = spec.core.slice();
+      for (const key of spec.optional) {
+        const value = Number(geom[key]);
+        if (Number.isFinite(value) && value > 0) {
+          fields.push(key);
+        }
+      }
+
+      const rows = fields.map((key) => {
+        const def = PARAM_FIELDS[key];
+        if (!def) return "";
+        let value = Number(geom[key]);
+        if (!Number.isFinite(value) || value <= 0) value = def.fallback;
+        const max = Math.max(def.max, value);
+        const display = roundParam(value, def.step);
+        const unit = key === "coil_count" ? "" : '<span class="param-unit">mm</span>';
+        return `
+          <div class="param-row" data-key="${key}">
+            <label class="param-label" for="slider_${key}">${def.label}</label>
+            <span class="param-value">
+              <input type="number" class="param-number" id="num_${key}" value="${display}" min="${def.min}" max="${max}" step="${def.step}">
+              ${unit}
+            </span>
+            <input type="range" class="param-slider" id="slider_${key}" value="${value}" min="${def.min}" max="${max}" step="${def.step}">
+          </div>`;
+      }).join("");
+
+      paramControls.innerHTML = rows + '<div class="param-actions"><button type="button" class="param-reset" id="paramReset">Reset</button></div>';
+      bindParamControls();
+      if (paramHint) paramHint.textContent = "Drag a slider to resize the model live.";
+    }
+
+    function bindParamControls() {
+      const rows = paramControls.querySelectorAll(".param-row");
+      for (const row of rows) {
+        const key = row.dataset.key;
+        const slider = row.querySelector(".param-slider");
+        const number = row.querySelector(".param-number");
+        if (!slider || !number) continue;
+        const onChange = (raw) => {
+          const val = Number(raw);
+          if (!Number.isFinite(val)) return;
+          slider.value = val;
+          number.value = roundParam(val, Number(slider.step) || 0.1);
+          applyParamEdit(key, val);
+        };
+        slider.addEventListener("input", () => onChange(slider.value));
+        number.addEventListener("input", () => onChange(number.value));
+      }
+      const reset = document.getElementById("paramReset");
+      if (reset) {
+        reset.addEventListener("click", () => {
+          if (!currentEditIntent || !baseGeometry) return;
+          currentEditIntent.geometry = Object.assign({}, baseGeometry);
+          lastExport.intent = currentEditIntent;
+          jsonOutput.textContent = JSON.stringify(currentEditIntent, null, 2);
+          buildParamControls(currentEditIntent);
+          scheduleParamRender();
+        });
+      }
+    }
+
+    function applyParamEdit(key, value) {
+      if (!currentEditIntent) return;
+      const geom = currentEditIntent.geometry || (currentEditIntent.geometry = {});
+      geom[key] = key === "coil_count" ? Math.max(1, Math.round(value)) : value;
+
+      // Keep the inner diameter strictly inside the outer diameter.
+      const od = Number(geom.outer_diameter_mm);
+      const id = Number(geom.inner_diameter_mm);
+      if (Number.isFinite(od) && Number.isFinite(id) && id >= od) {
+        geom.inner_diameter_mm = Math.max(1, od - 1);
+        const idNum = document.getElementById("num_inner_diameter_mm");
+        const idSlider = document.getElementById("slider_inner_diameter_mm");
+        if (idNum) idNum.value = roundParam(geom.inner_diameter_mm, 0.5);
+        if (idSlider) idSlider.value = geom.inner_diameter_mm;
+      }
+
+      lastExport.intent = currentEditIntent;
+      jsonOutput.textContent = JSON.stringify(currentEditIntent, null, 2);
+      scheduleParamRender();
+    }
+
+    function scheduleParamRender() {
+      if (paramRenderQueued) return;
+      paramRenderQueued = true;
+      requestAnimationFrame(() => {
+        paramRenderQueued = false;
+        if (currentEditIntent) {
+          render3DPreview(currentEditIntent).catch(() => {});
+        }
+      });
     }
 
     function createPreviewMesh(cadIntent) {
