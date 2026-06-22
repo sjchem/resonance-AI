@@ -59,15 +59,21 @@ Bushing variants:
 - An inner steel sleeve / inner pipe (e.g. "inner sleeve 1.5 mm") maps to geometry.inner_sleeve_thickness_mm.
 - "eccentric bore", "offset bore", or "bore offset 3 mm" means the inner bore is shifted from center. Map to geometry.bore_offset_mm.
 - A chamfer or fillet on the bushing edges is applied to BOTH the inner and outer top/bottom edges of the rubber body by default. Use geometry.chamfer_mm or geometry.fillet_mm for the size. If the user is ambiguous about which edges, do not put it in missing_information unless they actually ask.
-- An arm, tab, lug, bracket arm, or side ear attached to the bushing maps to geometry.arm_length_mm, geometry.arm_width_mm, geometry.arm_thickness_mm. "centered on height" / "in the middle" -> arm_position is "centered". "at the top" -> "top". "at the bottom" -> "bottom". If position is not given, default arm_position to "centered".
-
-Multiple arms (geometry.arms):
-- When the user wants more than one arm, OR an arm at a specific angle, OR arms on opposite sides, populate geometry.arms with one entry per arm (do NOT use the legacy arm_* fields).
-- Each entry has length_mm, width_mm, thickness_mm, angle_deg (0 = +X, 90 = +Z, 180 = -X, 270 = -Z, measured around the bushing axis), and position (centered/top/bottom).
-- "opposite side" / "180 degrees apart" -> two entries with angle_deg 0 and 180 sharing the same size/position.
+- ALL arms / tabs / lugs / bracket arms / side ears attached to the bushing MUST be emitted as entries in geometry.arms (even if there is only one). Do NOT use the legacy arm_length_mm / arm_width_mm / arm_thickness_mm / arm_position fields — leave them null.
+- Each arms entry has: length_mm, width_mm, thickness_mm, angle_deg (0 = +X, 90 = +Z, 180 = -X, 270 = -Z, measured around the bushing axis), and position ("centered" / "top" / "bottom").
+- Position defaults to "centered" if the user does not say where vertically. "centered on height" / "in the middle" -> "centered". "at the top" -> "top". "at the bottom" -> "bottom".
+- ONE arm with no angle given -> a single entry with angle_deg 0 and position "centered".
+- "two arms on opposite sides" / "opposite side" / "180 degrees apart" / "both sides" -> TWO entries with identical length_mm/width_mm/thickness_mm, one at angle_deg 0 and one at angle_deg 180.
 - "three arms equally spaced" -> three entries at 0, 120, 240.
 - "four arms equally spaced" -> four entries at 0, 90, 180, 270.
-- If the user says "add another arm same size on the opposite side", read the existing arm from the prior conversation/JSON and emit TWO entries: one at the original angle (0 if not stated) and one at angle + 180. Always re-emit the full arms list, not just the new arm.
+- If the user says "add another arm same size on the opposite side", read the existing arm from the prior JSON and emit TWO entries: one at the original angle (0 if not stated) and one at angle + 180. Always re-emit the FULL arms list, not just the new arm.
+
+Example for "bushing OD 50 ID 20 height 40 with two arms 60 mm long, 20 wide, 8 thick on opposite sides":
+geometry.arms = [
+  { "length_mm": 60, "width_mm": 20, "thickness_mm": 8, "angle_deg": 0,   "position": "centered" },
+  { "length_mm": 60, "width_mm": 20, "thickness_mm": 8, "angle_deg": 180, "position": "centered" }
+]
+and arm_length_mm / arm_width_mm / arm_thickness_mm / arm_position are null.
 
 Bolt holes (geometry.holes):
 - When the user asks for bolt holes / mounting holes / fixing holes on a flange or on the top face, populate geometry.holes with one entry per hole pattern.
@@ -171,9 +177,106 @@ async def parse_cad_prompt(prompt: str) -> CADPromptOutput:
         raise CADValidationError("OpenAI did not return parsed CAD JSON.")
 
     try:
-        return CADPromptOutput.model_validate(parsed)
+        validated = CADPromptOutput.model_validate(parsed)
     except ValidationError as exc:
         raise CADValidationError(str(exc)) from exc
+
+    _normalize_arms(validated, prompt)
+    return validated
+
+
+_ARM_COUNT_WORDS = {
+    "one": 1, "single": 1,
+    "two": 2, "both": 2, "pair": 2, "double": 2,
+    "three": 3, "triple": 3,
+    "four": 4, "quad": 4, "quadruple": 4,
+    "five": 5, "six": 6,
+}
+
+
+def _detect_requested_arm_count(prompt: str) -> int | None:
+    """Return the number of arms the user explicitly asked for, or None if unclear."""
+
+    import re
+
+    text = prompt.lower()
+    if not re.search(r"\b(arm|arms|tab|tabs|lug|lugs|ear|ears)\b", text):
+        return None
+
+    # Phrases that imply two arms symmetrically.
+    if re.search(r"\b(opposite|both)\s+sides?\b", text):
+        return 2
+    if re.search(r"\b180\s*(deg|degrees|°)\s*apart\b", text):
+        return 2
+
+    # "two arms", "three arms equally spaced", "4 arms", "two tabs"...
+    m = re.search(r"\b(\d+)\s+(?:arm|arms|tab|tabs|lug|lugs|ear|ears)\b", text)
+    if m:
+        try:
+            n = int(m.group(1))
+            if 1 <= n <= 8:
+                return n
+        except ValueError:
+            pass
+
+    m = re.search(r"\b(one|single|two|both|pair|double|three|triple|four|quad|quadruple|five|six)\s+(?:of\s+)?(?:arm|arms|tab|tabs|lug|lugs|ear|ears)\b", text)
+    if m:
+        return _ARM_COUNT_WORDS.get(m.group(1))
+
+    return None
+
+
+def _normalize_arms(parsed: "CADPromptOutput", prompt: str) -> None:
+    """Backfill geometry.arms from legacy fields and expand to the requested count.
+
+    The LLM sometimes emits the legacy single-arm fields (arm_length_mm, etc.) instead of
+    geometry.arms, or emits only one arm even when the user clearly asked for several.
+    This helper:
+      1. Promotes legacy arm_* fields into a single geometry.arms entry, then clears them.
+      2. If the user's prompt explicitly asks for N>1 arms (e.g. "two arms on opposite sides")
+         but the LLM returned 1 entry, duplicates that entry around the bushing axis.
+    """
+
+    geometry = parsed.geometry
+
+    # Step 1: promote legacy single-arm fields to the arms list if needed.
+    if not geometry.arms and any(
+        v is not None
+        for v in (geometry.arm_length_mm, geometry.arm_width_mm, geometry.arm_thickness_mm)
+    ):
+        length = geometry.arm_length_mm or 0.0
+        width = geometry.arm_width_mm or 0.0
+        thickness = geometry.arm_thickness_mm or 0.0
+        if length > 0 and width > 0 and thickness > 0:
+            from app.schemas import BushingArm  # local import to avoid cycle at module load
+
+            geometry.arms = [
+                BushingArm(
+                    length_mm=length,
+                    width_mm=width,
+                    thickness_mm=thickness,
+                    angle_deg=0.0,
+                    position=geometry.arm_position or "centered",
+                )
+            ]
+
+    # Always clear the legacy fields so the renderer uses geometry.arms exclusively.
+    geometry.arm_length_mm = None
+    geometry.arm_width_mm = None
+    geometry.arm_thickness_mm = None
+    geometry.arm_position = None
+
+    # Step 2: expand to the requested arm count if the prompt asked for more.
+    requested = _detect_requested_arm_count(prompt)
+    if requested and geometry.arms and len(geometry.arms) < requested:
+        base = geometry.arms[0]
+        new_arms = []
+        for i in range(requested):
+            angle = (360.0 / requested) * i
+            new_arms.append(
+                base.model_copy(update={"angle_deg": angle})
+            )
+        geometry.arms = new_arms
 
 
 async def chat_reply(
