@@ -990,6 +990,25 @@ UI_HTML = """<!doctype html>
       font-size: 13px;
       color: var(--brand);
     }
+    .sim-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .sim-btn {
+      background: var(--brand);
+      color: #fff;
+      border: none;
+      border-radius: 3px;
+      padding: 6px 16px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .sim-btn:hover {
+      background: var(--brand-2);
+    }
     .sim-table {
       width: 100%;
       border-collapse: collapse;
@@ -1268,6 +1287,8 @@ UI_HTML = """<!doctype html>
     let meshEditMode = false;
     let overrideMeshFaces = null;
     let editableMesh = null;
+    // Simulation estimate stays hidden until the user presses Simulate.
+    let simShown = false;
 
     uploadContextButton.addEventListener("click", uploadContextFile);
     contextFile.addEventListener("change", () => {
@@ -1374,6 +1395,7 @@ UI_HTML = """<!doctype html>
         // A fresh chat generation renders the parsed intent, not a prior mesh-warp edit.
         meshEditMode = false;
         overrideMeshFaces = null;
+        simShown = false;
         if (previewReady) {
           try {
             await render3DPreview(intent);
@@ -1420,6 +1442,7 @@ UI_HTML = """<!doctype html>
       meshEditMode = false;
       overrideMeshFaces = null;
       editableMesh = null;
+      simShown = false;
 
       uploadContextButton.disabled = true;
       uploadContextButton.textContent = "Reading...";
@@ -2367,25 +2390,39 @@ UI_HTML = """<!doctype html>
       return value.toFixed(value >= 100 ? 0 : 1) + " N/mm";
     }
 
-    function updateSimEstimate(intent) {
-      if (!simResults) return;
-      const source = intent || currentEditIntent;
-      const type = String((source && source.part_type) || "").toLowerCase();
-      const geom = source && source.geometry;
-      if (!geom || (type !== "bushing" && type !== "rubber_mount")) {
-        simResults.innerHTML = "";
-        return;
+    // Find the best available bushing dimensions + material for an estimate:
+    // a parametric bushing intent, or a raw uploaded mesh measured on the fly.
+    function simSourceDims() {
+      const intentType = String((currentEditIntent && currentEditIntent.part_type) || "").toLowerCase();
+      if (currentEditIntent && currentEditIntent.geometry && (intentType === "bushing" || intentType === "rubber_mount")) {
+        return {
+          geom: currentEditIntent.geometry,
+          material: (currentEditIntent.material && currentEditIntent.material.name) || "generic",
+        };
       }
-      const materialName = (source.material && source.material.name) || "generic";
-      const est = estimateBushingModal(geom, materialName);
+      if (!preferParametric && !meshEditMode) {
+        const uploaded = pickUploadedMesh();
+        if (uploaded) {
+          const dims = measureBushingFromMesh(uploaded);
+          if (dims) {
+            return { geom: dims, material: "generic" };
+          }
+        }
+      }
+      return null;
+    }
+
+    function renderSimOutput() {
+      const out = document.getElementById("simOutput");
+      if (!out) return;
+      const src = simSourceDims();
+      const est = src ? estimateBushingModal(src.geom, src.material) : null;
       if (!est) {
-        simResults.innerHTML = "";
+        out.innerHTML = '<p class="muted">Not enough bushing dimensions to estimate.</p>';
         return;
       }
-      simResults.innerHTML =
-        '<div class="sim-block">' +
-        '<strong>Simulation estimate</strong>' +
-        '<p class="muted">First-pass analytical modal estimate \u00b7 fixed-bottom \u00b7 linear-elastic ' +
+      out.innerHTML =
+        '<p class="muted">First-pass analytical estimate \u00b7 fixed-bottom \u00b7 linear-elastic ' +
         est.material.replace("_", " ") + '. Run full FEM for validated results.</p>' +
         '<table class="sim-table">' +
         '<tr><th>Mode</th><th style="text-align:right">Frequency</th></tr>' +
@@ -2397,8 +2434,41 @@ UI_HTML = """<!doctype html>
         '<div class="sim-stiff">' +
         '<span>Axial stiffness: <b>' + formatStiffness(est.kAxial) + '</b></span>' +
         '<span>Bending stiffness: <b>' + formatStiffness(est.kBending) + '</b></span>' +
+        '</div>';
+    }
+
+    function renderSimPanel() {
+      if (!simResults) return;
+      const src = simSourceDims();
+      if (!src) {
+        simResults.innerHTML = "";
+        return;
+      }
+      simResults.innerHTML =
+        '<div class="sim-block">' +
+        '<div class="sim-head"><strong>Simulation</strong>' +
+        '<button type="button" class="sim-btn" id="simRunBtn">Simulate</button></div>' +
+        '<div id="simOutput">' +
+        (simShown ? "" : '<p class="muted">Estimate natural frequencies and stiffness for this bushing.</p>') +
         '</div>' +
         '</div>';
+      const btn = document.getElementById("simRunBtn");
+      if (btn) {
+        btn.addEventListener("click", () => {
+          simShown = true;
+          renderSimOutput();
+        });
+      }
+      if (simShown) {
+        renderSimOutput();
+      }
+    }
+
+    // Called on live slider edits: only refresh results if already shown.
+    function updateSimEstimate() {
+      if (simShown) {
+        renderSimOutput();
+      }
     }
 
     function buildParamControls(intent) {
@@ -2421,7 +2491,7 @@ UI_HTML = """<!doctype html>
           paramControls.innerHTML = '<p class="muted">This is an uploaded mesh, shown exactly as provided. Live parametric editing is available for AI-generated parts.</p>';
           if (paramHint) paramHint.textContent = "Uploaded geometry is read-only.";
         }
-        updateSimEstimate(null);
+        renderSimPanel();
         return;
       }
       const type = String((intent && intent.part_type) || "unknown").toLowerCase();
@@ -2429,7 +2499,7 @@ UI_HTML = """<!doctype html>
       if (!intent || !spec) {
         paramControls.innerHTML = '<p class="muted">Adjustable dimensions will appear here once a model is generated. Use the Download menu to export the edited part.</p>';
         if (paramHint) paramHint.textContent = "";
-        updateSimEstimate(null);
+        renderSimPanel();
         return;
       }
 
@@ -2467,7 +2537,7 @@ UI_HTML = """<!doctype html>
       paramControls.innerHTML = rows + '<div class="param-actions"><button type="button" class="param-reset" id="paramReset">Reset</button></div>';
       bindParamControls();
       if (paramHint) paramHint.textContent = "Drag a slider to resize the model live.";
-      updateSimEstimate(intent);
+      renderSimPanel();
     }
 
     function bindParamControls() {
@@ -2524,7 +2594,7 @@ UI_HTML = """<!doctype html>
       if (meshEditMode) {
         overrideMeshFaces = warpEditableMeshFaces(geom);
       }
-      updateSimEstimate(currentEditIntent);
+      updateSimEstimate();
       scheduleParamRender();
     }
 
