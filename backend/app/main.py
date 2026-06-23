@@ -978,6 +978,48 @@ UI_HTML = """<!doctype html>
     .param-reset:hover {
       background: #eef3f9;
     }
+    .sim-block {
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid var(--line);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .sim-block strong {
+      font-size: 13px;
+      color: var(--brand);
+    }
+    .sim-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    .sim-table th, .sim-table td {
+      text-align: left;
+      padding: 4px 6px;
+      border-bottom: 1px solid var(--line);
+    }
+    .sim-table th {
+      color: var(--muted);
+      font-weight: 600;
+    }
+    .sim-table td.sim-value {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      color: var(--brand);
+    }
+    .sim-stiff {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 18px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .sim-stiff b {
+      color: var(--brand);
+      font-variant-numeric: tabular-nums;
+    }
     .error-box {
       width: min(860px, 92%);
       margin: 0;
@@ -1173,6 +1215,7 @@ UI_HTML = """<!doctype html>
           <div id="paramControls" class="param-controls">
             <p class="muted">Adjustable dimensions will appear here once a model is generated. Use the Download menu to export the edited part.</p>
           </div>
+          <div id="simResults"></div>
           <pre id="jsonOutput" hidden>{}</pre>
         </div>
       </section>
@@ -1184,6 +1227,7 @@ UI_HTML = """<!doctype html>
     const jsonOutput = document.getElementById("jsonOutput");
     const paramControls = document.getElementById("paramControls");
     const paramHint = document.getElementById("paramHint");
+    const simResults = document.getElementById("simResults");
     const summaryBox = document.getElementById("summaryBox");
     const chatShell = document.getElementById("chatShell");
     const chatForm = document.getElementById("chatForm");
@@ -2258,6 +2302,105 @@ UI_HTML = """<!doctype html>
       return Number(value).toFixed(decimals);
     }
 
+    // ===== Simulation (Tier 1): live analytical modal estimate =====
+    // Linear-elastic isotropic properties in the tonne-mm-s unit system, so
+    // frequencies come out directly in Hz. Values mirror simulate/materials.py.
+    const SIM_MATERIALS = {
+      steel:           { E: 210000, rho: 7.85e-9 },
+      stainless_steel: { E: 193000, rho: 8.00e-9 },
+      aluminum:        { E: 69000,  rho: 2.70e-9 },
+      cast_iron:       { E: 110000, rho: 7.20e-9 },
+      rubber:          { E: 10,     rho: 1.10e-9 },
+      epdm:            { E: 6,      rho: 1.15e-9 },
+      abs:             { E: 2300,   rho: 1.05e-9 },
+      generic:         { E: 200000, rho: 7.85e-9 },
+    };
+    const SIM_ALIASES = {
+      metal: "steel", "mild steel": "steel", "carbon steel": "steel",
+      ss: "stainless_steel", inox: "stainless_steel",
+      alu: "aluminum", aluminium: "aluminum", al: "aluminum",
+      iron: "cast_iron", "natural rubber": "rubber", nr: "rubber",
+      elastomer: "rubber", plastic: "abs",
+    };
+
+    function simResolveMaterial(name) {
+      const key = String(name || "").trim().toLowerCase();
+      if (SIM_MATERIALS[key]) return { key, ...SIM_MATERIALS[key] };
+      if (SIM_ALIASES[key] && SIM_MATERIALS[SIM_ALIASES[key]]) {
+        const resolved = SIM_ALIASES[key];
+        return { key: resolved, ...SIM_MATERIALS[resolved] };
+      }
+      return { key: "generic", ...SIM_MATERIALS.generic };
+    }
+
+    function estimateBushingModal(geom, materialName) {
+      const od = Number(geom && geom.outer_diameter_mm);
+      const idRaw = Number(geom && geom.inner_diameter_mm) || 0;
+      const length = Number(geom && geom.height_mm);
+      if (!(od > 0) || !(length > 0)) return null;
+      const id = Math.min(Math.max(idRaw, 0), od - 1e-3);
+      const mat = simResolveMaterial(materialName);
+      const E = mat.E;       // MPa = N/mm^2
+      const rho = mat.rho;   // tonne/mm^3
+      const area = Math.PI / 4 * (od * od - id * id);              // mm^2
+      const inertia = Math.PI / 64 * (Math.pow(od, 4) - Math.pow(id, 4)); // mm^4
+      const kAxial = E * area / length;                           // N/mm
+      const kBending = 3 * E * inertia / Math.pow(length, 3);     // N/mm (cantilever tip)
+      // Euler-Bernoulli cantilever (fixed-free) bending modes.
+      const betaL = [1.875104, 4.694091, 7.854757];
+      const c = Math.sqrt((E * inertia) / (rho * area * Math.pow(length, 4)));
+      const bending = betaL.map((b) => (b * b / (2 * Math.PI)) * c); // Hz
+      const axial1 = (1 / (4 * length)) * Math.sqrt(E / rho);        // Hz (fixed-free rod)
+      return { material: mat.key, area, inertia, kAxial, kBending, bending, axial1 };
+    }
+
+    function formatHz(value) {
+      if (!Number.isFinite(value)) return "\u2013";
+      if (value >= 1000) return (value / 1000).toFixed(value >= 10000 ? 0 : 1) + " kHz";
+      return value.toFixed(value >= 100 ? 0 : 1) + " Hz";
+    }
+
+    function formatStiffness(value) {
+      if (!Number.isFinite(value)) return "\u2013";
+      if (value >= 1e6) return (value / 1e6).toFixed(2) + " MN/mm";
+      if (value >= 1000) return (value / 1000).toFixed(1) + " kN/mm";
+      return value.toFixed(value >= 100 ? 0 : 1) + " N/mm";
+    }
+
+    function updateSimEstimate(intent) {
+      if (!simResults) return;
+      const source = intent || currentEditIntent;
+      const type = String((source && source.part_type) || "").toLowerCase();
+      const geom = source && source.geometry;
+      if (!geom || (type !== "bushing" && type !== "rubber_mount")) {
+        simResults.innerHTML = "";
+        return;
+      }
+      const materialName = (source.material && source.material.name) || "generic";
+      const est = estimateBushingModal(geom, materialName);
+      if (!est) {
+        simResults.innerHTML = "";
+        return;
+      }
+      simResults.innerHTML =
+        '<div class="sim-block">' +
+        '<strong>Simulation estimate</strong>' +
+        '<p class="muted">First-pass analytical modal estimate \u00b7 fixed-bottom \u00b7 linear-elastic ' +
+        est.material.replace("_", " ") + '. Run full FEM for validated results.</p>' +
+        '<table class="sim-table">' +
+        '<tr><th>Mode</th><th style="text-align:right">Frequency</th></tr>' +
+        '<tr><td>1st bending</td><td class="sim-value">' + formatHz(est.bending[0]) + '</td></tr>' +
+        '<tr><td>2nd bending</td><td class="sim-value">' + formatHz(est.bending[1]) + '</td></tr>' +
+        '<tr><td>3rd bending</td><td class="sim-value">' + formatHz(est.bending[2]) + '</td></tr>' +
+        '<tr><td>1st axial</td><td class="sim-value">' + formatHz(est.axial1) + '</td></tr>' +
+        '</table>' +
+        '<div class="sim-stiff">' +
+        '<span>Axial stiffness: <b>' + formatStiffness(est.kAxial) + '</b></span>' +
+        '<span>Bending stiffness: <b>' + formatStiffness(est.kBending) + '</b></span>' +
+        '</div>' +
+        '</div>';
+    }
+
     function buildParamControls(intent) {
       if (!paramControls) {
         return;
@@ -2278,6 +2421,7 @@ UI_HTML = """<!doctype html>
           paramControls.innerHTML = '<p class="muted">This is an uploaded mesh, shown exactly as provided. Live parametric editing is available for AI-generated parts.</p>';
           if (paramHint) paramHint.textContent = "Uploaded geometry is read-only.";
         }
+        updateSimEstimate(null);
         return;
       }
       const type = String((intent && intent.part_type) || "unknown").toLowerCase();
@@ -2285,6 +2429,7 @@ UI_HTML = """<!doctype html>
       if (!intent || !spec) {
         paramControls.innerHTML = '<p class="muted">Adjustable dimensions will appear here once a model is generated. Use the Download menu to export the edited part.</p>';
         if (paramHint) paramHint.textContent = "";
+        updateSimEstimate(null);
         return;
       }
 
@@ -2322,6 +2467,7 @@ UI_HTML = """<!doctype html>
       paramControls.innerHTML = rows + '<div class="param-actions"><button type="button" class="param-reset" id="paramReset">Reset</button></div>';
       bindParamControls();
       if (paramHint) paramHint.textContent = "Drag a slider to resize the model live.";
+      updateSimEstimate(intent);
     }
 
     function bindParamControls() {
@@ -2378,6 +2524,7 @@ UI_HTML = """<!doctype html>
       if (meshEditMode) {
         overrideMeshFaces = warpEditableMeshFaces(geom);
       }
+      updateSimEstimate(currentEditIntent);
       scheduleParamRender();
     }
 
