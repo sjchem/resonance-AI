@@ -1820,6 +1820,60 @@ UI_HTML = """<!doctype html>
         context.fillRect(0, 0, state.width, state.height);
         drawGrid();
         drawFaces();
+        drawAxisIndicator();
+      }
+
+      function drawAxisIndicator() {
+        // Small orientation triad pinned to the bottom-left corner. It rotates with
+        // the camera so the user can always read the part orientation. Viewer world
+        // Y is "up" (the part height), so it is labelled Z to match CAD convention.
+        const originX = 52;
+        const originY = state.height - 52;
+        const axisLength = 30;
+        const axes = [
+          { vector: { x: 1, y: 0, z: 0 }, label: "X", color: "#e23b3b" },
+          { vector: { x: 0, y: 0, z: 1 }, label: "Y", color: "#2faa4d" },
+          { vector: { x: 0, y: 1, z: 0 }, label: "Z", color: "#2f7bff" },
+        ];
+        const projected = axes
+          .map((axis) => {
+            const rotated = rotatePoint(axis.vector, state.rotationX, state.rotationY);
+            return {
+              label: axis.label,
+              color: axis.color,
+              tipX: originX + rotated.x * axisLength,
+              tipY: originY - rotated.y * axisLength,
+              depth: rotated.z,
+            };
+          })
+          .sort((left, right) => left.depth - right.depth);
+
+        context.save();
+        context.lineWidth = 2.5;
+        context.lineCap = "round";
+        context.font = "bold 11px system-ui, -apple-system, sans-serif";
+        context.textAlign = "center";
+        context.textBaseline = "middle";
+        context.fillStyle = "#9aa7b8";
+        context.beginPath();
+        context.arc(originX, originY, 2.5, 0, Math.PI * 2);
+        context.fill();
+        for (const axis of projected) {
+          context.strokeStyle = axis.color;
+          context.beginPath();
+          context.moveTo(originX, originY);
+          context.lineTo(axis.tipX, axis.tipY);
+          context.stroke();
+          const labelX = originX + (axis.tipX - originX) * 1.2;
+          const labelY = originY + (axis.tipY - originY) * 1.2;
+          context.fillStyle = axis.color;
+          context.beginPath();
+          context.arc(labelX, labelY, 7.5, 0, Math.PI * 2);
+          context.fill();
+          context.fillStyle = "#ffffff";
+          context.fillText(axis.label, labelX, labelY);
+        }
+        context.restore();
       }
 
       function onPointerDown(event) {
