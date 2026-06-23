@@ -14,6 +14,7 @@ from text_to_cad.agent_schema import (
     HoleOperation,
     Primitive,
     SpringPrimitive,
+    TubePrimitive,
     Vec3,
 )
 
@@ -83,6 +84,14 @@ def _primitive_expression(primitive: Primitive, variable: str, at: Vec3) -> str:
             f"turns={primitive.turns!r}, "
             f"samples_per_turn={primitive.samples_per_turn!r})"
         )
+    elif isinstance(primitive, TubePrimitive):
+        expression = (
+            f"{variable} = make_bushing("
+            f"outer_radius={primitive.outer_radius!r}, "
+            f"inner_radius={primitive.inner_radius!r}, "
+            f"height={primitive.height!r}, "
+            f"chamfer={primitive.chamfer!r})"
+        )
     else:
         raise TypeError(f"Unsupported primitive: {primitive!r}")
 
@@ -102,6 +111,25 @@ def _helper_functions() -> str:
     path = cq.Workplane("XY").spline(points)
     profile = cq.Workplane("YZ").center(coil_radius, 0).circle(wire_radius)
     return profile.sweep(path, isFrenet=True)
+
+
+def make_bushing(outer_radius, inner_radius, height, chamfer):
+    result = (
+        cq.Workplane("XZ")
+        .moveTo(inner_radius, 0)
+        .lineTo(outer_radius, 0)
+        .lineTo(outer_radius, height)
+        .lineTo(inner_radius, height)
+        .close()
+        .revolve(360)
+    )
+    if chamfer and chamfer > 0:
+        try:
+            result = result.faces(">Z").edges("%Circle").chamfer(chamfer)
+            result = result.faces("<Z").edges("%Circle").chamfer(chamfer)
+        except Exception:
+            pass
+    return result
 '''
 
 

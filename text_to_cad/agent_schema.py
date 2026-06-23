@@ -44,7 +44,26 @@ class SpringPrimitive(BaseModel):
     samples_per_turn: int = Field(default=18, ge=12, le=64)
 
 
-Primitive = CubePrimitive | CylinderPrimitive | SpringPrimitive
+class TubePrimitive(BaseModel):
+    """A hollow cylinder: the core of a vibration-isolation bushing."""
+
+    type: Literal["tube"]
+    outer_radius: Number = 20.0
+    inner_radius: Number = 8.0
+    height: Number = 30.0
+    chamfer: float = Field(default=0.0, ge=0)
+
+    @model_validator(mode="after")
+    def check_radii(self) -> "TubePrimitive":
+        if self.inner_radius >= self.outer_radius:
+            raise ValueError("Bushing inner_radius must be smaller than outer_radius.")
+        max_chamfer = 0.49 * min(self.outer_radius - self.inner_radius, self.height)
+        if self.chamfer > max_chamfer:
+            self.chamfer = max(0.0, max_chamfer)
+        return self
+
+
+Primitive = CubePrimitive | CylinderPrimitive | SpringPrimitive | TubePrimitive
 
 
 class HoleOperation(BaseModel):
@@ -94,6 +113,8 @@ def document_from_spec(spec: CadSpec, name: str, description: str = "") -> Agent
 
     if spec.part_type == "spring":
         return document_from_spring_spec(spec, name, description)
+    if spec.part_type == "bushing":
+        return document_from_bushing_spec(spec, name, description)
 
     operations: list[Operation] = []
     for x, y in _hole_points(spec):
@@ -142,11 +163,34 @@ def document_from_spring_spec(spec: CadSpec, name: str, description: str = "") -
     )
 
 
+def document_from_bushing_spec(spec: CadSpec, name: str, description: str = "") -> AgentCadDocument:
+    """Create a hollow-cylinder bushing document from the deterministic parser."""
+
+    return AgentCadDocument(
+        name=name,
+        material_hint=spec.material_hint,
+        description=description,
+        parts=[
+            CadPart(
+                name=name,
+                primitive=TubePrimitive(
+                    type="tube",
+                    outer_radius=spec.length_mm / 2.0,
+                    inner_radius=spec.hole_diameter_mm / 2.0,
+                    height=spec.thickness_mm,
+                    chamfer=spec.chamfer_mm,
+                ),
+            )
+        ],
+    )
+
+
 def spec_from_document(document: AgentCadDocument) -> CadSpec:
     """Convert a simple CAD document into viewer metadata."""
 
     part = document.parts[0]
     primitive = part.primitive
+    chamfer = 0.0
     if primitive.type == "cube":
         length = primitive.size.x
         width = primitive.size.y
@@ -155,21 +199,39 @@ def spec_from_document(document: AgentCadDocument) -> CadSpec:
         length = primitive.radius * 2.0
         width = primitive.radius * 2.0
         thickness = primitive.height
+    elif primitive.type == "tube":
+        length = primitive.outer_radius * 2.0
+        width = length
+        thickness = primitive.height
+        chamfer = primitive.chamfer
     else:
         length = (primitive.coil_radius + primitive.wire_radius) * 2.0
         width = length
         thickness = primitive.height
 
     hole_ops = [op for op in part.operations if op.type == "hole"]
-    hole_diameter = hole_ops[0].diameter if hole_ops else 8.0
-    part_type = primitive.type if primitive.type == "spring" else "bracket" if hole_ops or "bracket" in document.name.lower() else "plate"
+    if primitive.type == "tube":
+        part_type = "bushing"
+        hole_diameter = primitive.inner_radius * 2.0
+        hole_count = 0
+    else:
+        hole_diameter = hole_ops[0].diameter if hole_ops else 8.0
+        part_type = (
+            "spring"
+            if primitive.type == "spring"
+            else "bracket"
+            if hole_ops or "bracket" in document.name.lower()
+            else "plate"
+        )
+        hole_count = len(hole_ops)
     return CadSpec(
         part_type=part_type,
         length_mm=length,
         width_mm=width,
         thickness_mm=thickness,
-        hole_count=len(hole_ops),
+        hole_count=hole_count,
         hole_diameter_mm=hole_diameter,
+        chamfer_mm=chamfer,
         material_hint=document.material_hint,
     )
 

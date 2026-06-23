@@ -267,6 +267,34 @@ python -m simulate.modal_solver outputs/simulation/bracket/bracket_clean.vtk --m
 python -m simulate.results outputs/simulation/bracket/modal.dat --json report.json
 ```
 
+### Contour images (von Mises stress / displacement)
+
+The pipeline also renders a coloured contour PNG of the first mode (deformed
+mode shape coloured by von Mises stress) using PyVista — no ParaView/cgx GUI
+needed. It is written next to the other results, e.g.
+`bracket_mode1_mises.png`.
+
+Disable it with `--no-contour`, or pick a different mode with
+`--contour-mode 2`.
+
+Render a contour from any existing `.frd` directly:
+
+```bash
+# Von Mises stress on the deformed mode shape
+python -m simulate.visualize outputs/simulation/bracket/bracket.frd \
+  --field mises --mode 1 --warp \
+  --output outputs/simulation/bracket/bracket_mode1_mises.png
+
+# Displacement magnitude
+python -m simulate.visualize outputs/simulation/bracket/bracket.frd \
+  --field disp --mode 2 --warp
+```
+
+Options: `--field {mises,disp}`, `--mode N`, `--warp` (deform by the mode
+shape), `--warp-scale`, `--cmap` (default `jet`), and `--colors` (number of
+discrete contour bands). Modal stress is an eigenvector quantity, so the
+contour *pattern* is meaningful while the absolute magnitude is relative.
+
 ### Visualize mode shapes
 
 Open the `.frd` file in [ParaView](https://www.paraview.org/) or CalculiX `cgx`:

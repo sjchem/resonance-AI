@@ -42,6 +42,7 @@ class CadSpec:
     thickness_mm: float = 5.0
     hole_count: int = 0
     hole_diameter_mm: float = 8.0
+    chamfer_mm: float = 0.0
     material_hint: str = "generic"
 
     @property
@@ -61,6 +62,9 @@ def prompt_to_spec(prompt: str) -> CadSpec:
     if any(word in lowered for word in ("spring", "coil", "helical")):
         return _parse_spring_spec(lowered)
 
+    if any(word in lowered for word in ("bushing", "bush", "sleeve")):
+        return _parse_bushing_spec(lowered)
+
     length, width, thickness = _parse_dimensions(lowered)
     part_type = "bracket" if any(word in lowered for word in ("bracket", "mount", "bolt", "hole")) else "plate"
     hole_count = _parse_hole_count(lowered) if part_type == "bracket" else 0
@@ -75,6 +79,49 @@ def prompt_to_spec(prompt: str) -> CadSpec:
         hole_count=hole_count,
         hole_diameter_mm=hole_diameter,
         material_hint=material_hint,
+    )
+
+
+def _parse_bushing_spec(text: str) -> CadSpec:
+    """Parse a rubber/metal vibration-isolation bushing (hollow cylinder)."""
+
+    outer = _parse_named_dimension(
+        text,
+        ("outer diameter", "outside diameter", "outer dia", "o.d."),
+        default=0.0,
+    )
+    inner = _parse_named_dimension(
+        text,
+        ("inner diameter", "inside diameter", "inner dia", "bore", "i.d."),
+        default=0.0,
+    )
+    # Short OD/ID forms need word boundaries to avoid false matches.
+    if outer <= 0.0:
+        match = re.search(r"\bod\b\s*(?:of|=|:)?\s*(\d+(?:\.\d+)?)", text, re.I)
+        outer = float(match.group(1)) if match else 40.0
+    if inner <= 0.0:
+        match = re.search(r"\bid\b\s*(?:of|=|:)?\s*(\d+(?:\.\d+)?)", text, re.I)
+        inner = float(match.group(1)) if match else outer * 0.4
+
+    height = _parse_named_dimension(text, ("height", "length", "thickness", "tall"), default=30.0)
+    chamfer = _parse_named_dimension(text, ("chamfer", "bevel"), default=0.0)
+
+    if inner >= outer:
+        inner = outer * 0.4
+
+    material = _parse_material_hint(text)
+    if material == "generic":
+        material = "rubber"  # Vibracoustic bushings default to rubber.
+
+    return CadSpec(
+        part_type="bushing",
+        length_mm=outer,
+        width_mm=outer,
+        thickness_mm=height,
+        hole_count=0,
+        hole_diameter_mm=inner,
+        chamfer_mm=chamfer,
+        material_hint=material,
     )
 
 
