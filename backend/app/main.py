@@ -1220,6 +1220,10 @@ UI_HTML = """<!doctype html>
     // When true, ignore the uploaded mesh and render the parametric model instead
     // (set after "Convert to editable bushing").
     let preferParametric = false;
+    // Mesh-warp editing: keep the real uploaded geometry but stretch OD/ID/height.
+    let meshEditMode = false;
+    let overrideMeshFaces = null;
+    let editableMesh = null;
 
     uploadContextButton.addEventListener("click", uploadContextFile);
     contextFile.addEventListener("change", () => {
@@ -1323,6 +1327,9 @@ UI_HTML = """<!doctype html>
         lastExport.prompt = prompt;
         lastExport.name = exportBaseName(intent);
         downloadBtn.disabled = !intent || Object.keys(intent).length === 0;
+        // A fresh chat generation renders the parsed intent, not a prior mesh-warp edit.
+        meshEditMode = false;
+        overrideMeshFaces = null;
         if (previewReady) {
           try {
             await render3DPreview(intent);
@@ -1366,6 +1373,9 @@ UI_HTML = """<!doctype html>
 
       // A new upload starts from its exact mesh again (undo any prior convert).
       preferParametric = false;
+      meshEditMode = false;
+      overrideMeshFaces = null;
+      editableMesh = null;
 
       uploadContextButton.disabled = true;
       uploadContextButton.textContent = "Reading...";
@@ -1674,8 +1684,10 @@ UI_HTML = """<!doctype html>
         throw new Error("Canvas rendering is not available in this browser.");
       }
 
-      const uploaded = preferParametric ? null : pickUploadedMesh();
-      const mesh = uploaded ? { faces: uploaded.faces } : createPreviewMesh(cadIntent || {});
+      const uploaded = (preferParametric || overrideMeshFaces) ? null : pickUploadedMesh();
+      const mesh = overrideMeshFaces
+        ? { faces: overrideMeshFaces }
+        : (uploaded ? { faces: uploaded.faces } : createPreviewMesh(cadIntent || {}));
       lastExport.mesh = mesh;
       lastExport.canvas = canvas;
       lastExport.intent = cadIntent || {};
@@ -2056,10 +2068,37 @@ UI_HTML = """<!doctype html>
     function convertUploadedToBushing() {
       const uploaded = pickUploadedMesh();
       const dims = measureBushingFromMesh(uploaded);
-      if (!dims) {
+      if (!dims || !uploaded || !uploaded.faces) {
         appendMsg("bot", "I could not measure clean bushing dimensions from this mesh.");
         return;
       }
+
+      // Keep the REAL geometry: store the original vertices and the part axis so we
+      // can warp (stretch) it live instead of replacing it with a plain cylinder.
+      let sumX = 0;
+      let sumZ = 0;
+      let count = 0;
+      for (const face of uploaded.faces) {
+        for (const p of face.points) {
+          sumX += p.x;
+          sumZ += p.z;
+          count += 1;
+        }
+      }
+      const centerX = sumX / count;
+      const centerZ = sumZ / count;
+      const centerY = uploaded.bounds ? uploaded.bounds.center.y : 0;
+
+      editableMesh = {
+        originalFaces: uploaded.faces,
+        centerX: centerX,
+        centerZ: centerZ,
+        centerY: centerY,
+        od0: dims.outer_diameter_mm,
+        id0: dims.inner_diameter_mm,
+        h0: dims.height_mm,
+      };
+
       const intent = {
         part_type: "bushing",
         material: { name: "rubber" },
@@ -2073,20 +2112,68 @@ UI_HTML = """<!doctype html>
         simulation_hints: { target_output: "cad" },
         missing_information: [],
       };
-      preferParametric = true;
+
+      meshEditMode = true;
+      preferParametric = false;
       currentEditIntent = intent;
       lastExport.intent = intent;
       lastExport.name = exportBaseName(intent);
       jsonOutput.textContent = JSON.stringify(intent, null, 2);
       downloadBtn.disabled = false;
+
+      // Identity warp to start (keeps the exact uploaded shape on screen).
+      overrideMeshFaces = warpEditableMeshFaces(intent.geometry);
       render3DPreview(intent).catch(() => {});
       buildParamControls(intent);
       appendMsg(
         "bot",
-        "Converted the uploaded mesh into an editable bushing: outer diameter " +
+        "This bushing is now editable while keeping its real shape: outer diameter " +
         dims.outer_diameter_mm + " mm, inner diameter " + dims.inner_diameter_mm +
-        " mm, height " + dims.height_mm + " mm. Drag the sliders to adjust, then use Download to export."
+        " mm, height " + dims.height_mm + " mm. Drag the sliders to stretch it, then use Download to export."
       );
+    }
+
+    function warpEditableMeshFaces(geom) {
+      if (!editableMesh) {
+        return overrideMeshFaces;
+      }
+      const newOd = Number(geom.outer_diameter_mm) > 0 ? Number(geom.outer_diameter_mm) : editableMesh.od0;
+      const newId = Number(geom.inner_diameter_mm) > 0 ? Number(geom.inner_diameter_mm) : editableMesh.id0;
+      const newH = Number(geom.height_mm) > 0 ? Number(geom.height_mm) : editableMesh.h0;
+
+      const ro0 = editableMesh.od0 / 2;
+      const ri0 = editableMesh.id0 / 2;
+      const ro1 = newOd / 2;
+      const ri1 = newId / 2;
+      const span0 = ro0 - ri0;
+      const heightScale = editableMesh.h0 > 0 ? newH / editableMesh.h0 : 1;
+      const cx = editableMesh.centerX;
+      const cz = editableMesh.centerZ;
+      const cy = editableMesh.centerY;
+
+      return editableMesh.originalFaces.map((face) => ({
+        color: face.color,
+        points: face.points.map((p) => {
+          const dx = p.x - cx;
+          const dz = p.z - cz;
+          const r = Math.hypot(dx, dz);
+          // Linearly remap the annular wall so the bore goes to the new ID and the
+          // outer surface to the new OD; everything in between stretches with it.
+          let newR;
+          if (span0 > 1e-6) {
+            newR = ri1 + (r - ri0) * (ro1 - ri1) / span0;
+          } else {
+            newR = r * (ro1 > 0 ? ro1 / Math.max(ro0, 1e-6) : 1);
+          }
+          if (newR < 0) newR = 0;
+          const scale = r > 1e-6 ? newR / r : 0;
+          return {
+            x: cx + dx * scale,
+            y: cy + (p.y - cy) * heightScale,
+            z: cz + dz * scale,
+          };
+        }),
+      }));
     }
 
     // ===== Parametric editor (Phase 1): live dimension sliders =====
@@ -2121,7 +2208,7 @@ UI_HTML = """<!doctype html>
       if (!paramControls) {
         return;
       }
-      const uploaded = preferParametric ? null : pickUploadedMesh();
+      const uploaded = (preferParametric || meshEditMode) ? null : pickUploadedMesh();
       if (uploaded) {
         const dims = measureBushingFromMesh(uploaded);
         if (dims) {
@@ -2207,6 +2294,9 @@ UI_HTML = """<!doctype html>
           currentEditIntent.geometry = Object.assign({}, baseGeometry);
           lastExport.intent = currentEditIntent;
           jsonOutput.textContent = JSON.stringify(currentEditIntent, null, 2);
+          if (meshEditMode) {
+            overrideMeshFaces = warpEditableMeshFaces(currentEditIntent.geometry);
+          }
           buildParamControls(currentEditIntent);
           scheduleParamRender();
         });
@@ -2231,6 +2321,9 @@ UI_HTML = """<!doctype html>
 
       lastExport.intent = currentEditIntent;
       jsonOutput.textContent = JSON.stringify(currentEditIntent, null, 2);
+      if (meshEditMode) {
+        overrideMeshFaces = warpEditableMeshFaces(geom);
+      }
       scheduleParamRender();
     }
 
