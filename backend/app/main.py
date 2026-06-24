@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import base64
+import json
 import re
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -170,6 +173,145 @@ async def export_step(payload: dict) -> FileResponse:
         raise HTTPException(status_code=500, detail="STEP generation did not produce a file.")
 
     return FileResponse(step_path, media_type="application/step", filename=f"{name}.step")
+
+
+@app.post("/run-fem")
+async def run_fem(payload: dict) -> dict:
+    """Run the full FEM modal pipeline and return a von Mises contour PNG.
+
+    Requires the CadQuery + gmsh + PyVista Python stack plus the native
+    CalculiX 'ccx' solver. When any of these is missing in a deployment, the
+    endpoint returns 501 and the UI keeps the analytical estimate.
+    """
+
+    prompt = str(payload.get("prompt", "")).strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="A prompt is required to run the FEM pipeline.")
+
+    name = _safe_export_name(str(payload.get("name", "model")))
+    try:
+        mode = int(payload.get("mode", 1) or 1)
+    except (TypeError, ValueError):
+        mode = 1
+    mode = max(1, min(mode, 10))
+    try:
+        num_modes = int(payload.get("num_modes", 6) or 6)
+    except (TypeError, ValueError):
+        num_modes = 6
+    num_modes = max(mode, min(num_modes, 12))
+    material = str(payload.get("material", "")).strip() or None
+
+    repo_root = Path(__file__).resolve().parents[2]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+
+    try:
+        from text_to_cad.cad_agent import generate_with_agent  # noqa: WPS433
+    except ModuleNotFoundError as exc:
+        raise HTTPException(
+            status_code=501,
+            detail=(
+                "FEM requires the CadQuery pipeline, which is not installed in this "
+                "deployment. The analytical estimate above is still available."
+            ),
+        ) from exc
+
+    try:
+        from simulate.pipeline import PipelineConfig, run_pipeline  # noqa: WPS433
+        from simulate.materials import resolve_material  # noqa: WPS433
+    except ModuleNotFoundError as exc:
+        raise HTTPException(
+            status_code=501,
+            detail=(
+                "FEM requires gmsh and PyVista, which are not installed in this deployment. "
+                "The analytical estimate above is still available."
+            ),
+        ) from exc
+
+    if shutil.which("ccx") is None:
+        raise HTTPException(
+            status_code=501,
+            detail=(
+                "FEM requires the CalculiX solver ('ccx'), which is not installed on this "
+                "server. The analytical estimate above is still available."
+            ),
+        )
+
+    work_dir = Path(tempfile.mkdtemp(prefix="resonance_fem_"))
+    try:
+        # Try the configured provider ("auto" prefers Azure when available),
+        # but fall back to the deterministic parser if the LLM path errors out.
+        # FEM only needs valid geometry; we never want a transient LLM error to
+        # block the user from seeing a contour image.
+        cad_code = -1
+        last_exc: Exception | None = None
+        for provider in ("auto", "fallback"):
+            try:
+                cad_code = generate_with_agent(
+                    prompt=prompt,
+                    output_dir=work_dir,
+                    output_name=name,
+                    provider=provider,
+                    execute=True,
+                )
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                continue
+            step_path_attempt = work_dir / f"{name}.step"
+            if cad_code == 0 and step_path_attempt.exists():
+                break
+
+        step_path = work_dir / f"{name}.step"
+        if cad_code != 0 or not step_path.exists():
+            detail = "STEP generation did not produce a file."
+            if last_exc is not None:
+                detail += f" Last error: {last_exc}"
+            raise HTTPException(status_code=500, detail=detail)
+
+        sim_dir = work_dir / "sim"
+        try:
+            config = PipelineConfig(
+                step_file=step_path,
+                output_dir=sim_dir,
+                material=resolve_material(material),
+                num_modes=num_modes,
+                name=name,
+                contour_image=True,
+                contour_mode=mode,
+            )
+            rc = run_pipeline(config)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=500, detail=f"FEM pipeline failed: {exc}") from exc
+        if rc != 0:
+            raise HTTPException(status_code=500, detail="FEM pipeline returned a non-zero status.")
+
+        contour_path = sim_dir / f"{name}_mode{mode}_mises.png"
+        if not contour_path.exists():
+            raise HTTPException(status_code=500, detail="FEM finished but no contour image was produced.")
+
+        modal_path = sim_dir / f"{name}_modal.json"
+        modes_payload: list[dict] = []
+        fundamental_hz = None
+        if modal_path.exists():
+            try:
+                modal = json.loads(modal_path.read_text(encoding="utf-8"))
+                fundamental_hz = modal.get("fundamental_hz")
+                modes_payload = modal.get("modes", [])
+            except (OSError, json.JSONDecodeError):
+                pass
+
+        image_b64 = base64.b64encode(contour_path.read_bytes()).decode("ascii")
+        return {
+            "contour_png_base64": image_b64,
+            "mode": mode,
+            "num_modes": num_modes,
+            "material": material or "generic",
+            "fundamental_hz": fundamental_hz,
+            "modes": modes_payload,
+            "field": "mises",
+        }
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
 
 
 UI_HTML = """<!doctype html>
@@ -1009,6 +1151,44 @@ UI_HTML = """<!doctype html>
     .sim-btn:hover {
       background: var(--brand-2);
     }
+    .sim-btn.secondary {
+      background: var(--cad);
+    }
+    .sim-btn.secondary:hover {
+      background: var(--cad-dark);
+    }
+    .sim-btn[disabled] {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+    .sim-head-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .sim-contour {
+      margin-top: 10px;
+      padding: 10px;
+      background: #f8fbff;
+      border: 1px solid var(--line);
+      border-radius: 3px;
+    }
+    .sim-contour img {
+      width: 100%;
+      height: auto;
+      display: block;
+      border-radius: 2px;
+      background: #ffffff;
+    }
+    .sim-contour .sim-fem-msg {
+      margin: 8px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .sim-contour .sim-fem-error {
+      color: var(--danger);
+      font-weight: 500;
+    }
     .sim-table-rows tr[data-mode] {
       cursor: pointer;
     }
@@ -1320,6 +1500,7 @@ UI_HTML = """<!doctype html>
     let simShown = false;
     let simSelectedMode = "b1";
     let simAnimHandle = 0;
+    let lastFemContour = null;
 
     uploadContextButton.addEventListener("click", uploadContextFile);
     contextFile.addEventListener("change", () => {
@@ -2670,10 +2851,14 @@ UI_HTML = """<!doctype html>
       simResults.innerHTML =
         '<div class="sim-block">' +
         '<div class="sim-head"><strong>Simulation</strong>' +
-        '<button type="button" class="sim-btn" id="simRunBtn">Simulate</button></div>' +
+        '<span class="sim-head-actions">' +
+        '<button type="button" class="sim-btn" id="simRunBtn">Simulate</button>' +
+        '<button type="button" class="sim-btn secondary" id="simFemBtn" title="Run full FEM and render a von Mises contour image">FEM contour</button>' +
+        '</span></div>' +
         '<div id="simOutput">' +
         (simShown ? "" : '<p class="muted">Estimate natural frequencies and stiffness for this bushing.</p>') +
         '</div>' +
+        '<div id="simFemContainer"></div>' +
         '</div>';
       const btn = document.getElementById("simRunBtn");
       if (btn) {
@@ -2682,8 +2867,106 @@ UI_HTML = """<!doctype html>
           renderSimOutput();
         });
       }
+      const femBtn = document.getElementById("simFemBtn");
+      if (femBtn) {
+        femBtn.addEventListener("click", runFemContour);
+      }
       if (simShown) {
         renderSimOutput();
+      }
+      if (lastFemContour) {
+        renderFemContour(lastFemContour);
+      }
+    }
+
+    function escapeHtml(text) {
+      return String(text == null ? "" : text)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function selectedFemMode() {
+      // Map the analytical mode keys (b1/b2/b3/a1) to FEM mode numbers.
+      // The FEM solver returns modes ordered by frequency, so mode 1 is the
+      // fundamental. We expose 1..4 for the four analytical entries.
+      const map = { b1: 1, b2: 2, b3: 3, a1: 4 };
+      return map[simSelectedMode] || 1;
+    }
+
+    function renderFemContour(state) {
+      const container = document.getElementById("simFemContainer");
+      if (!container) return;
+      if (!state) { container.innerHTML = ""; return; }
+      if (state.status === "loading") {
+        container.innerHTML =
+          '<div class="sim-contour">' +
+          '<p class="sim-fem-msg">Running full FEM (mesh \u2192 CalculiX \u2192 contour). This can take 30\u201390 seconds...</p>' +
+          '</div>';
+        return;
+      }
+      if (state.status === "error") {
+        container.innerHTML =
+          '<div class="sim-contour">' +
+          '<p class="sim-fem-msg sim-fem-error">FEM contour failed: ' + escapeHtml(state.message) + '</p>' +
+          '</div>';
+        return;
+      }
+      if (state.status === "ok" && state.data) {
+        const d = state.data;
+        const modesRows = (d.modes || []).map((m) => (
+          '<tr><td>Mode ' + m.mode_number + '</td>' +
+          '<td class="sim-value">' + formatHz(m.frequency_hz) + '</td></tr>'
+        )).join("");
+        container.innerHTML =
+          '<div class="sim-contour">' +
+          '<p class="sim-fem-msg"><strong>Validated FEM result</strong> \u00b7 von Mises stress contour \u00b7 mode ' + d.mode +
+          ' \u00b7 material ' + escapeHtml(d.material) + '</p>' +
+          '<img alt="von Mises stress contour for mode ' + d.mode + '" src="data:image/png;base64,' + d.contour_png_base64 + '"/>' +
+          (modesRows ? ('<table class="sim-table sim-table-rows" style="margin-top:10px"><tr><th>FEM mode</th><th style="text-align:right">Frequency</th></tr>' + modesRows + '</table>') : '') +
+          '</div>';
+      }
+    }
+
+    async function runFemContour() {
+      const femBtn = document.getElementById("simFemBtn");
+      const prompt = (lastExport && lastExport.prompt) || "";
+      if (!prompt.trim()) {
+        lastFemContour = { status: "error", message: "Send a chat message first so the FEM has a parsed bushing prompt to solve." };
+        renderFemContour(lastFemContour);
+        return;
+      }
+      if (femBtn) femBtn.disabled = true;
+      lastFemContour = { status: "loading" };
+      renderFemContour(lastFemContour);
+      try {
+        const response = await fetch("/run-fem", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            prompt: prompt,
+            mode: selectedFemMode(),
+            num_modes: 6,
+            name: (lastExport && lastExport.name) || "model",
+          }),
+        });
+        if (!response.ok) {
+          let detail = "FEM run failed (HTTP " + response.status + ").";
+          try { const payload = await response.json(); detail = payload.detail || detail; } catch (err) {}
+          lastFemContour = { status: "error", message: detail };
+          renderFemContour(lastFemContour);
+          return;
+        }
+        const data = await response.json();
+        lastFemContour = { status: "ok", data: data };
+        renderFemContour(lastFemContour);
+      } catch (error) {
+        lastFemContour = { status: "error", message: (error && error.message) || "Network error" };
+        renderFemContour(lastFemContour);
+      } finally {
+        if (femBtn) femBtn.disabled = false;
       }
     }
 

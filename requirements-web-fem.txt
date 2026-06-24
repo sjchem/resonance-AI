@@ -1,0 +1,24 @@
+# Container requirements for the FEM-capable web deployment.
+# Installed inside the Docker image (see Dockerfile) alongside the native
+# CalculiX 'ccx' solver and OpenGL/X libraries. This is intentionally a
+# superset of backend/requirements.txt so the /run-fem contour endpoint works
+# in production.
+
+# --- Web API (mirrors backend/requirements.txt) ---
+fastapi==0.136.1
+uvicorn==0.47.0
+gunicorn==26.0.0
+openai==2.41.0
+pydantic==2.13.4
+python-dotenv
+python-multipart==0.0.32
+pypdf
+
+# --- Text-to-CAD + FEM simulation stack ---
+cadquery==2.7.0
+cadquery-ocp==7.8.1.1.post1
+vtk==9.3.1
+gmsh==4.15.2
+pyvista==0.48.4
+meshio==5.3.5
+numpy==2.4.6

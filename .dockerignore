@@ -1,0 +1,30 @@
+# Keep the Docker build context small and reproducible.
+.git
+.github
+.gitignore
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+.venv
+venv
+antenv
+env
+
+# Generated artifacts and local outputs (not needed in the image).
+outputs/
+notebooks/
+examples/
+*.step
+*.stl
+*.frd
+*.vtk
+*.msh
+*.png
+
+# Docs / planning files (root-level only; keep skills/*.md for the CAD agent).
+/README.md
+/VC.ResonanceAI_Roadmap.md
+/VibraForge_Roadmap.md:Zone.Identifier
+
+# Local dev requirements (the image uses requirements-web-fem.txt).
+/requirements.txt
