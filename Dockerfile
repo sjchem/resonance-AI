@@ -7,7 +7,7 @@
 # Headless rendering: PyVista/VTK need an OpenGL context. The image installs
 # Mesa + an X virtual framebuffer (xvfb) and runs gunicorn under xvfb-run.
 
-FROM python:3.12-slim
+FROM python:3.12-slim-bookworm
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -18,11 +18,13 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app
 
 # Native packages:
-#   calculix-ccx      -> the 'ccx' finite-element solver
+#   calculix-ccx      -> the 'ccx' finite-element solver (Debian bookworm main)
 #   libglu1-mesa/libgl1 + Mesa -> OpenGL for gmsh and VTK
 #   libx* / xvfb      -> headless X context for off-screen PyVista rendering
+# Split into two installs so a missing CalculiX package fails loudly and early.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         calculix-ccx \
+    && apt-get install -y --no-install-recommends \
         libglu1-mesa \
         libgl1 \
         libgl1-mesa-dri \
