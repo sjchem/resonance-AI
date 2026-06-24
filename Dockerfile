@@ -55,9 +55,10 @@ COPY text_to_cad/ ./text_to_cad/
 COPY simulate/ ./simulate/
 COPY geometry/ ./geometry/
 COPY skills/ ./skills/
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 EXPOSE 8000
 
-# xvfb-run provides the GL context; gunicorn serves the FastAPI app (main:app
-# adds backend/ to sys.path and exposes app.main:app).
-CMD ["sh", "-c", "xvfb-run -a --server-args='-screen 0 1280x1024x24' gunicorn -w ${WEB_CONCURRENCY:-2} -k uvicorn.workers.UvicornWorker -b 0.0.0.0:${PORT:-8000} --timeout ${GUNICORN_TIMEOUT:-600} main:app"]
+# Entrypoint starts Xvfb (headless GL for PyVista) then gunicorn on port 8000.
+CMD ["/usr/local/bin/docker-entrypoint.sh"]
