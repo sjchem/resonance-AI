@@ -106,12 +106,6 @@ jobs:
             --linux-fx-version "PYTHON|${{ env.PYTHON_VERSION }}" \
             --startup-file "bash startup.sh" \
             --always-on true
-          az resource update \
-            --resource-group "${RG}" \
-            --resource-type "Microsoft.Web/sites/config" \
-            --name "${APP}/metadata" \
-            --set properties.CURRENT_STACK=python
-
           az webapp config appsettings set --name "${APP}" --resource-group "${RG}" --settings \
             SCM_DO_BUILD_DURING_DEPLOYMENT=false \
             ENABLE_ORYX_BUILD=false \
@@ -120,11 +114,20 @@ jobs:
             PORT=8000 \
             GUNICORN_TIMEOUT=600
 
-      - name: Deploy to Azure Web App
-        uses: azure/webapps-deploy@v3
-        with:
-          app-name: ${{ env.AZURE_WEBAPP_NAME }}
-          slot-name: Production
-          package: .
-          startup-command: bash startup.sh
-          clean: true
+      - name: Deploy prepared package with ZipDeploy
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="${{ env.AZURE_WEBAPP_NAME }}"
+          RG=$(az webapp list --query "[?name=='${APP}'].resourceGroup | [0]" -o tsv)
+          if [ -z "${RG}" ]; then
+            echo "Could not find Web App '${APP}' in this subscription." >&2
+            exit 1
+          fi
+
+          zip -qr app.zip .
+          az webapp deployment source config-zip \
+            --resource-group "${RG}" \
+            --name "${APP}" \
+            --src app.zip
+          az webapp restart --name "${APP}" --resource-group "${RG}"
