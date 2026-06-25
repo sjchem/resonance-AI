@@ -289,6 +289,20 @@ async def run_fem(payload: dict) -> dict:
         if not contour_path.exists():
             raise HTTPException(status_code=500, detail="FEM finished but no contour image was produced.")
 
+        fem_mesh = None
+        try:
+            from simulate.visualize import export_contour_surface_mesh  # noqa: WPS433
+
+            fem_mesh = export_contour_surface_mesh(
+                sim_dir / f"{name}.frd",
+                field_name="mises",
+                mode=mode,
+                warp=True,
+            )
+        except Exception:
+            # The PNG remains the fallback; the interactive mesh is a richer UI layer.
+            fem_mesh = None
+
         modal_path = sim_dir / f"{name}_modal.json"
         modes_payload: list[dict] = []
         fundamental_hz = None
@@ -309,6 +323,7 @@ async def run_fem(payload: dict) -> dict:
             "fundamental_hz": fundamental_hz,
             "modes": modes_payload,
             "field": "mises",
+            "fem_mesh": fem_mesh,
         }
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
@@ -1189,6 +1204,24 @@ UI_HTML = """<!doctype html>
       border-radius: 2px;
       background: #ffffff;
     }
+    .sim-fem-viewer {
+      width: 100%;
+      min-height: 360px;
+      border-radius: 2px;
+      overflow: hidden;
+      background: #f8fbff;
+      border: 1px solid var(--line);
+      touch-action: none;
+    }
+    .sim-fem-viewer canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+      cursor: grab;
+    }
+    .sim-fem-viewer canvas:active {
+      cursor: grabbing;
+    }
     .sim-contour .sim-fem-msg {
       margin: 8px 0 0;
       color: var(--muted);
@@ -1509,6 +1542,7 @@ UI_HTML = """<!doctype html>
     const downloadBtn = document.getElementById("downloadBtn");
     const downloadMenu = document.getElementById("downloadMenu");
     let activeViewer = null;
+    let activeFemViewer = null;
     let activityTimer = null;
     let requestContext = [];
     let attachmentContexts = [];
@@ -1517,6 +1551,7 @@ UI_HTML = """<!doctype html>
     let lastExport = { mesh: null, canvas: null, intent: null, prompt: "", name: "model" };
     // Persistent camera so live parametric edits keep the same view angle.
     let viewerCamera = { rotationX: -0.55, rotationY: 0.78, zoom: 1 };
+    let femCamera = { rotationX: -0.55, rotationY: 0.78, zoom: 1 };
     // Parametric editor state.
     let currentEditIntent = null;
     let baseGeometry = null;
@@ -2943,6 +2978,7 @@ UI_HTML = """<!doctype html>
     function renderFemContour(state) {
       const container = document.getElementById("simFemContainer");
       if (!container) return;
+      cleanupFemViewer();
       if (!state) { container.innerHTML = ""; return; }
       if (state.status === "loading") {
         container.innerHTML =
@@ -2960,6 +2996,7 @@ UI_HTML = """<!doctype html>
       }
       if (state.status === "ok" && state.data) {
         const d = state.data;
+        const hasMesh = d.fem_mesh && Array.isArray(d.fem_mesh.faces) && d.fem_mesh.faces.length;
         const modesRows = (d.modes || []).map((m) => (
           '<tr><td>Mode ' + m.mode_number + '</td>' +
           '<td class="sim-value">' + formatHz(m.frequency_hz) + '</td></tr>'
@@ -2968,10 +3005,178 @@ UI_HTML = """<!doctype html>
           '<div class="sim-contour">' +
           '<p class="sim-fem-msg"><strong>Validated FEM result</strong> \u00b7 von Mises stress contour \u00b7 mode ' + d.mode +
           ' \u00b7 material ' + escapeHtml(d.material) + '</p>' +
-          '<img alt="von Mises stress contour for mode ' + d.mode + '" src="data:image/png;base64,' + d.contour_png_base64 + '"/>' +
+          (hasMesh
+            ? '<div class="sim-fem-viewer" id="simFemViewer" aria-label="Interactive FEM contour view"></div>'
+            : '<img alt="von Mises stress contour for mode ' + d.mode + '" src="data:image/png;base64,' + d.contour_png_base64 + '"/>') +
           (modesRows ? ('<table class="sim-table sim-table-rows" style="margin-top:10px"><tr><th>FEM mode</th><th style="text-align:right">Frequency</th></tr>' + modesRows + '</table>') : '') +
           '</div>';
+        if (hasMesh) {
+          renderFemMeshCanvas(document.getElementById("simFemViewer"), d.fem_mesh);
+        }
       }
+    }
+
+    function cleanupFemViewer() {
+      if (activeFemViewer && typeof activeFemViewer.dispose === "function") {
+        activeFemViewer.dispose();
+      }
+      activeFemViewer = null;
+    }
+
+    function renderFemMeshCanvas(host, mesh) {
+      if (!host || !mesh || !Array.isArray(mesh.faces) || !mesh.faces.length) return;
+      const canvas = document.createElement("canvas");
+      host.innerHTML = "";
+      host.appendChild(canvas);
+      const context = canvas.getContext("2d");
+      if (!context) return;
+
+      const bounds = computeMeshBounds(mesh.faces);
+      const size = bounds.size;
+      const extent = Math.max(size.x, size.y, size.z, 1);
+      const center = bounds.center;
+      const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+      const lightDirection = normalizeVector({ x: 0.35, y: 0.85, z: 0.4 });
+      const centeredFaces = mesh.faces.map((face) => ({
+        color: face.color || "#40c463",
+        points: face.points.map((point) => ({
+          x: point.x - center.x,
+          y: point.y - center.y,
+          z: point.z - center.z,
+        })),
+      }));
+
+      const state = {
+        width: 0,
+        height: 0,
+        rotationX: femCamera.rotationX,
+        rotationY: femCamera.rotationY,
+        zoom: femCamera.zoom,
+        dragging: false,
+        lastX: 0,
+        lastY: 0,
+        animationFrameId: 0,
+        renderQueued: false,
+      };
+
+      function scheduleRender() {
+        if (state.renderQueued) return;
+        state.renderQueued = true;
+        state.animationFrameId = requestAnimationFrame(() => {
+          state.renderQueued = false;
+          draw();
+        });
+      }
+
+      function resizeCanvas() {
+        state.width = Math.max(320, Math.floor(host.clientWidth || 520));
+        state.height = Math.max(320, Math.floor(host.clientHeight || 360));
+        canvas.width = Math.floor(state.width * pixelRatio);
+        canvas.height = Math.floor(state.height * pixelRatio);
+        canvas.style.width = `${state.width}px`;
+        canvas.style.height = `${state.height}px`;
+        context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+        scheduleRender();
+      }
+
+      function projectRotatedPoint(rotated) {
+        const scale = (Math.min(state.width, state.height) / (extent * 2.35)) * state.zoom;
+        return {
+          x: state.width / 2 + rotated.x * scale,
+          y: state.height / 2 - rotated.y * scale,
+          z: rotated.z,
+        };
+      }
+
+      function draw() {
+        context.clearRect(0, 0, state.width, state.height);
+        context.fillStyle = "#f8fbff";
+        context.fillRect(0, 0, state.width, state.height);
+        const projectedFaces = centeredFaces
+          .map((face) => {
+            const rotatedPoints = face.points.map((point) => rotatePoint(point, state.rotationX, state.rotationY));
+            const projectedPoints = rotatedPoints.map(projectRotatedPoint);
+            const normal = computeFaceNormal(rotatedPoints);
+            const intensity = clamp(dotProduct(normal, lightDirection) * 0.45 + 0.78, 0.38, 1.0);
+            const averageDepth = rotatedPoints.reduce((sum, point) => sum + point.z, 0) / rotatedPoints.length;
+            return {
+              projectedPoints,
+              averageDepth,
+              fill: shadeColor(face.color, intensity),
+              stroke: shadeColor(face.color, Math.max(intensity - 0.24, 0.2)),
+            };
+          })
+          .sort((left, right) => left.averageDepth - right.averageDepth);
+
+        for (const face of projectedFaces) {
+          context.beginPath();
+          context.moveTo(face.projectedPoints[0].x, face.projectedPoints[0].y);
+          for (let index = 1; index < face.projectedPoints.length; index += 1) {
+            context.lineTo(face.projectedPoints[index].x, face.projectedPoints[index].y);
+          }
+          context.closePath();
+          context.fillStyle = face.fill;
+          context.strokeStyle = face.stroke;
+          context.lineWidth = 0.8;
+          context.fill();
+          context.stroke();
+        }
+      }
+
+      function onPointerDown(event) {
+        state.dragging = true;
+        state.lastX = event.clientX;
+        state.lastY = event.clientY;
+        canvas.setPointerCapture(event.pointerId);
+      }
+
+      function onPointerMove(event) {
+        if (!state.dragging) return;
+        const deltaX = event.clientX - state.lastX;
+        const deltaY = event.clientY - state.lastY;
+        state.lastX = event.clientX;
+        state.lastY = event.clientY;
+        state.rotationY += deltaX * 0.01;
+        state.rotationX = clamp(state.rotationX + deltaY * 0.01, -1.35, 1.35);
+        femCamera.rotationX = state.rotationX;
+        femCamera.rotationY = state.rotationY;
+        scheduleRender();
+      }
+
+      function onPointerUp(event) {
+        state.dragging = false;
+        if (canvas.hasPointerCapture(event.pointerId)) {
+          canvas.releasePointerCapture(event.pointerId);
+        }
+      }
+
+      function onWheel(event) {
+        event.preventDefault();
+        state.zoom = clamp(state.zoom * (event.deltaY > 0 ? 0.92 : 1.08), 0.55, 2.8);
+        femCamera.zoom = state.zoom;
+        scheduleRender();
+      }
+
+      canvas.addEventListener("pointerdown", onPointerDown);
+      canvas.addEventListener("pointermove", onPointerMove);
+      canvas.addEventListener("pointerup", onPointerUp);
+      canvas.addEventListener("pointerleave", onPointerUp);
+      canvas.addEventListener("wheel", onWheel, { passive: false });
+      const resizeObserver = new ResizeObserver(resizeCanvas);
+      resizeObserver.observe(host);
+      resizeCanvas();
+
+      activeFemViewer = {
+        dispose() {
+          cancelAnimationFrame(state.animationFrameId);
+          resizeObserver.disconnect();
+          canvas.removeEventListener("pointerdown", onPointerDown);
+          canvas.removeEventListener("pointermove", onPointerMove);
+          canvas.removeEventListener("pointerup", onPointerUp);
+          canvas.removeEventListener("pointerleave", onPointerUp);
+          canvas.removeEventListener("wheel", onWheel);
+        },
+      };
     }
 
     async function runFemContour() {

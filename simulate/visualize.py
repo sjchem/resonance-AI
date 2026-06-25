@@ -333,6 +333,118 @@ def render_contour(
     return output
 
 
+def export_contour_surface_mesh(
+    frd_file: Path,
+    *,
+    field_name: str = "mises",
+    mode: int = 1,
+    warp: bool = False,
+    warp_scale: float | None = None,
+    max_faces: int = 12000,
+) -> dict:
+    """Return a browser-friendly coloured surface mesh for interactive viewing."""
+
+    mesh, fields = parse_frd(frd_file)
+    disp = _select_field(fields, "DISP", mode)
+    stress = _select_field(fields, "STRESS", mode)
+
+    if field_name == "mises":
+        if stress is None:
+            raise ValueError(f"No STRESS field found for mode {mode} in {frd_file.name}.")
+        scalars = von_mises(stress.data)
+        scalar_name = "S, Mises"
+        freq = stress.frequency_hz
+    elif field_name in ("disp", "displacement", "u"):
+        if disp is None:
+            raise ValueError(f"No DISP field found for mode {mode} in {frd_file.name}.")
+        scalars = np.linalg.norm(disp.data, axis=1)
+        scalar_name = "U, Magnitude"
+        freq = disp.frequency_hz
+    else:
+        raise ValueError("field_name must be 'mises' or 'disp'.")
+
+    grid = _build_grid(mesh)
+    grid.point_data[scalar_name] = scalars
+
+    if warp and disp is not None:
+        grid.point_data["__disp__"] = disp.data
+        scale = warp_scale if warp_scale is not None else _auto_warp_scale(grid, disp.data)
+        grid = grid.warp_by_vector("__disp__", factor=scale)
+
+    surface = grid.extract_surface().triangulate()
+    if max_faces > 0 and surface.n_cells > max_faces:
+        reduction = min(0.95, max(0.0, 1.0 - (max_faces / float(surface.n_cells))))
+        try:
+            surface = surface.decimate_pro(reduction, preserve_topology=True).triangulate()
+        except Exception:
+            surface = surface.extract_surface().triangulate()
+
+    points = np.asarray(surface.points, dtype=float)
+    values = np.asarray(surface.point_data.get(scalar_name), dtype=float)
+    if values.shape[0] != points.shape[0]:
+        values = np.zeros(points.shape[0], dtype=float)
+
+    vmin = float(np.nanmin(values)) if values.size else 0.0
+    vmax = float(np.nanmax(values)) if values.size else 1.0
+    if not np.isfinite(vmin):
+        vmin = 0.0
+    if not np.isfinite(vmax) or vmax <= vmin:
+        vmax = vmin + 1.0
+
+    faces: list[dict] = []
+    raw_faces = np.asarray(surface.faces, dtype=np.int64)
+    index = 0
+    while index < raw_faces.size:
+        count = int(raw_faces[index])
+        ids = raw_faces[index + 1 : index + 1 + count]
+        index += count + 1
+        if count != 3 or len(ids) != 3:
+            continue
+        avg = float(np.mean(values[ids])) if values.size else vmin
+        faces.append(
+            {
+                "color": _contour_hex(avg, vmin, vmax),
+                "points": [
+                    {"x": float(points[node_id][0]), "y": float(points[node_id][1]), "z": float(points[node_id][2])}
+                    for node_id in ids
+                ],
+            }
+        )
+
+    return {
+        "faces": faces,
+        "field": scalar_name,
+        "mode": mode,
+        "frequency_hz": freq,
+        "scalar_min": vmin,
+        "scalar_max": vmax,
+        "face_count": len(faces),
+    }
+
+
+def _contour_hex(value: float, vmin: float, vmax: float) -> str:
+    t = (value - vmin) / (vmax - vmin)
+    t = float(np.clip(t, 0.0, 1.0))
+    stops = [
+        (0.00, (32, 25, 156)),
+        (0.18, (0, 91, 255)),
+        (0.36, (0, 200, 255)),
+        (0.54, (64, 220, 104)),
+        (0.70, (255, 235, 59)),
+        (0.84, (255, 135, 0)),
+        (1.00, (204, 0, 0)),
+    ]
+    for idx in range(1, len(stops)):
+        left_t, left_rgb = stops[idx - 1]
+        right_t, right_rgb = stops[idx]
+        if t <= right_t:
+            span = right_t - left_t or 1.0
+            local = (t - left_t) / span
+            rgb = tuple(round(left_rgb[i] + (right_rgb[i] - left_rgb[i]) * local) for i in range(3))
+            return "#{:02x}{:02x}{:02x}".format(*rgb)
+    return "#{:02x}{:02x}{:02x}".format(*stops[-1][1])
+
+
 def _new_plotter(window_size: tuple[int, int]):
     import pyvista as pv
 
