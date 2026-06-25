@@ -64,7 +64,7 @@ jobs:
             exit 1
           fi
 
-          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
           az webapp config set \
             --name "${APP}" \
             --resource-group "${RG}" \

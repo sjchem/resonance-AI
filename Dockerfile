@@ -19,12 +19,14 @@ ENV PYTHONUNBUFFERED=1 \
 
 # Native packages:
 #   calculix-ccx      -> the 'ccx' finite-element solver (Debian bookworm main)
+#   libgomp1           -> OpenMP runtime required by gmsh/CadQuery wheels
 #   libglu1-mesa/libgl1 + Mesa -> OpenGL for gmsh and VTK
 #   libx* / xvfb      -> headless X context for off-screen PyVista rendering
 # Split into two installs so a missing CalculiX package fails loudly and early.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         calculix-ccx \
     && apt-get install -y --no-install-recommends \
+        libgomp1 \
         libglu1-mesa \
         libgl1 \
         libgl1-mesa-dri \
