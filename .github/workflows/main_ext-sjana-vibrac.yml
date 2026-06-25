@@ -98,6 +98,11 @@ jobs:
             --docker-custom-image-name "${IMAGE}" \
             --docker-registry-server-url "https://ghcr.io"
 
+          # Clear the leftover code-deploy startup command (startup.sh). For
+          # containers a startup command overrides the image CMD, so an empty
+          # value makes App Service use the Dockerfile entrypoint.
+          az webapp config set --name "${APP}" --resource-group "${RG}" --startup-file ""
+
           az webapp config appsettings delete --name "${APP}" --resource-group "${RG}" \
             --setting-names DOCKER_REGISTRY_SERVER_USERNAME DOCKER_REGISTRY_SERVER_PASSWORD 2>/dev/null || true
 
