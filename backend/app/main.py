@@ -243,6 +243,7 @@ async def generate_mesh(payload: dict) -> dict:
         )
         clean_result = clean_mesh(raw_mesh, clean_mesh_path)
         quality = evaluate_mesh(clean_mesh_path)
+        surface_mesh = _mesh_surface_preview(clean_mesh_path)
 
         return {
             "status": "ok",
@@ -268,6 +269,7 @@ async def generate_mesh(payload: dict) -> dict:
                 "poor_count": quality.poor_count,
                 "min_volume_mm3": quality.min_volume_mm3,
             },
+            "surface_mesh": surface_mesh,
         }
     except HTTPException:
         raise
@@ -275,6 +277,100 @@ async def generate_mesh(payload: dict) -> dict:
         raise HTTPException(status_code=500, detail=f"Gmsh mesh generation failed: {exc}") from exc
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def _mesh_surface_preview(mesh_path: Path, *, max_faces: int = 12000) -> dict:
+    """Extract exterior mesh triangles for the browser preview."""
+
+    import meshio
+    import numpy as np
+
+    mesh = meshio.read(str(mesh_path))
+    points = np.asarray(mesh.points, dtype=float)
+    face_map: dict[tuple[int, int, int], dict] = {}
+    volumes: list[float] = []
+
+    # Only corner nodes are needed for the exterior face preview.
+    face_corners = ((0, 2, 1), (0, 1, 3), (1, 2, 3), (2, 0, 3))
+    for block in mesh.cells:
+        if block.type not in ("tetra", "tetra10"):
+            continue
+        cells = np.asarray(block.data, dtype=int)
+        if cells.size == 0:
+            continue
+        corners = cells[:, :4]
+        p0 = points[corners[:, 0]]
+        p1 = points[corners[:, 1]]
+        p2 = points[corners[:, 2]]
+        p3 = points[corners[:, 3]]
+        tet_volumes = np.abs(np.einsum("ij,ij->i", np.cross(p1 - p0, p2 - p0), p3 - p0) / 6.0)
+        for tet_index, tet in enumerate(corners):
+            volume = float(tet_volumes[tet_index])
+            volumes.append(volume)
+            for local_face in face_corners:
+                face = tuple(int(tet[i]) for i in local_face)
+                key = tuple(sorted(face))
+                if key in face_map:
+                    face_map[key]["count"] += 1
+                else:
+                    face_map[key] = {"count": 1, "face": face, "value": volume}
+
+    exterior = [item for item in face_map.values() if item["count"] == 1]
+    if max_faces > 0 and len(exterior) > max_faces:
+        stride = max(1, len(exterior) // max_faces)
+        exterior = exterior[::stride][:max_faces]
+
+    vmin = min(volumes) if volumes else 0.0
+    vmax = max(volumes) if volumes else 1.0
+    if vmax <= vmin:
+        vmax = vmin + 1.0
+
+    faces = []
+    for item in exterior:
+        value = float(item["value"])
+        faces.append(
+            {
+                "color": _contour_hex(value, vmin, vmax),
+                "value": value,
+                "points": [
+                    {"x": float(points[node_id][0]), "y": float(points[node_id][1]), "z": float(points[node_id][2])}
+                    for node_id in item["face"]
+                ],
+            }
+        )
+
+    return {
+        "faces": faces,
+        "field": "Volume",
+        "unit": "mm3",
+        "scalar_min": float(vmin),
+        "scalar_max": float(vmax),
+        "face_count": len(faces),
+    }
+
+
+def _contour_hex(value: float, vmin: float, vmax: float) -> str:
+    """Rainbow contour colour used by the mesh and FEM previews."""
+
+    span = vmax - vmin or 1.0
+    t = max(0.0, min(1.0, (value - vmin) / span))
+    stops = [
+        (0.00, (32, 25, 156)),
+        (0.18, (0, 91, 255)),
+        (0.36, (0, 200, 255)),
+        (0.54, (64, 220, 104)),
+        (0.70, (255, 235, 59)),
+        (0.84, (255, 135, 0)),
+        (1.00, (204, 0, 0)),
+    ]
+    for idx in range(1, len(stops)):
+        left_t, left_rgb = stops[idx - 1]
+        right_t, right_rgb = stops[idx]
+        if t <= right_t:
+            local = (t - left_t) / (right_t - left_t or 1.0)
+            rgb = tuple(round(left_rgb[i] + (right_rgb[i] - left_rgb[i]) * local) for i in range(3))
+            return "#{:02x}{:02x}{:02x}".format(*rgb)
+    return "#{:02x}{:02x}{:02x}".format(*stops[-1][1])
 
 
 @app.post("/run-fem")
@@ -1314,6 +1410,58 @@ UI_HTML = """<!doctype html>
       margin-top: 8px;
       font-variant-numeric: tabular-nums;
     }
+    .mesh-viewer-wrap {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: stretch;
+      margin-top: 10px;
+    }
+    .mesh-viewer {
+      min-height: 360px;
+      border-radius: 3px;
+      overflow: hidden;
+      background: #ffffff;
+      border: 1px solid var(--line);
+      touch-action: none;
+    }
+    .mesh-viewer canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+      cursor: grab;
+    }
+    .mesh-viewer canvas:active {
+      cursor: grabbing;
+    }
+    .mesh-legend {
+      min-width: 68px;
+      display: grid;
+      grid-template-rows: auto auto 1fr auto;
+      gap: 6px;
+      justify-items: center;
+      color: var(--brand);
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+    }
+    .mesh-legend strong {
+      font-size: 13px;
+    }
+    .mesh-legend-bar {
+      width: 18px;
+      min-height: 230px;
+      border: 1px solid rgba(10, 30, 63, 0.15);
+      background: linear-gradient(
+        to top,
+        #20199c 0%,
+        #005bff 18%,
+        #00c8ff 36%,
+        #40dc68 54%,
+        #ffeb3b 70%,
+        #ff8700 84%,
+        #cc0000 100%
+      );
+    }
     .sim-compare {
       display: grid;
       grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -1677,6 +1825,7 @@ UI_HTML = """<!doctype html>
     const downloadBtn = document.getElementById("downloadBtn");
     const downloadMenu = document.getElementById("downloadMenu");
     let activeViewer = null;
+    let activeMeshViewer = null;
     let activeFemViewer = null;
     let activityTimer = null;
     let requestContext = [];
@@ -1687,6 +1836,7 @@ UI_HTML = """<!doctype html>
     let lastMeshResult = null;
     // Persistent camera so live parametric edits keep the same view angle.
     let viewerCamera = { rotationX: -0.55, rotationY: 0.78, zoom: 1 };
+    let meshCamera = { rotationX: -0.55, rotationY: 0.78, zoom: 1 };
     let femCamera = { rotationX: -0.55, rotationY: 0.78, zoom: 1 };
     // Parametric editor state.
     let currentEditIntent = null;
@@ -3097,6 +3247,7 @@ UI_HTML = """<!doctype html>
 
     function renderMeshPanel() {
       if (!meshResults) return;
+      cleanupMeshViewer();
       const src = simSourceDims();
       if (!src) {
         meshResults.innerHTML = "";
@@ -3115,6 +3266,9 @@ UI_HTML = """<!doctype html>
         '</div>';
       const btn = document.getElementById("meshGenerateBtn");
       if (btn) btn.addEventListener("click", runGmshMesh);
+      if (lastMeshResult && lastMeshResult.surface_mesh) {
+        renderGmshMeshCanvas(document.getElementById("meshViewer"), lastMeshResult.surface_mesh);
+      }
     }
 
     function meshResultHtml(result) {
@@ -3140,6 +3294,26 @@ UI_HTML = """<!doctype html>
         '<span>Inverted: <strong>' + formatInt(q.inverted_count) + '</strong></span>' +
         '<span>Merged nodes: <strong>' + formatInt(cleaning.merged_nodes) + '</strong></span>' +
         '<span>Removed cells: <strong>' + formatInt(cleaning.removed_cells) + '</strong></span>' +
+        '</div>' +
+        meshViewerHtml(result.surface_mesh) +
+        '</div>'
+      );
+    }
+
+    function meshViewerHtml(mesh) {
+      if (!mesh || !Array.isArray(mesh.faces) || !mesh.faces.length) {
+        return '<div class="mesh-output err" style="margin-top:10px">Mesh was generated, but no exterior surface triangles were available for preview.</div>';
+      }
+      const minLabel = formatEngineering(mesh.scalar_min, mesh.unit || "");
+      const maxLabel = formatEngineering(mesh.scalar_max, mesh.unit || "");
+      return (
+        '<div class="mesh-viewer-wrap">' +
+        '<div class="mesh-viewer" id="meshViewer" aria-label="Interactive Gmsh mesh preview"></div>' +
+        '<div class="mesh-legend" aria-label="' + escapeHtml(mesh.field || "Volume") + ' legend">' +
+        '<strong>' + escapeHtml(mesh.field || "Volume") + '</strong>' +
+        '<span>' + escapeHtml(maxLabel) + '</span>' +
+        '<div class="mesh-legend-bar"></div>' +
+        '<span>' + escapeHtml(minLabel) + '</span>' +
         '</div></div>'
       );
     }
@@ -3159,6 +3333,14 @@ UI_HTML = """<!doctype html>
       const b = Number(max);
       if (!Number.isFinite(a) || !Number.isFinite(b)) return "-";
       return a.toFixed(2) + "-" + b.toFixed(2) + unit;
+    }
+
+    function formatEngineering(value, unit) {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return "-";
+      const abs = Math.abs(n);
+      const text = abs > 0 && (abs < 0.01 || abs >= 10000) ? n.toExponential(2) : n.toFixed(abs >= 100 ? 1 : 3);
+      return unit ? text + " " + unit : text;
     }
 
     async function runGmshMesh() {
@@ -3194,6 +3376,168 @@ UI_HTML = """<!doctype html>
         const nextBtn = document.getElementById("meshGenerateBtn");
         if (nextBtn) nextBtn.disabled = false;
       }
+    }
+
+    function cleanupMeshViewer() {
+      if (activeMeshViewer && typeof activeMeshViewer.dispose === "function") {
+        activeMeshViewer.dispose();
+      }
+      activeMeshViewer = null;
+    }
+
+    function renderGmshMeshCanvas(host, mesh) {
+      if (!host || !mesh || !Array.isArray(mesh.faces) || !mesh.faces.length) return;
+      const canvas = document.createElement("canvas");
+      host.innerHTML = "";
+      host.appendChild(canvas);
+      const context = canvas.getContext("2d");
+      if (!context) return;
+
+      const bounds = computeMeshBounds(mesh.faces);
+      const size = bounds.size;
+      const extent = Math.max(size.x, size.y, size.z, 1);
+      const center = bounds.center;
+      const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+      const lightDirection = normalizeVector({ x: 0.35, y: 0.85, z: 0.4 });
+      const centeredFaces = mesh.faces.map((face) => ({
+        color: face.color || "#00c8ff",
+        points: face.points.map((point) => ({
+          x: point.x - center.x,
+          y: point.y - center.y,
+          z: point.z - center.z,
+        })),
+      }));
+
+      const state = {
+        width: 0,
+        height: 0,
+        rotationX: meshCamera.rotationX,
+        rotationY: meshCamera.rotationY,
+        zoom: meshCamera.zoom,
+        dragging: false,
+        lastX: 0,
+        lastY: 0,
+        animationFrameId: 0,
+        renderQueued: false,
+      };
+
+      function scheduleRender() {
+        if (state.renderQueued) return;
+        state.renderQueued = true;
+        state.animationFrameId = requestAnimationFrame(() => {
+          state.renderQueued = false;
+          draw();
+        });
+      }
+
+      function resizeCanvas() {
+        state.width = Math.max(320, Math.floor(host.clientWidth || 620));
+        state.height = Math.max(340, Math.floor(host.clientHeight || 380));
+        canvas.width = Math.floor(state.width * pixelRatio);
+        canvas.height = Math.floor(state.height * pixelRatio);
+        canvas.style.width = `${state.width}px`;
+        canvas.style.height = `${state.height}px`;
+        context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+        scheduleRender();
+      }
+
+      function projectRotatedPoint(rotated) {
+        const scale = (Math.min(state.width, state.height) / (extent * 2.35)) * state.zoom;
+        return {
+          x: state.width / 2 + rotated.x * scale,
+          y: state.height / 2 - rotated.y * scale,
+          z: rotated.z,
+        };
+      }
+
+      function draw() {
+        context.clearRect(0, 0, state.width, state.height);
+        context.fillStyle = "#ffffff";
+        context.fillRect(0, 0, state.width, state.height);
+        const projectedFaces = centeredFaces
+          .map((face) => {
+            const rotatedPoints = face.points.map((point) => rotatePoint(point, state.rotationX, state.rotationY));
+            const projectedPoints = rotatedPoints.map(projectRotatedPoint);
+            const normal = computeFaceNormal(rotatedPoints);
+            const intensity = clamp(dotProduct(normal, lightDirection) * 0.5 + 0.76, 0.34, 1.0);
+            const averageDepth = rotatedPoints.reduce((sum, point) => sum + point.z, 0) / rotatedPoints.length;
+            return {
+              projectedPoints,
+              averageDepth,
+              fill: shadeColor(face.color, intensity),
+            };
+          })
+          .sort((left, right) => left.averageDepth - right.averageDepth);
+
+        for (const face of projectedFaces) {
+          context.beginPath();
+          context.moveTo(face.projectedPoints[0].x, face.projectedPoints[0].y);
+          for (let index = 1; index < face.projectedPoints.length; index += 1) {
+            context.lineTo(face.projectedPoints[index].x, face.projectedPoints[index].y);
+          }
+          context.closePath();
+          context.fillStyle = face.fill;
+          context.strokeStyle = "rgba(255, 255, 255, 0.82)";
+          context.lineWidth = 0.75;
+          context.fill();
+          context.stroke();
+        }
+      }
+
+      function onPointerDown(event) {
+        state.dragging = true;
+        state.lastX = event.clientX;
+        state.lastY = event.clientY;
+        canvas.setPointerCapture(event.pointerId);
+      }
+
+      function onPointerMove(event) {
+        if (!state.dragging) return;
+        const deltaX = event.clientX - state.lastX;
+        const deltaY = event.clientY - state.lastY;
+        state.lastX = event.clientX;
+        state.lastY = event.clientY;
+        state.rotationY += deltaX * 0.01;
+        state.rotationX = clamp(state.rotationX + deltaY * 0.01, -1.35, 1.35);
+        meshCamera.rotationX = state.rotationX;
+        meshCamera.rotationY = state.rotationY;
+        scheduleRender();
+      }
+
+      function onPointerUp(event) {
+        state.dragging = false;
+        if (canvas.hasPointerCapture(event.pointerId)) {
+          canvas.releasePointerCapture(event.pointerId);
+        }
+      }
+
+      function onWheel(event) {
+        event.preventDefault();
+        state.zoom = clamp(state.zoom * (event.deltaY > 0 ? 0.92 : 1.08), 0.55, 2.8);
+        meshCamera.zoom = state.zoom;
+        scheduleRender();
+      }
+
+      canvas.addEventListener("pointerdown", onPointerDown);
+      canvas.addEventListener("pointermove", onPointerMove);
+      canvas.addEventListener("pointerup", onPointerUp);
+      canvas.addEventListener("pointerleave", onPointerUp);
+      canvas.addEventListener("wheel", onWheel, { passive: false });
+      const resizeObserver = new ResizeObserver(resizeCanvas);
+      resizeObserver.observe(host);
+      resizeCanvas();
+
+      activeMeshViewer = {
+        dispose() {
+          cancelAnimationFrame(state.animationFrameId);
+          resizeObserver.disconnect();
+          canvas.removeEventListener("pointerdown", onPointerDown);
+          canvas.removeEventListener("pointermove", onPointerMove);
+          canvas.removeEventListener("pointerup", onPointerUp);
+          canvas.removeEventListener("pointerleave", onPointerUp);
+          canvas.removeEventListener("wheel", onWheel);
+        },
+      };
     }
 
     function escapeHtml(text) {
