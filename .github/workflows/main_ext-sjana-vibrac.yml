@@ -1,8 +1,8 @@
-# Build and deploy the lightweight FastAPI POC as a small Azure Web App
-# container. This avoids Azure/Oryx server-side Python builds and keeps the
-# previous heavy FEM/CadQuery Dockerfile available for later CAD-export work.
+# Build and deploy the heavy FEM container (CalculiX + CadQuery + Xvfb).
+# Required so /export/step and /run-fem work in production. Lightweight
+# Dockerfile.web is kept available for quick iterations.
 
-name: Build and deploy web container to Azure Web App - ext-sjana-vibrac
+name: Build and deploy FEM container to Azure Web App - ext-sjana-vibrac
 
 on:
   push:
@@ -33,13 +33,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push lightweight web image
+      - name: Build and push heavy FEM image
         shell: bash
         run: |
           set -euo pipefail
           IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
           docker build \
-            -f Dockerfile.web \
+            -f Dockerfile \
             -t "${IMAGE}:latest" \
             -t "${IMAGE}:${{ github.sha }}" \
             .
@@ -53,7 +53,7 @@ jobs:
           tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_C3AEEDEFDE8248D8A87FEF8424F795F1 }}
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_6069D6E7CB5442DC8480B436192F7C55 }}
 
-      - name: Point Azure Web App at lightweight image
+      - name: Point Azure Web App at heavy FEM image
         shell: bash
         run: |
           set -euo pipefail
@@ -70,6 +70,12 @@ jobs:
             --resource-group "${RG}" \
             --linux-fx-version "DOCKER|${IMAGE}" \
             --always-on true
+          # Clear any leftover Startup Command so the container's own CMD runs
+          # (gunicorn via docker-entrypoint.sh with Xvfb).
+          az webapp config set \
+            --name "${APP}" \
+            --resource-group "${RG}" \
+            --startup-file ""
           az webapp config appsettings set \
             --name "${APP}" \
             --resource-group "${RG}" \

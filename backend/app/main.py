@@ -1451,6 +1451,28 @@ UI_HTML = """<!doctype html>
   </main>
 
   <script type="module">
+    // === Visible error reporter ===
+    // If anything in this module throws during init, surface it as a banner so
+    // we can see why the chat / preview is silent. Tracked because a single
+    // exception in a <script type="module"> aborts the whole module silently.
+    function __showInitError(prefix, msg) {
+      try {
+        const existing = document.getElementById("__initErrorBanner");
+        const el = existing || document.createElement("div");
+        el.id = "__initErrorBanner";
+        el.style.cssText = "position:fixed;top:0;left:0;right:0;background:#7a1414;color:#fff;padding:10px 14px;font:13px/1.4 ui-monospace,Menlo,monospace;z-index:99999;white-space:pre-wrap;box-shadow:0 2px 10px rgba(0,0,0,.3)";
+        el.textContent = prefix + ": " + msg;
+        if (!existing) document.body.appendChild(el);
+      } catch (_) { /* ignore */ }
+    }
+    window.addEventListener("error", (e) => {
+      __showInitError("JS error", (e && e.message ? e.message : String(e)) + " @ " + (e.filename || "") + ":" + (e.lineno || ""));
+    });
+    window.addEventListener("unhandledrejection", (e) => {
+      const r = e && e.reason;
+      __showInitError("Unhandled promise rejection", r && (r.stack || r.message) ? (r.stack || r.message) : String(r));
+    });
+
     const preview = document.getElementById("preview");
     const jsonOutput = document.getElementById("jsonOutput");
     const paramControls = document.getElementById("paramControls");
@@ -1502,21 +1524,31 @@ UI_HTML = """<!doctype html>
     let simAnimHandle = 0;
     let lastFemContour = null;
 
-    uploadContextButton.addEventListener("click", uploadContextFile);
-    contextFile.addEventListener("change", () => {
-      if (contextFile.files && contextFile.files.length) {
-        uploadContextFile();
-      }
-    });
-    chatInput.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" && !event.shiftKey) {
-        event.preventDefault();
-        chatForm.requestSubmit();
-      }
-    });
-    chatInput.addEventListener("input", autoResizeChatInput);
-    autoResizeChatInput();
-    syncChatState();
+    // Defensive: if any of these early listeners blow up (e.g. an element id
+    // was renamed), do not block the chat-submit listener registered below.
+    try {
+      uploadContextButton.addEventListener("click", uploadContextFile);
+      contextFile.addEventListener("change", () => {
+        if (contextFile.files && contextFile.files.length) {
+          uploadContextFile();
+        }
+      });
+    } catch (e) {
+      console.error("[init] upload-context listeners failed:", e);
+    }
+    try {
+      chatInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && !event.shiftKey) {
+          event.preventDefault();
+          chatForm.requestSubmit();
+        }
+      });
+      chatInput.addEventListener("input", autoResizeChatInput);
+      autoResizeChatInput();
+      syncChatState();
+    } catch (e) {
+      console.error("[init] chat-input setup failed:", e);
+    }
 
     const categoryStarters = {
       "bushing": "I want a rubber suspension bushing. Outer diameter 60 mm, inner diameter 20 mm, height 40 mm. Material: rubber, Shore A 55. Please ask me anything else needed (chamfer, fillet, load direction).",
@@ -4220,15 +4252,6 @@ UI_HTML = """<!doctype html>
     }
 
     window.addEventListener("beforeunload", cleanupViewer);
-
-    function escapeHtml(value) {
-      return String(value)
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll('"', "&quot;")
-        .replaceAll("'", "&#039;");
-    }
   </script>
 </body>
 </html>
