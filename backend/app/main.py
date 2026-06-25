@@ -175,6 +175,108 @@ async def export_step(payload: dict) -> FileResponse:
     return FileResponse(step_path, media_type="application/step", filename=f"{name}.step")
 
 
+@app.post("/generate-mesh")
+async def generate_mesh(payload: dict) -> dict:
+    """Generate a Gmsh tetrahedral mesh and return quality/readiness stats."""
+
+    prompt = str(payload.get("prompt", "")).strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="A prompt is required to generate a mesh.")
+
+    name = _safe_export_name(str(payload.get("name", "model")))
+    element_size = payload.get("element_size_mm")
+    try:
+        element_size_mm = float(element_size) if element_size not in (None, "") else None
+    except (TypeError, ValueError):
+        element_size_mm = None
+    if element_size_mm is not None and element_size_mm <= 0:
+        element_size_mm = None
+
+    repo_root = Path(__file__).resolve().parents[2]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+
+    try:
+        from text_to_cad.cad_agent import generate_with_agent  # noqa: WPS433
+        from geometry.step_to_mesh import step_to_mesh  # noqa: WPS433
+        from geometry.mesh_cleaner import clean_mesh  # noqa: WPS433
+        from geometry.mesh_quality import evaluate_mesh  # noqa: WPS433
+    except ModuleNotFoundError as exc:
+        raise HTTPException(
+            status_code=501,
+            detail="Gmsh meshing requires the deployed CAD/FEM container dependencies.",
+        ) from exc
+
+    work_dir = Path(tempfile.mkdtemp(prefix="resonance_mesh_"))
+    try:
+        cad_code = -1
+        last_exc: Exception | None = None
+        for provider in ("auto", "fallback"):
+            try:
+                cad_code = generate_with_agent(
+                    prompt=prompt,
+                    output_dir=work_dir,
+                    output_name=name,
+                    provider=provider,
+                    execute=True,
+                )
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                continue
+            step_path_attempt = work_dir / f"{name}.step"
+            if cad_code == 0 and step_path_attempt.exists():
+                break
+
+        step_path = work_dir / f"{name}.step"
+        if cad_code != 0 or not step_path.exists():
+            detail = "STEP generation did not produce a file for meshing."
+            if last_exc is not None:
+                detail += f" Last error: {last_exc}"
+            raise HTTPException(status_code=500, detail=detail)
+
+        raw_mesh = work_dir / f"{name}.msh"
+        clean_mesh_path = work_dir / f"{name}_clean.vtk"
+        mesh_result = step_to_mesh(
+            step_file=step_path,
+            output_file=raw_mesh,
+            target_size_mm=element_size_mm,
+        )
+        clean_result = clean_mesh(raw_mesh, clean_mesh_path)
+        quality = evaluate_mesh(clean_mesh_path)
+
+        return {
+            "status": "ok",
+            "mesh_format": "Gmsh tetrahedral volume mesh",
+            "step_file": step_path.name,
+            "mesh_file": raw_mesh.name,
+            "clean_mesh_file": clean_mesh_path.name,
+            "nodes": mesh_result.node_count,
+            "tetrahedra": mesh_result.tetra_count,
+            "min_edge_mm": mesh_result.min_edge_mm,
+            "max_edge_mm": mesh_result.max_edge_mm,
+            "cleaning": {
+                "merged_nodes": clean_result.merged_nodes,
+                "removed_cells": clean_result.removed_cells,
+                "final_node_count": clean_result.final_node_count,
+                "final_cell_count": clean_result.final_cell_count,
+            },
+            "quality": {
+                "ready_for_fem": quality.is_solvable,
+                "min_quality": quality.min_quality,
+                "mean_quality": quality.mean_quality,
+                "inverted_count": quality.inverted_count,
+                "poor_count": quality.poor_count,
+                "min_volume_mm3": quality.min_volume_mm3,
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Gmsh mesh generation failed: {exc}") from exc
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
 @app.post("/run-fem")
 async def run_fem(payload: dict) -> dict:
     """Run the full FEM modal pipeline and return a von Mises contour PNG.
@@ -1181,6 +1283,37 @@ UI_HTML = """<!doctype html>
       gap: 8px;
       align-items: center;
     }
+    .mesh-block {
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid var(--line);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .mesh-output {
+      padding: 10px;
+      background: #f8fbff;
+      border: 1px solid var(--line);
+      border-radius: 3px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .mesh-output strong {
+      color: var(--brand);
+    }
+    .mesh-output.err {
+      background: #fff7f6;
+      border-color: #fecdca;
+      color: var(--danger);
+    }
+    .mesh-stats {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 6px 14px;
+      margin-top: 8px;
+      font-variant-numeric: tabular-nums;
+    }
     .sim-compare {
       display: grid;
       grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -1486,6 +1619,7 @@ UI_HTML = """<!doctype html>
           <div id="paramControls" class="param-controls">
             <p class="muted">Adjustable dimensions will appear here once a model is generated. Use the Download menu to export the edited part.</p>
           </div>
+          <div id="meshResults"></div>
           <div id="simResults"></div>
           <pre id="jsonOutput" hidden>{}</pre>
         </div>
@@ -1520,6 +1654,7 @@ UI_HTML = """<!doctype html>
     const jsonOutput = document.getElementById("jsonOutput");
     const paramControls = document.getElementById("paramControls");
     const paramHint = document.getElementById("paramHint");
+    const meshResults = document.getElementById("meshResults");
     const simResults = document.getElementById("simResults");
     const summaryBox = document.getElementById("summaryBox");
     const chatShell = document.getElementById("chatShell");
@@ -1549,6 +1684,7 @@ UI_HTML = """<!doctype html>
     let pendingDraftPrompt = "";
     let chatHistory = [];
     let lastExport = { mesh: null, canvas: null, intent: null, prompt: "", name: "model" };
+    let lastMeshResult = null;
     // Persistent camera so live parametric edits keep the same view angle.
     let viewerCamera = { rotationX: -0.55, rotationY: 0.78, zoom: 1 };
     let femCamera = { rotationX: -0.55, rotationY: 0.78, zoom: 1 };
@@ -1684,6 +1820,7 @@ UI_HTML = """<!doctype html>
         // A fresh chat generation renders the parsed intent, not a prior mesh-warp edit.
         meshEditMode = false;
         overrideMeshFaces = null;
+        lastMeshResult = null;
         simShown = false;
         simSelectedMode = "b1";
         stopSimAnimation();
@@ -2958,6 +3095,107 @@ UI_HTML = """<!doctype html>
       }
     }
 
+    function renderMeshPanel() {
+      if (!meshResults) return;
+      const src = simSourceDims();
+      if (!src) {
+        meshResults.innerHTML = "";
+        return;
+      }
+      const body = lastMeshResult
+        ? meshResultHtml(lastMeshResult)
+        : '<div class="mesh-output">Generate a Gmsh tetrahedral mesh before running full FEM.</div>';
+      meshResults.innerHTML =
+        '<div class="mesh-block">' +
+        '<div class="sim-head"><strong>Gmsh mesh</strong>' +
+        '<span class="sim-head-actions">' +
+        '<button type="button" class="sim-btn" id="meshGenerateBtn">Generate mesh</button>' +
+        '</span></div>' +
+        '<div id="meshOutput">' + body + '</div>' +
+        '</div>';
+      const btn = document.getElementById("meshGenerateBtn");
+      if (btn) btn.addEventListener("click", runGmshMesh);
+    }
+
+    function meshResultHtml(result) {
+      if (!result) return "";
+      if (result.status === "loading") {
+        return '<div class="mesh-output">Generating STEP, meshing with Gmsh, then checking element quality...</div>';
+      }
+      if (result.status === "error") {
+        return '<div class="mesh-output err">Mesh generation failed: ' + escapeHtml(result.message) + '</div>';
+      }
+      const q = result.quality || {};
+      const cleaning = result.cleaning || {};
+      const ready = q.ready_for_fem ? "Ready for FEM" : "Needs attention";
+      return (
+        '<div class="mesh-output">' +
+        '<strong>' + ready + '</strong> · ' + escapeHtml(result.mesh_format || "Gmsh mesh") +
+        '<div class="mesh-stats">' +
+        '<span>Nodes: <strong>' + formatInt(result.nodes) + '</strong></span>' +
+        '<span>Tetrahedra: <strong>' + formatInt(result.tetrahedra) + '</strong></span>' +
+        '<span>Element edge: <strong>' + formatRange(result.min_edge_mm, result.max_edge_mm, " mm") + '</strong></span>' +
+        '<span>Mean quality: <strong>' + formatNumber(q.mean_quality, 3) + '</strong></span>' +
+        '<span>Poor elements: <strong>' + formatInt(q.poor_count) + '</strong></span>' +
+        '<span>Inverted: <strong>' + formatInt(q.inverted_count) + '</strong></span>' +
+        '<span>Merged nodes: <strong>' + formatInt(cleaning.merged_nodes) + '</strong></span>' +
+        '<span>Removed cells: <strong>' + formatInt(cleaning.removed_cells) + '</strong></span>' +
+        '</div></div>'
+      );
+    }
+
+    function formatInt(value) {
+      const n = Number(value);
+      return Number.isFinite(n) ? Math.round(n).toLocaleString() : "-";
+    }
+
+    function formatNumber(value, digits) {
+      const n = Number(value);
+      return Number.isFinite(n) ? n.toFixed(digits) : "-";
+    }
+
+    function formatRange(min, max, unit) {
+      const a = Number(min);
+      const b = Number(max);
+      if (!Number.isFinite(a) || !Number.isFinite(b)) return "-";
+      return a.toFixed(2) + "-" + b.toFixed(2) + unit;
+    }
+
+    async function runGmshMesh() {
+      const btn = document.getElementById("meshGenerateBtn");
+      const prompt = (lastExport && lastExport.prompt) || "";
+      if (!prompt.trim()) {
+        lastMeshResult = { status: "error", message: "Send a chat message first so Gmsh has a generated CAD model to mesh." };
+        renderMeshPanel();
+        return;
+      }
+      if (btn) btn.disabled = true;
+      lastMeshResult = { status: "loading" };
+      renderMeshPanel();
+      try {
+        const response = await fetch("/generate-mesh", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            prompt: prompt,
+            name: lastExport.name || "model",
+          }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(payload.detail || "Mesh generation failed (HTTP " + response.status + ").");
+        }
+        lastMeshResult = payload;
+        renderMeshPanel();
+      } catch (error) {
+        lastMeshResult = { status: "error", message: error.message || String(error) };
+        renderMeshPanel();
+      } finally {
+        const nextBtn = document.getElementById("meshGenerateBtn");
+        if (nextBtn) nextBtn.disabled = false;
+      }
+    }
+
     function escapeHtml(text) {
       return String(text == null ? "" : text)
         .replace(/&/g, "&amp;")
@@ -3246,6 +3484,7 @@ UI_HTML = """<!doctype html>
           paramControls.innerHTML = '<p class="muted">This is an uploaded mesh, shown exactly as provided. Live parametric editing is available for AI-generated parts.</p>';
           if (paramHint) paramHint.textContent = "Uploaded geometry is read-only.";
         }
+        renderMeshPanel();
         renderSimPanel();
         return;
       }
@@ -3254,6 +3493,7 @@ UI_HTML = """<!doctype html>
       if (!intent || !spec) {
         paramControls.innerHTML = '<p class="muted">Adjustable dimensions will appear here once a model is generated. Use the Download menu to export the edited part.</p>';
         if (paramHint) paramHint.textContent = "";
+        renderMeshPanel();
         renderSimPanel();
         return;
       }
@@ -3292,6 +3532,7 @@ UI_HTML = """<!doctype html>
       paramControls.innerHTML = rows + '<div class="param-actions"><button type="button" class="param-reset" id="paramReset">Reset</button></div>';
       bindParamControls();
       if (paramHint) paramHint.textContent = "Drag a slider to resize the model live.";
+      renderMeshPanel();
       renderSimPanel();
     }
 
@@ -3322,6 +3563,7 @@ UI_HTML = """<!doctype html>
           if (meshEditMode) {
             overrideMeshFaces = warpEditableMeshFaces(currentEditIntent.geometry);
           }
+          lastMeshResult = null;
           buildParamControls(currentEditIntent);
           scheduleParamRender();
         });
@@ -3332,6 +3574,7 @@ UI_HTML = """<!doctype html>
       if (!currentEditIntent) return;
       const geom = currentEditIntent.geometry || (currentEditIntent.geometry = {});
       geom[key] = key === "coil_count" ? Math.max(1, Math.round(value)) : value;
+      lastMeshResult = null;
 
       // Keep the inner diameter strictly inside the outer diameter.
       const od = Number(geom.outer_diameter_mm);
