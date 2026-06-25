@@ -51,6 +51,10 @@ jobs:
             backend/ deploy/backend/
           cp main.py startup.sh deploy/
           cp backend/requirements.txt deploy/requirements.txt
+          python -m pip install \
+            --disable-pip-version-check \
+            --target deploy/.python_packages/lib/site-packages \
+            -r backend/requirements.txt
 
       - name: Upload artifact for deployment job
         uses: actions/upload-artifact@v4
@@ -98,7 +102,8 @@ jobs:
             --always-on true
 
           az webapp config appsettings set --name "${APP}" --resource-group "${RG}" --settings \
-            SCM_DO_BUILD_DURING_DEPLOYMENT=true \
+            SCM_DO_BUILD_DURING_DEPLOYMENT=false \
+            ENABLE_ORYX_BUILD=false \
             PORT=8000 \
             GUNICORN_TIMEOUT=600
 
@@ -108,3 +113,5 @@ jobs:
           app-name: ${{ env.AZURE_WEBAPP_NAME }}
           slot-name: Production
           package: .
+          startup-command: bash startup.sh
+          clean: true
