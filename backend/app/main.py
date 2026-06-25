@@ -1166,8 +1166,17 @@ UI_HTML = """<!doctype html>
       gap: 8px;
       align-items: center;
     }
+    .sim-compare {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 12px;
+      align-items: start;
+    }
+    .sim-compare > div {
+      min-width: 0;
+    }
     .sim-contour {
-      margin-top: 10px;
+      min-height: 100%;
       padding: 10px;
       background: #f8fbff;
       border: 1px solid var(--line);
@@ -1260,6 +1269,7 @@ UI_HTML = """<!doctype html>
     @media (max-width: 1080px) {
       .hero-inner, .workspace { grid-template-columns: 1fr; }
       .hero-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .sim-compare { grid-template-columns: 1fr; }
     }
     @media (max-width: 720px) {
       .topbar, main, .hero-inner { width: min(100% - 28px, 1440px); }
@@ -2887,10 +2897,12 @@ UI_HTML = """<!doctype html>
         '<button type="button" class="sim-btn" id="simRunBtn">Simulate</button>' +
         '<button type="button" class="sim-btn secondary" id="simFemBtn" title="Run full FEM and render a von Mises contour image">FEM contour</button>' +
         '</span></div>' +
+        '<div class="sim-compare">' +
         '<div id="simOutput">' +
         (simShown ? "" : '<p class="muted">Estimate natural frequencies and stiffness for this bushing.</p>') +
         '</div>' +
         '<div id="simFemContainer"></div>' +
+        '</div>' +
         '</div>';
       const btn = document.getElementById("simRunBtn");
       if (btn) {
