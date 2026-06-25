@@ -104,6 +104,8 @@ jobs:
           az webapp config appsettings set --name "${APP}" --resource-group "${RG}" --settings \
             SCM_DO_BUILD_DURING_DEPLOYMENT=false \
             ENABLE_ORYX_BUILD=false \
+            WEBSITE_STACK=python \
+            SCM_SCRIPT_GENERATOR_ARGS="--platform python --platform-version ${{ env.PYTHON_VERSION }}" \
             PORT=8000 \
             GUNICORN_TIMEOUT=600
 
