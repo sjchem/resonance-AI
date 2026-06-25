@@ -110,11 +110,12 @@ jobs:
             SCM_DO_BUILD_DURING_DEPLOYMENT=false \
             ENABLE_ORYX_BUILD=false \
             WEBSITE_STACK=python \
+            WEBSITE_RUN_FROM_PACKAGE=0 \
             SCM_SCRIPT_GENERATOR_ARGS="--platform python --platform-version ${{ env.PYTHON_VERSION }}" \
             PORT=8000 \
             GUNICORN_TIMEOUT=600
 
-      - name: Deploy prepared package with ZipDeploy
+      - name: Deploy prepared package through Kudu file API
         shell: bash
         run: |
           set -euo pipefail
@@ -126,8 +127,13 @@ jobs:
           fi
 
           zip -qr app.zip .
-          az webapp deployment source config-zip \
+          SCM_URI=$(az webapp deployment list-publishing-credentials \
             --resource-group "${RG}" \
             --name "${APP}" \
-            --src app.zip
+            --query scmUri \
+            -o tsv)
+          curl --fail --silent --show-error \
+            -X PUT \
+            --data-binary @app.zip \
+            "${SCM_URI%/}/api/zip/site/wwwroot/"
           az webapp restart --name "${APP}" --resource-group "${RG}"
