@@ -9,6 +9,8 @@
 venv
 antenv
 env
+**/.env
+**/.env.*
 
 # Generated artifacts and local outputs (not needed in the image).
 outputs/

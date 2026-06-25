@@ -1,10 +1,8 @@
-# Deploy the lightweight FastAPI POC to Azure App Service.
-#
-# The production POC only needs the backend parser, chat UI, upload helpers, and
-# browser-side CAD preview. Heavy FEM/CadQuery dependencies are intentionally
-# left out of this deployment so the Web App starts quickly and reliably.
+# Build and deploy the lightweight FastAPI POC as a small Azure Web App
+# container. This avoids Azure/Oryx server-side Python builds and keeps the
+# previous heavy FEM/CadQuery Dockerfile available for later CAD-export work.
 
-name: Build and deploy Python app to Azure Web App - ext-sjana-vibrac
+name: Build and deploy web container to Azure Web App - ext-sjana-vibrac
 
 on:
   push:
@@ -14,72 +12,39 @@ on:
 
 env:
   AZURE_WEBAPP_NAME: ext-sjana-vibrac
-  PYTHON_VERSION: "3.12"
+  REGISTRY: ghcr.io
+  IMAGE_NAME: sjchem/resonance-ai
 
 jobs:
-  build:
+  build-and-deploy:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      packages: write
+      id-token: write
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install backend dependencies
+      - name: Build and push lightweight web image
+        shell: bash
         run: |
-          python -m venv antenv
-          source antenv/bin/activate
-          python -m pip install --upgrade pip
-          pip install -r backend/requirements.txt
-
-      - name: Compile backend
-        run: |
-          source antenv/bin/activate
-          python -m compileall backend main.py
-
-      - name: Prepare deployment package
-        run: |
-          mkdir -p deploy
-          rsync -a --delete \
-            --exclude '__pycache__' \
-            --exclude '*.pyc' \
-            backend/ deploy/backend/
-          cp main.py startup.sh deploy/
-          cp backend/requirements.txt deploy/requirements.txt
-          python -m pip install \
-            --disable-pip-version-check \
-            --target deploy/.python_packages/lib/site-packages \
-            -r backend/requirements.txt
-          cat > deploy/.deployment <<'EOF'
-          [config]
-          SCM_DO_BUILD_DURING_DEPLOYMENT=false
-          ENABLE_ORYX_BUILD=false
-          EOF
-
-      - name: Upload artifact for deployment job
-        uses: actions/upload-artifact@v4
-        with:
-          name: python-app
-          path: deploy
-          include-hidden-files: true
-
-  deploy:
-    runs-on: ubuntu-latest
-    needs: build
-    permissions:
-      id-token: write
-      contents: read
-
-    steps:
-      - name: Download artifact from build job
-        uses: actions/download-artifact@v4
-        with:
-          name: python-app
+          set -euo pipefail
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+          docker build \
+            -f Dockerfile.web \
+            -t "${IMAGE}:latest" \
+            -t "${IMAGE}:${{ github.sha }}" \
+            .
+          docker push "${IMAGE}:latest"
+          docker push "${IMAGE}:${{ github.sha }}"
 
       - name: Login to Azure
         uses: azure/login@v2
@@ -88,7 +53,7 @@ jobs:
           tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_C3AEEDEFDE8248D8A87FEF8424F795F1 }}
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_6069D6E7CB5442DC8480B436192F7C55 }}
 
-      - name: Configure Web App for Python startup
+      - name: Point Azure Web App at lightweight image
         shell: bash
         run: |
           set -euo pipefail
@@ -99,48 +64,18 @@ jobs:
             exit 1
           fi
 
-          # Switch back from custom-container mode to the built-in Python stack.
-          # This also makes the Startup Command visible again in App Service.
-          az webapp config container delete --name "${APP}" --resource-group "${RG}" || true
-          az webapp config set --name "${APP}" --resource-group "${RG}" \
-            --linux-fx-version "PYTHON|${{ env.PYTHON_VERSION }}" \
-            --startup-file "bash startup.sh" \
-            --always-on true
-          az webapp config appsettings set --name "${APP}" --resource-group "${RG}" --settings \
-            SCM_DO_BUILD_DURING_DEPLOYMENT=false \
-            ENABLE_ORYX_BUILD=false \
-            WEBSITE_STACK=python \
-            WEBSITE_RUN_FROM_PACKAGE=0 \
-            SCM_SCRIPT_GENERATOR_ARGS="--platform python --platform-version ${{ env.PYTHON_VERSION }}" \
-            PORT=8000 \
-            GUNICORN_TIMEOUT=600
-
-      - name: Deploy prepared package through Kudu file API
-        shell: bash
-        run: |
-          set -euo pipefail
-          APP="${{ env.AZURE_WEBAPP_NAME }}"
-          RG=$(az webapp list --query "[?name=='${APP}'].resourceGroup | [0]" -o tsv)
-          if [ -z "${RG}" ]; then
-            echo "Could not find Web App '${APP}' in this subscription." >&2
-            exit 1
-          fi
-
-          zip -qr app.zip .
-          SCM_URI=$(az webapp deployment list-publishing-credentials \
-            --resource-group "${RG}" \
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+          az webapp config set \
             --name "${APP}" \
-            --query scmUri \
-            -o tsv)
-          SCM_HOST="${SCM_URI#https://}"
-          SCM_HOST="${SCM_HOST#*@}"
-          ACCESS_TOKEN=$(az account get-access-token \
-            --resource https://management.core.windows.net/ \
-            --query accessToken \
-            -o tsv)
-          curl --fail --silent --show-error \
-            -X PUT \
-            -H "Authorization: Bearer ${ACCESS_TOKEN}" \
-            --data-binary @app.zip \
-            "https://${SCM_HOST%/}/api/zip/site/wwwroot/"
+            --resource-group "${RG}" \
+            --linux-fx-version "DOCKER|${IMAGE}" \
+            --always-on true
+          az webapp config appsettings set \
+            --name "${APP}" \
+            --resource-group "${RG}" \
+            --settings \
+              WEBSITES_PORT=8000 \
+              PORT=8000 \
+              WEBSITES_CONTAINER_START_TIME_LIMIT=1800 \
+              GUNICORN_TIMEOUT=600
           az webapp restart --name "${APP}" --resource-group "${RG}"
