@@ -132,8 +132,15 @@ jobs:
             --name "${APP}" \
             --query scmUri \
             -o tsv)
+          SCM_HOST="${SCM_URI#https://}"
+          SCM_HOST="${SCM_HOST#*@}"
+          ACCESS_TOKEN=$(az account get-access-token \
+            --resource https://management.core.windows.net/ \
+            --query accessToken \
+            -o tsv)
           curl --fail --silent --show-error \
             -X PUT \
+            -H "Authorization: Bearer ${ACCESS_TOKEN}" \
             --data-binary @app.zip \
-            "${SCM_URI%/}/api/zip/site/wwwroot/"
+            "https://${SCM_HOST%/}/api/zip/site/wwwroot/"
           az webapp restart --name "${APP}" --resource-group "${RG}"
