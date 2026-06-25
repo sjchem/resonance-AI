@@ -1,26 +1,56 @@
-# Lightweight web-only image for the Azure App Service POC.
+# Web + FEM image for the Azure App Service POC.
 #
-# This intentionally installs only the FastAPI/OpenAI/upload dependencies from
-# backend/requirements.txt. The heavy FEM/CadQuery image stays in Dockerfile for
-# later CAD-export work, but the public POC should start quickly.
+# This keeps the same web app entrypoint, but includes the native libraries and
+# Python stack needed by /run-fem for CadQuery, gmsh, CalculiX, and PyVista.
 
 FROM python:3.12-slim-bookworm
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
+    PYVISTA_OFF_SCREEN=true \
+    DISPLAY=:99 \
     PORT=8000 \
     PYTHONPATH=/app
 
 WORKDIR /app
 
-COPY backend/requirements.txt ./requirements.txt
+# Native pieces for FEM:
+#   calculix-ccx -> ccx solver
+#   libgomp1     -> OpenMP runtime required by gmsh/CadQuery wheels
+#   Mesa/X libs  -> headless VTK/PyVista rendering
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        calculix-ccx \
+        libgomp1 \
+        libglu1-mesa \
+        libgl1 \
+        libgl1-mesa-dri \
+        libxrender1 \
+        libxext6 \
+        libsm6 \
+        libxt6 \
+        libxcursor1 \
+        libxinerama1 \
+        libxfixes3 \
+        libxft2 \
+        libxi6 \
+        libxrandr2 \
+        xvfb \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements-web-fem.txt ./requirements.txt
 RUN python -m pip install --upgrade pip \
     && pip install -r requirements.txt
 
-COPY main.py startup.sh ./
+COPY main.py ./
 COPY backend/ ./backend/
+COPY text_to_cad/ ./text_to_cad/
+COPY simulate/ ./simulate/
+COPY geometry/ ./geometry/
+COPY skills/ ./skills/
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 EXPOSE 8000
 
-CMD ["bash", "startup.sh"]
+CMD ["/usr/local/bin/docker-entrypoint.sh"]
