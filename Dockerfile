@@ -61,4 +61,6 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 EXPOSE 8000
 
 # Entrypoint starts Xvfb (headless GL for PyVista) then gunicorn on port 8000.
-CMD ["/usr/local/bin/docker-entrypoint.sh"]
+# Invoke bash explicitly (instead of relying on the script's shebang via the
+# exec form) so startup never fails with exit 127 on interpreter resolution.
+CMD ["bash", "/usr/local/bin/docker-entrypoint.sh"]
