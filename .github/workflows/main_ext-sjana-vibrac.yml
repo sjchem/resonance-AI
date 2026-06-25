@@ -55,12 +55,18 @@ jobs:
             --disable-pip-version-check \
             --target deploy/.python_packages/lib/site-packages \
             -r backend/requirements.txt
+          cat > deploy/.deployment <<'EOF'
+          [config]
+          SCM_DO_BUILD_DURING_DEPLOYMENT=false
+          ENABLE_ORYX_BUILD=false
+          EOF
 
       - name: Upload artifact for deployment job
         uses: actions/upload-artifact@v4
         with:
           name: python-app
           path: deploy
+          include-hidden-files: true
 
   deploy:
     runs-on: ubuntu-latest
