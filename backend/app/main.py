@@ -1152,6 +1152,12 @@ UI_HTML = """<!doctype html>
       grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
       gap: 10px;
     }
+    .category-family-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 12px;
+    }
     .category-chip {
       width: auto;
       margin: 0;
@@ -1165,6 +1171,10 @@ UI_HTML = """<!doctype html>
       border-radius: 4px;
       cursor: pointer;
       transition: background 160ms ease, border-color 160ms ease, transform 160ms ease;
+    }
+    .family-chip {
+      min-height: 68px;
+      background: #fff;
     }
     .category-chip strong {
       font-size: 14px;
@@ -1187,6 +1197,15 @@ UI_HTML = """<!doctype html>
     .category-chip.active strong,
     .category-chip.active span {
       color: #fff;
+    }
+    .category-subhead {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 10px;
+      margin: 4px 0 10px;
+      color: var(--muted);
+      font-size: 13px;
     }
     .summary-box {
       border: 1px solid var(--line);
@@ -1592,6 +1611,7 @@ UI_HTML = """<!doctype html>
       .hero { padding-block: 26px; }
       .hero-metrics { grid-template-columns: 1fr; }
       .grid { grid-template-columns: 1fr; }
+      .category-family-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -1684,33 +1704,27 @@ UI_HTML = """<!doctype html>
         <div class="panel" id="categoryPanel">
           <div class="section-title">
             <strong>Product family</strong>
-            <span class="muted">Pick to load a starter prompt</span>
+            <span class="muted">Pick a family, then a component</span>
+          </div>
+          <div class="category-family-grid" id="familyGrid">
+            <button type="button" class="category-chip family-chip active" data-family="bushing">
+              <strong>Bushing</strong>
+              <span>Rubber and bonded bushings</span>
+            </button>
+            <button type="button" class="category-chip family-chip" data-family="spring">
+              <strong>Spring</strong>
+              <span>Air and coil spring parts</span>
+            </button>
+            <button type="button" class="category-chip family-chip" data-family="anonymous">
+              <strong>Anonymous</strong>
+              <span>Other NVH components</span>
+            </button>
+          </div>
+          <div class="category-subhead">
+            <strong id="categorySubhead">Bushing details</strong>
+            <span id="categoryHint">Select a bushing type</span>
           </div>
           <div class="category-grid" id="categoryGrid">
-            <button type="button" class="category-chip" data-category="bushing">
-              <strong>Rubber bushing</strong>
-              <span>Suspension &amp; chassis bushings</span>
-            </button>
-            <button type="button" class="category-chip" data-category="bonded-bushing">
-              <strong>Bonded bushing</strong>
-              <span>Rubber-metal bonded sleeve</span>
-            </button>
-            <button type="button" class="category-chip" data-category="flanged-bushing">
-              <strong>Flanged bushing</strong>
-              <span>Bushing with mounting flange</span>
-            </button>
-            <button type="button" class="category-chip" data-category="air-spring">
-              <strong>Air spring</strong>
-              <span>Air suspension element</span>
-            </button>
-            <button type="button" class="category-chip" data-category="coil-spring">
-              <strong>Coil spring</strong>
-              <span>Helical compression spring</span>
-            </button>
-            <button type="button" class="category-chip" data-category="damper">
-              <strong>Damper / decoupler</strong>
-              <span>Vibration damper element</span>
-            </button>
           </div>
         </div>
         <div class="panel">
@@ -1821,7 +1835,10 @@ UI_HTML = """<!doctype html>
     const contextFile = document.getElementById("contextFile");
     const uploadContextButton = document.getElementById("uploadContextButton");
     const attachmentList = document.getElementById("attachmentList");
+    const familyGrid = document.getElementById("familyGrid");
     const categoryGrid = document.getElementById("categoryGrid");
+    const categorySubhead = document.getElementById("categorySubhead");
+    const categoryHint = document.getElementById("categoryHint");
     const downloadBtn = document.getElementById("downloadBtn");
     const downloadMenu = document.getElementById("downloadMenu");
     let activeViewer = null;
@@ -1881,29 +1898,109 @@ UI_HTML = """<!doctype html>
       console.error("[init] chat-input setup failed:", e);
     }
 
-    const categoryStarters = {
-      "bushing": "I want a rubber suspension bushing. Outer diameter 60 mm, inner diameter 20 mm, height 40 mm. Material: rubber, Shore A 55. Please ask me anything else needed (chamfer, fillet, load direction).",
-      "bonded-bushing": "I want a rubber-metal bonded bushing. Outer diameter 60 mm with a 2 mm outer steel sleeve, inner diameter 20 mm with a 1.5 mm inner steel sleeve, height 40 mm. Rubber Shore A 55 in between. Ask me for any missing details.",
-      "flanged-bushing": "I want a flanged rubber bushing. Outer diameter 50 mm, inner diameter 16 mm, height 35 mm, flange diameter 70 mm, flange thickness 4 mm. Rubber Shore A 60. Ask me for any missing details.",
-      "air-spring": "I want an air spring element for light-vehicle suspension. Top mounting diameter 120 mm, bellows diameter 150 mm, free height 180 mm, internal pressure 6 bar. Ask me for any missing geometry or mounting details.",
-      "coil-spring": "I want a steel compression coil spring. Coil diameter 40 mm, free length 80 mm, wire thickness 4 mm, 8 coils, material steel. Ask me for any missing details.",
-      "damper": "I want a hydraulic damper / decoupler mount. Body diameter 50 mm, height 60 mm, rubber Shore A 50, with an inner steel sleeve 12 mm bore. Ask me for any missing details."
+    const categoryFamilies = {
+      bushing: {
+        title: "Bushing details",
+        hint: "Select a bushing type",
+        items: [
+          {
+            key: "rubber-bushing",
+            title: "Rubber bushing",
+            desc: "Suspension & chassis bushings",
+            prompt: "I want a rubber suspension bushing. Outer diameter 60 mm, inner diameter 20 mm, height 40 mm. Material: rubber, Shore A 55. Please ask me anything else needed (chamfer, fillet, load direction).",
+          },
+          {
+            key: "bonded-bushing",
+            title: "Bonded bushing",
+            desc: "Rubber-metal bonded sleeve",
+            prompt: "I want a rubber-metal bonded bushing. Outer diameter 60 mm with a 2 mm outer steel sleeve, inner diameter 20 mm with a 1.5 mm inner steel sleeve, height 40 mm. Rubber Shore A 55 in between. Ask me for any missing details.",
+          },
+          {
+            key: "flanged-bushing",
+            title: "Flanged bushing",
+            desc: "Bushing with mounting flange",
+            prompt: "I want a flanged rubber bushing. Outer diameter 50 mm, inner diameter 16 mm, height 35 mm, flange diameter 70 mm, flange thickness 4 mm. Rubber Shore A 60. Ask me for any missing details.",
+          },
+        ],
+      },
+      spring: {
+        title: "Spring details",
+        hint: "Select a spring type",
+        items: [
+          {
+            key: "air-spring",
+            title: "Air spring",
+            desc: "Air suspension element",
+            prompt: "I want an air spring element for light-vehicle suspension. Top mounting diameter 120 mm, bellows diameter 150 mm, free height 180 mm, internal pressure 6 bar. Ask me for any missing geometry or mounting details.",
+          },
+          {
+            key: "coil-spring",
+            title: "Coil spring",
+            desc: "Helical compression spring",
+            prompt: "I want a steel compression coil spring. Coil diameter 40 mm, free length 80 mm, wire thickness 4 mm, 8 coils, material steel. Ask me for any missing details.",
+          },
+        ],
+      },
+      anonymous: {
+        title: "Anonymous details",
+        hint: "Select another component type",
+        items: [
+          {
+            key: "damper",
+            title: "Damper / decoupler",
+            desc: "Vibration damper element",
+            prompt: "I want a hydraulic damper / decoupler mount. Body diameter 50 mm, height 60 mm, rubber Shore A 50, with an inner steel sleeve 12 mm bore. Ask me for any missing details.",
+          },
+        ],
+      },
     };
+
+    let activeFamily = "bushing";
+
+    function renderCategoryFamily(familyKey) {
+      const resolvedKey = categoryFamilies[familyKey] ? familyKey : "bushing";
+      const family = categoryFamilies[resolvedKey];
+      activeFamily = resolvedKey;
+      if (categorySubhead) categorySubhead.textContent = family.title;
+      if (categoryHint) categoryHint.textContent = family.hint;
+      for (const chip of familyGrid.querySelectorAll("[data-family]")) {
+        chip.classList.toggle("active", chip.dataset.family === resolvedKey);
+      }
+      categoryGrid.innerHTML = family.items.map((item) => (
+        '<button type="button" class="category-chip" data-category="' + escapeHtml(item.key) + '">' +
+        '<strong>' + escapeHtml(item.title) + '</strong>' +
+        '<span>' + escapeHtml(item.desc) + '</span>' +
+        '</button>'
+      )).join("");
+    }
+
+    function findCategoryItem(key) {
+      const family = categoryFamilies[activeFamily] || categoryFamilies.bushing;
+      return family.items.find((item) => item.key === key) || null;
+    }
+
+    familyGrid.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-family]");
+      if (!button) return;
+      renderCategoryFamily(button.dataset.family);
+    });
 
     categoryGrid.addEventListener("click", (event) => {
       const button = event.target.closest(".category-chip");
       if (!button) return;
       const key = button.dataset.category;
-      const starter = categoryStarters[key];
-      if (!starter) return;
+      const item = findCategoryItem(key);
+      if (!item) return;
       for (const chip of categoryGrid.querySelectorAll(".category-chip")) {
         chip.classList.toggle("active", chip === button);
       }
-      chatInput.value = starter;
+      chatInput.value = item.prompt;
       autoResizeChatInput();
       chatInput.focus();
       chatInput.setSelectionRange(chatInput.value.length, chatInput.value.length);
     });
+
+    renderCategoryFamily(activeFamily);
 
     downloadBtn.addEventListener("click", (event) => {
       event.stopPropagation();
