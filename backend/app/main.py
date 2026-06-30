@@ -524,15 +524,15 @@ async def run_fem(payload: dict) -> dict:
 
     name = _safe_export_name(str(payload.get("name", "model")))
     try:
-        mode = int(payload.get("mode", 1) or 1)
-    except (TypeError, ValueError):
-        mode = 1
-    mode = max(1, min(mode, 10))
-    try:
         num_modes = int(payload.get("num_modes", 6) or 6)
     except (TypeError, ValueError):
         num_modes = 6
-    num_modes = max(mode, min(num_modes, 12))
+    num_modes = max(1, min(num_modes, 10))
+    try:
+        mode = int(payload.get("mode", 1) or 1)
+    except (TypeError, ValueError):
+        mode = 1
+    mode = max(1, min(mode, num_modes))
     material = str(payload.get("material", "")).strip() or None
 
     repo_root = Path(__file__).resolve().parents[2]
@@ -1507,6 +1507,8 @@ UI_HTML = """<!doctype html>
       gap: 10px;
     }
     .sim-btn {
+      width: auto;
+      margin-top: 0;
       background: var(--brand);
       color: #fff;
       border: none;
@@ -1533,6 +1535,29 @@ UI_HTML = """<!doctype html>
       display: flex;
       gap: 8px;
       align-items: center;
+    }
+    .sim-batch-controls {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(120px, 180px)) minmax(0, 1fr);
+      gap: 10px;
+      align-items: end;
+      padding: 10px;
+      background: #f8fbff;
+      border: 1px solid var(--line);
+      border-radius: 3px;
+    }
+    .sim-batch-field label {
+      margin-bottom: 4px;
+      font-size: 12px;
+    }
+    .sim-batch-field input {
+      padding: 7px 9px;
+      font-size: 13px;
+    }
+    .sim-batch-note {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
     }
     .mesh-block {
       margin-top: 14px;
@@ -1666,6 +1691,26 @@ UI_HTML = """<!doctype html>
     .sim-contour .sim-fem-error {
       color: var(--danger);
       font-weight: 500;
+    }
+    .sim-fem-progress {
+      height: 8px;
+      margin-top: 10px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: #dbe6f2;
+    }
+    .sim-fem-progress span {
+      display: block;
+      width: 42%;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, var(--brand), var(--cad));
+      animation: sim-progress-slide 1.4s ease-in-out infinite;
+    }
+    @keyframes sim-progress-slide {
+      0% { transform: translateX(-110%); }
+      50% { transform: translateX(70%); }
+      100% { transform: translateX(260%); }
     }
     .sim-table-rows tr[data-mode] {
       cursor: pointer;
@@ -2007,6 +2052,8 @@ UI_HTML = """<!doctype html>
     let simSelectedMode = "b1";
     let simAnimHandle = 0;
     let lastFemContour = null;
+    let femBatchCount = 6;
+    let femContourMode = 1;
 
     // Defensive: if any of these early listeners blow up (e.g. an element id
     // was renamed), do not block the chat-submit listener registered below.
@@ -3265,6 +3312,9 @@ UI_HTML = """<!doctype html>
       out.querySelectorAll("tr[data-mode]").forEach((tr) => {
         tr.addEventListener("click", () => {
           simSelectedMode = tr.getAttribute("data-mode");
+          femContourMode = clampInt(selectedFemMode(), 1, femBatchCount || 6, 1);
+          const contourInput = document.getElementById("simContourMode");
+          if (contourInput) contourInput.value = String(femContourMode);
           renderSimOutput();
         });
       });
@@ -3450,8 +3500,9 @@ UI_HTML = """<!doctype html>
         '<div class="sim-head"><strong>Simulation</strong>' +
         '<span class="sim-head-actions">' +
         '<button type="button" class="sim-btn" id="simRunBtn">Simulate</button>' +
-        '<button type="button" class="sim-btn secondary" id="simFemBtn" title="Run full FEM and render a von Mises contour image">FEM contour</button>' +
+        '<button type="button" class="sim-btn secondary" id="simFemBtn" title="Run one multi-mode FEM batch and render the selected contour">FEM batch</button>' +
         '</span></div>' +
+        simBatchControlsHtml() +
         '<div class="sim-compare">' +
         '<div id="simOutput">' +
         (simShown ? "" : '<p class="muted">Estimate natural frequencies and stiffness for this bushing.</p>') +
@@ -3470,12 +3521,63 @@ UI_HTML = """<!doctype html>
       if (femBtn) {
         femBtn.addEventListener("click", runFemContour);
       }
+      bindSimBatchControls();
       if (simShown) {
         renderSimOutput();
       }
       if (lastFemContour) {
         renderFemContour(lastFemContour);
       }
+    }
+
+    function simBatchControlsHtml() {
+      const count = clampInt(femBatchCount, 1, 10, 6);
+      const contour = clampInt(femContourMode || selectedFemMode(), 1, count, 1);
+      return (
+        '<div class="sim-batch-controls">' +
+        '<div class="sim-batch-field">' +
+        '<label for="simBatchCount">Number of simulations</label>' +
+        '<input id="simBatchCount" type="number" min="1" max="10" step="1" value="' + count + '">' +
+        '</div>' +
+        '<div class="sim-batch-field">' +
+        '<label for="simContourMode">Contour mode</label>' +
+        '<input id="simContourMode" type="number" min="1" max="' + count + '" step="1" value="' + contour + '">' +
+        '</div>' +
+        '<div class="sim-batch-note">One CAD mesh is generated, then CalculiX solves up to 10 modal results. Larger batches can take several minutes on Azure.</div>' +
+        '</div>'
+      );
+    }
+
+    function bindSimBatchControls() {
+      const countInput = document.getElementById("simBatchCount");
+      const contourInput = document.getElementById("simContourMode");
+      if (countInput) {
+        countInput.addEventListener("input", () => {
+          femBatchCount = readClampedInput(countInput, 1, 10, femBatchCount || 6);
+          if (contourInput) {
+            contourInput.max = String(femBatchCount);
+            femContourMode = readClampedInput(contourInput, 1, femBatchCount, femContourMode || 1);
+            contourInput.value = String(femContourMode);
+          }
+        });
+      }
+      if (contourInput) {
+        contourInput.addEventListener("input", () => {
+          femContourMode = readClampedInput(contourInput, 1, femBatchCount || 6, femContourMode || 1);
+        });
+      }
+    }
+
+    function readClampedInput(input, min, max, fallback) {
+      if (!input) return fallback;
+      const value = Number(input && input.value);
+      return clampInt(value, min, max, fallback);
+    }
+
+    function clampInt(value, min, max, fallback) {
+      const n = Math.round(Number(value));
+      if (!Number.isFinite(n)) return fallback;
+      return Math.max(min, Math.min(max, n));
     }
 
     function renderMeshPanel() {
@@ -3814,7 +3916,8 @@ UI_HTML = """<!doctype html>
       if (state.status === "loading") {
         container.innerHTML =
           '<div class="sim-contour">' +
-          '<p class="sim-fem-msg">Running full FEM (mesh \u2192 CalculiX \u2192 contour). This can take 30\u201390 seconds...</p>' +
+          '<p class="sim-fem-msg">Running FEM batch (one mesh \u2192 CalculiX modal solve for ' + femBatchCount + ' mode(s) \u2192 selected contour). This can take several minutes...</p>' +
+          '<div class="sim-fem-progress" aria-hidden="true"><span></span></div>' +
           '</div>';
         return;
       }
@@ -3829,20 +3932,30 @@ UI_HTML = """<!doctype html>
         const d = state.data;
         const hasMesh = d.fem_mesh && Array.isArray(d.fem_mesh.faces) && d.fem_mesh.faces.length;
         const modesRows = (d.modes || []).map((m) => (
-          '<tr><td>Mode ' + m.mode_number + '</td>' +
+          '<tr class="' + (Number(m.mode_number) === Number(d.mode) ? 'sim-row-active' : '') + '">' +
+          '<td>Mode ' + m.mode_number + '</td>' +
           '<td class="sim-value">' + formatHz(m.frequency_hz) + '</td></tr>'
         )).join("");
         container.innerHTML =
           '<div class="sim-contour">' +
-          '<p class="sim-fem-msg"><strong>Validated FEM result</strong> \u00b7 von Mises stress contour \u00b7 mode ' + d.mode +
+          '<p class="sim-fem-msg"><strong>Validated FEM batch</strong> \u00b7 ' + d.num_modes + ' mode(s) solved \u00b7 showing von Mises contour for mode ' + d.mode +
           ' \u00b7 material ' + escapeHtml(d.material) + '</p>' +
           (hasMesh
             ? '<div class="sim-fem-viewer" id="simFemViewer" aria-label="Interactive FEM contour view"></div>'
             : '<img alt="von Mises stress contour for mode ' + d.mode + '" src="data:image/png;base64,' + d.contour_png_base64 + '"/>') +
+          '<div class="sim-head-actions" style="margin-top:10px;justify-content:flex-end">' +
+          '<button type="button" class="sim-btn" id="femCsvBtn">Download CSV</button>' +
+          '</div>' +
           (modesRows ? ('<table class="sim-table sim-table-rows" style="margin-top:10px"><tr><th>FEM mode</th><th style="text-align:right">Frequency</th></tr>' + modesRows + '</table>') : '') +
           '</div>';
         if (hasMesh) {
           renderFemMeshCanvas(document.getElementById("simFemViewer"), d.fem_mesh);
+        }
+        const csvBtn = document.getElementById("femCsvBtn");
+        if (csvBtn) {
+          csvBtn.addEventListener("click", () => {
+            downloadBlob(femCsvBlob(d), ((lastExport && lastExport.name) || "model") + "_fem_modes.csv");
+          });
         }
       }
     }
@@ -4018,6 +4131,15 @@ UI_HTML = """<!doctype html>
         renderFemContour(lastFemContour);
         return;
       }
+      const countInput = document.getElementById("simBatchCount");
+      const contourInput = document.getElementById("simContourMode");
+      femBatchCount = readClampedInput(countInput, 1, 10, femBatchCount || 6);
+      femContourMode = readClampedInput(contourInput, 1, femBatchCount, selectedFemMode());
+      if (countInput) countInput.value = String(femBatchCount);
+      if (contourInput) {
+        contourInput.max = String(femBatchCount);
+        contourInput.value = String(femContourMode);
+      }
       if (femBtn) femBtn.disabled = true;
       lastFemContour = { status: "loading" };
       renderFemContour(lastFemContour);
@@ -4027,8 +4149,8 @@ UI_HTML = """<!doctype html>
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             prompt: prompt,
-            mode: selectedFemMode(),
-            num_modes: 6,
+            mode: femContourMode,
+            num_modes: femBatchCount,
             name: (lastExport && lastExport.name) || "model",
           }),
         });
@@ -4894,6 +5016,26 @@ UI_HTML = """<!doctype html>
       anchor.click();
       anchor.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    function femCsvBlob(data) {
+      const rows = [["mode_number", "frequency_hz", "eigenvalue", "selected_contour", "material"]];
+      for (const mode of (data && data.modes) || []) {
+        rows.push([
+          mode.mode_number,
+          mode.frequency_hz,
+          mode.eigenvalue,
+          Number(mode.mode_number) === Number(data.mode) ? "yes" : "no",
+          data.material || "generic",
+        ]);
+      }
+      const csv = rows.map((row) => row.map(csvCell).join(",")).join("\\n") + "\\n";
+      return new Blob([csv], { type: "text/csv;charset=utf-8" });
+    }
+
+    function csvCell(value) {
+      const text = String(value == null ? "" : value);
+      return /[",\\n\\r]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text;
     }
 
     function exNum(value, fallback) {
