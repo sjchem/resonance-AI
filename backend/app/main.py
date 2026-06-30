@@ -1334,6 +1334,15 @@ UI_HTML = """<!doctype html>
     .category-chip.active span {
       color: #fff;
     }
+    .category-detail {
+      display: none;
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid var(--line);
+    }
+    .category-detail.open {
+      display: block;
+    }
     .category-subhead {
       display: flex;
       align-items: baseline;
@@ -1948,7 +1957,7 @@ UI_HTML = """<!doctype html>
             <span class="muted">Pick a family, then a component</span>
           </div>
           <div class="category-family-grid" id="familyGrid">
-            <button type="button" class="category-chip family-chip active" data-family="bushing">
+            <button type="button" class="category-chip family-chip" data-family="bushing">
               <strong>Bushing</strong>
               <span>Rubber and bonded bushings</span>
             </button>
@@ -1961,11 +1970,13 @@ UI_HTML = """<!doctype html>
               <span>Other NVH components</span>
             </button>
           </div>
-          <div class="category-subhead">
-            <strong id="categorySubhead">Bushing details</strong>
-            <span id="categoryHint">Select a bushing type</span>
-          </div>
-          <div class="category-grid" id="categoryGrid">
+          <div class="category-detail" id="categoryDetail">
+            <div class="category-subhead">
+              <strong id="categorySubhead">Component types</strong>
+              <span id="categoryHint">Select a component type</span>
+            </div>
+            <div class="category-grid" id="categoryGrid">
+            </div>
           </div>
         </div>
         <div class="panel">
@@ -2077,6 +2088,7 @@ UI_HTML = """<!doctype html>
     const uploadContextButton = document.getElementById("uploadContextButton");
     const attachmentList = document.getElementById("attachmentList");
     const familyGrid = document.getElementById("familyGrid");
+    const categoryDetail = document.getElementById("categoryDetail");
     const categoryGrid = document.getElementById("categoryGrid");
     const categorySubhead = document.getElementById("categorySubhead");
     const categoryHint = document.getElementById("categoryHint");
@@ -2143,7 +2155,7 @@ UI_HTML = """<!doctype html>
 
     const categoryFamilies = {
       bushing: {
-        title: "Bushing details",
+        title: "Bushing types",
         hint: "Select a bushing type",
         items: [
           {
@@ -2167,7 +2179,7 @@ UI_HTML = """<!doctype html>
         ],
       },
       spring: {
-        title: "Spring details",
+        title: "Spring types",
         hint: "Select a spring type",
         items: [
           {
@@ -2185,7 +2197,7 @@ UI_HTML = """<!doctype html>
         ],
       },
       anonymous: {
-        title: "Anonymous details",
+        title: "Anonymous component types",
         hint: "Select another component type",
         items: [
           {
@@ -2198,12 +2210,22 @@ UI_HTML = """<!doctype html>
       },
     };
 
-    let activeFamily = "bushing";
+    let activeFamily = "";
 
     function renderCategoryFamily(familyKey) {
-      const resolvedKey = categoryFamilies[familyKey] ? familyKey : "bushing";
+      const resolvedKey = categoryFamilies[familyKey] ? familyKey : "";
+      if (!resolvedKey) {
+        activeFamily = "";
+        if (categoryDetail) categoryDetail.classList.remove("open");
+        if (categoryGrid) categoryGrid.innerHTML = "";
+        for (const chip of familyGrid.querySelectorAll("[data-family]")) {
+          chip.classList.remove("active");
+        }
+        return;
+      }
       const family = categoryFamilies[resolvedKey];
       activeFamily = resolvedKey;
+      if (categoryDetail) categoryDetail.classList.add("open");
       if (categorySubhead) categorySubhead.textContent = family.title;
       if (categoryHint) categoryHint.textContent = family.hint;
       for (const chip of familyGrid.querySelectorAll("[data-family]")) {
