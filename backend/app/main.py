@@ -757,7 +757,7 @@ UI_HTML = """<!doctype html>
       max-width: 720px;
     }
     main {
-      width: min(1440px, calc(100% - 48px));
+      width: min(1720px, calc(100% - 32px));
       margin: 0 auto 32px;
     }
     .hero {
@@ -822,8 +822,8 @@ UI_HTML = """<!doctype html>
     }
     .workspace {
       display: grid;
-      grid-template-columns: minmax(360px, 460px) minmax(0, 1fr);
-      gap: 24px;
+      grid-template-columns: minmax(300px, 340px) minmax(0, 1fr);
+      gap: 18px;
       align-items: start;
     }
     .workbench, .panel {
@@ -832,6 +832,9 @@ UI_HTML = """<!doctype html>
       border-radius: 4px;
       padding: 22px;
       box-shadow: 0 12px 30px rgba(15, 23, 42, 0.05);
+    }
+    .workbench {
+      padding: 18px;
     }
     .section-title {
       margin: 0 0 18px;
@@ -988,8 +991,8 @@ UI_HTML = """<!doctype html>
       gap: 12px;
     }
     .chat-shell {
-      min-height: 520px;
-      max-height: 620px;
+      min-height: 460px;
+      max-height: 560px;
       border: 1px solid var(--line);
       border-radius: 3px;
       background: linear-gradient(135deg, #f9fbfd, #eef3f8);
@@ -998,7 +1001,7 @@ UI_HTML = """<!doctype html>
       overflow: hidden;
     }
     .chat-shell.idle {
-      min-height: 560px;
+      min-height: 500px;
       max-height: none;
     }
     .chat-log {
@@ -1037,9 +1040,9 @@ UI_HTML = """<!doctype html>
     }
     .msg.intro {
       max-width: 100%;
-      padding: 18px 20px;
-      font-size: 15px;
-      line-height: 1.6;
+      padding: 14px 16px;
+      font-size: 14px;
+      line-height: 1.55;
       box-shadow: 0 12px 30px rgba(15, 23, 42, 0.05);
     }
     .msg.bot.err { border-color: #fecdca; background: #fff7f6; color: var(--danger); }
@@ -1067,10 +1070,10 @@ UI_HTML = """<!doctype html>
       background: transparent;
     }
     .chat-shell.idle .chat-composer textarea {
-      min-height: 240px;
-      max-height: 280px;
-      padding: 18px;
-      font-size: 16px;
+      min-height: 200px;
+      max-height: 240px;
+      padding: 16px;
+      font-size: 15px;
       line-height: 1.6;
     }
     .chat-actions {
@@ -1356,8 +1359,8 @@ UI_HTML = """<!doctype html>
       border: 1px solid var(--line);
       border-left: 4px solid var(--accent);
       background: #fbfdff;
-      padding: 14px;
-      min-height: 112px;
+      padding: 12px;
+      min-height: 96px;
     }
     .summary-box p {
       margin: 0;
@@ -1369,8 +1372,8 @@ UI_HTML = """<!doctype html>
       margin: 0;
       display: grid;
       grid-template-columns: max-content minmax(0, 1fr);
-      gap: 7px 14px;
-      font-size: 14px;
+      gap: 6px 10px;
+      font-size: 13px;
     }
     .summary-box dt {
       color: var(--muted);
@@ -1607,7 +1610,8 @@ UI_HTML = """<!doctype html>
       margin-top: 10px;
     }
     .mesh-viewer {
-      min-height: 360px;
+      height: clamp(520px, 58vh, 760px);
+      min-height: 520px;
       border-radius: 3px;
       overflow: hidden;
       background: #ffffff;
@@ -1676,7 +1680,8 @@ UI_HTML = """<!doctype html>
     }
     .sim-fem-viewer {
       width: 100%;
-      min-height: 360px;
+      height: clamp(500px, 56vh, 740px);
+      min-height: 500px;
       border-radius: 2px;
       overflow: hidden;
       background: #f8fbff;
@@ -1851,6 +1856,10 @@ UI_HTML = """<!doctype html>
       .hero-inner, .workspace { grid-template-columns: 1fr; }
       .hero-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
       .sim-compare { grid-template-columns: 1fr; }
+      .mesh-viewer, .sim-fem-viewer {
+        height: 440px;
+        min-height: 440px;
+      }
     }
     @media (max-width: 720px) {
       .topbar, main, .hero-inner { width: min(100% - 28px, 1440px); }
@@ -1860,6 +1869,32 @@ UI_HTML = """<!doctype html>
       .hero-metrics { grid-template-columns: 1fr; }
       .grid { grid-template-columns: 1fr; }
       .category-family-grid { grid-template-columns: 1fr; }
+      .mesh-viewer-wrap { grid-template-columns: 1fr; }
+      .mesh-legend {
+        grid-template-columns: auto auto minmax(120px, 1fr) auto;
+        grid-template-rows: auto;
+        justify-items: start;
+        align-items: center;
+      }
+      .mesh-legend-bar {
+        width: auto;
+        min-height: 16px;
+        height: 16px;
+        background: linear-gradient(
+          to right,
+          #20199c 0%,
+          #005bff 18%,
+          #00c8ff 36%,
+          #40dc68 54%,
+          #ffeb3b 70%,
+          #ff8700 84%,
+          #cc0000 100%
+        );
+      }
+      .mesh-viewer, .sim-fem-viewer {
+        height: 340px;
+        min-height: 340px;
+      }
       .sim-kpi-grid, .sim-dashboard-detail { grid-template-columns: 1fr 1fr; }
       .sim-bar-row { grid-template-columns: 86px minmax(0, 1fr) 68px; }
     }
