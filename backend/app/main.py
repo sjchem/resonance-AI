@@ -1724,23 +1724,6 @@ UI_HTML = """<!doctype html>
     .sim-row-active td {
       font-weight: 600;
     }
-    .sim-shape {
-      margin-top: 10px;
-      padding: 10px;
-      background: #f8fbff;
-      border: 1px solid var(--line);
-      border-radius: 3px;
-    }
-    .sim-shape canvas {
-      width: 100%;
-      height: auto;
-      display: block;
-    }
-    .sim-shape-cap {
-      margin: 6px 0 0;
-      font-size: 12px;
-      text-align: center;
-    }
     .sim-table {
       width: 100%;
       border-collapse: collapse;
@@ -1759,6 +1742,81 @@ UI_HTML = """<!doctype html>
       text-align: right;
       font-variant-numeric: tabular-nums;
       color: var(--brand);
+    }
+    .sim-dashboard {
+      margin-top: 10px;
+      display: grid;
+      gap: 10px;
+    }
+    .sim-kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .sim-kpi,
+    .sim-frequency-bars,
+    .sim-dashboard-detail {
+      padding: 10px;
+      background: #f8fbff;
+      border: 1px solid var(--line);
+      border-radius: 3px;
+    }
+    .sim-kpi span,
+    .sim-detail-item span {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 650;
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+    }
+    .sim-kpi strong,
+    .sim-detail-item strong {
+      display: block;
+      margin-top: 3px;
+      color: var(--brand);
+      font-size: 16px;
+      font-variant-numeric: tabular-nums;
+    }
+    .sim-frequency-bars {
+      display: grid;
+      gap: 6px;
+    }
+    .sim-bar-row {
+      display: grid;
+      grid-template-columns: 96px minmax(0, 1fr) 74px;
+      gap: 8px;
+      align-items: center;
+      padding: 5px 6px;
+      border-radius: 2px;
+      cursor: pointer;
+      font-size: 12px;
+      color: var(--brand);
+    }
+    .sim-bar-row:hover,
+    .sim-bar-row.active {
+      background: #eef3f9;
+    }
+    .sim-bar-track {
+      height: 9px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: #dbe6f2;
+    }
+    .sim-bar-fill {
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, var(--brand), var(--cad));
+    }
+    .sim-bar-value {
+      text-align: right;
+      color: var(--brand);
+      font-variant-numeric: tabular-nums;
+    }
+    .sim-dashboard-detail {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
     }
     .sim-stiff {
       display: flex;
@@ -1793,6 +1851,8 @@ UI_HTML = """<!doctype html>
       .hero-metrics { grid-template-columns: 1fr; }
       .grid { grid-template-columns: 1fr; }
       .category-family-grid { grid-template-columns: 1fr; }
+      .sim-kpi-grid, .sim-dashboard-detail { grid-template-columns: 1fr 1fr; }
+      .sim-bar-row { grid-template-columns: 86px minmax(0, 1fr) 68px; }
     }
   </style>
 </head>
@@ -3275,11 +3335,11 @@ UI_HTML = """<!doctype html>
     function renderSimOutput() {
       const out = document.getElementById("simOutput");
       if (!out) return;
+      stopSimAnimation();
       const src = simSourceDims();
       const est = src ? estimateBushingModal(src.geom, src.material) : null;
       if (!est) {
         out.innerHTML = '<p class="muted">Not enough bushing dimensions to estimate.</p>';
-        stopSimAnimation();
         return;
       }
       const modes = [
@@ -3288,195 +3348,57 @@ UI_HTML = """<!doctype html>
         { key: "b3", label: "3rd bending", hz: est.bending[2] },
         { key: "a1", label: "1st axial",   hz: est.axial1   },
       ];
+      const selected = modes.find((m) => m.key === simSelectedMode) || modes[0];
+      const maxHz = Math.max(...modes.map((m) => Number(m.hz) || 0), 1);
       const rows = modes.map((m) =>
         '<tr data-mode="' + m.key + '"' + (m.key === simSelectedMode ? ' class="sim-row-active"' : '') + '>' +
         '<td>' + m.label + '</td>' +
         '<td class="sim-value">' + formatHz(m.hz) + '</td>' +
         '</tr>'
       ).join("");
+      const bars = modes.map((m) => {
+        const pct = clamp(((Number(m.hz) || 0) / maxHz) * 100, 3, 100);
+        return (
+          '<div class="sim-bar-row' + (m.key === simSelectedMode ? ' active' : '') + '" data-mode="' + m.key + '">' +
+          '<strong>' + m.label + '</strong>' +
+          '<div class="sim-bar-track"><div class="sim-bar-fill" style="width:' + pct.toFixed(1) + '%"></div></div>' +
+          '<span class="sim-bar-value">' + formatHz(m.hz) + '</span>' +
+          '</div>'
+        );
+      }).join("");
       out.innerHTML =
         '<p class="muted">First-pass analytical estimate \u00b7 fixed-bottom \u00b7 linear-elastic ' +
-        est.material.replace("_", " ") + '. Click a mode to visualize. Run full FEM for validated results.</p>' +
+        est.material.replace("_", " ") + '. Dashboard view. Run full FEM for validated results.</p>' +
+        '<div class="sim-dashboard">' +
+        '<div class="sim-kpi-grid">' +
+        '<div class="sim-kpi"><span>Selected mode</span><strong>' + selected.label + '</strong></div>' +
+        '<div class="sim-kpi"><span>Frequency</span><strong>' + formatHz(selected.hz) + '</strong></div>' +
+        '<div class="sim-kpi"><span>Axial stiffness</span><strong>' + formatStiffness(est.kAxial) + '</strong></div>' +
+        '<div class="sim-kpi"><span>Bending stiffness</span><strong>' + formatStiffness(est.kBending) + '</strong></div>' +
+        '</div>' +
+        '<div class="sim-frequency-bars">' +
+        '<div class="category-subhead" style="margin:0 0 2px"><strong>Frequency dashboard</strong><span>Click a mode to select FEM contour</span></div>' +
+        bars +
+        '</div>' +
+        '<div class="sim-dashboard-detail">' +
+        '<div class="sim-detail-item"><span>Material model</span><strong>' + escapeHtml(est.material.replace("_", " ")) + '</strong></div>' +
+        '<div class="sim-detail-item"><span>Area</span><strong>' + formatNumber(est.area, 1) + ' mm\u00b2</strong></div>' +
+        '<div class="sim-detail-item"><span>Second moment</span><strong>' + formatEngineering(est.inertia, "mm4") + '</strong></div>' +
+        '</div>' +
+        '</div>' +
         '<table class="sim-table sim-table-rows">' +
         '<tr><th>Mode</th><th style="text-align:right">Frequency</th></tr>' +
         rows +
-        '</table>' +
-        '<div class="sim-stiff">' +
-        '<span>Axial stiffness: <b>' + formatStiffness(est.kAxial) + '</b></span>' +
-        '<span>Bending stiffness: <b>' + formatStiffness(est.kBending) + '</b></span>' +
-        '</div>' +
-        '<div class="sim-shape">' +
-        '<canvas id="simShapeCanvas" width="560" height="280"></canvas>' +
-        '<p class="muted sim-shape-cap" id="simShapeCap"></p>' +
-        '</div>';
-      out.querySelectorAll("tr[data-mode]").forEach((tr) => {
-        tr.addEventListener("click", () => {
-          simSelectedMode = tr.getAttribute("data-mode");
+        '</table>';
+      out.querySelectorAll("[data-mode]").forEach((el) => {
+        el.addEventListener("click", () => {
+          simSelectedMode = el.getAttribute("data-mode");
           femContourMode = clampInt(selectedFemMode(), 1, femBatchCount || 6, 1);
           const contourInput = document.getElementById("simContourMode");
           if (contourInput) contourInput.value = String(femContourMode);
           renderSimOutput();
         });
       });
-      startSimAnimation(src.geom, est);
-    }
-
-    // ===== Mode-shape visualization (analytical, animated) =====
-    function clampedFreeShape(xOverL, betaL) {
-      const sigma = (Math.cosh(betaL) + Math.cos(betaL)) / (Math.sinh(betaL) + Math.sin(betaL));
-      const z = betaL * xOverL;
-      return (Math.cosh(z) - Math.cos(z)) - sigma * (Math.sinh(z) - Math.sin(z));
-    }
-
-    function modeShapeProfile(modeKey) {
-      // Returns lateral u(x/L) for bending modes or axial u(x/L) for axial.
-      // Normalized so max |u| = 1.
-      const samples = 60;
-      const profile = new Array(samples + 1);
-      const betas = { b1: 1.875104, b2: 4.694091, b3: 7.854757 };
-      const isAxial = modeKey === "a1";
-      let peak = 0;
-      for (let i = 0; i <= samples; i += 1) {
-        const xOverL = i / samples;
-        const u = isAxial
-          ? Math.sin(Math.PI * xOverL / 2)
-          : clampedFreeShape(xOverL, betas[modeKey] || betas.b1);
-        profile[i] = u;
-        if (Math.abs(u) > peak) peak = Math.abs(u);
-      }
-      if (peak > 0) {
-        for (let i = 0; i <= profile.length; i += 1) {
-          if (profile[i] !== undefined) profile[i] /= peak;
-        }
-      }
-      return { profile, axial: isAxial };
-    }
-
-    function startSimAnimation(geom, est) {
-      stopSimAnimation();
-      const canvas = document.getElementById("simShapeCanvas");
-      const cap = document.getElementById("simShapeCap");
-      if (!canvas || !canvas.getContext) return;
-      const ctx = canvas.getContext("2d");
-      const od = Number(geom.outer_diameter_mm) || 50;
-      const id = Math.max(0, Number(geom.inner_diameter_mm) || 0);
-      const h = Number(geom.height_mm) || 40;
-      const shape = modeShapeProfile(simSelectedMode);
-
-      const W = canvas.width;
-      const H = canvas.height;
-      const margin = 28;
-      const drawH = H - margin * 2;
-      const scaleY = drawH / Math.max(h, 1);
-      const drawW = W - margin * 2;
-      // Use a generous deformation amplitude so it reads clearly on screen.
-      const ampMmBending = Math.min(od * 1.2, drawW * 0.35 / Math.max(scaleY, 0.0001));
-      const ampMmAxial = h * 0.18;
-      const ampMm = shape.axial ? ampMmAxial : ampMmBending;
-      const cx = W / 2;
-      const yTop = margin;
-      const yBot = yTop + drawH;
-
-      function project(xMm, lateralMm) {
-        // Bushing axis runs vertical; the fixed bottom is at y=0 (yBot), free top at y=h (yTop).
-        return { x: cx + lateralMm * scaleY, y: yBot - xMm * scaleY };
-      }
-
-      function drawSidePolygon(getLateral, getAxial) {
-        ctx.beginPath();
-        // Right wall (top to bottom): outer surface offset by +OD/2
-        for (let i = shape.profile.length - 1; i >= 0; i -= 1) {
-          const xOverL = i / (shape.profile.length - 1);
-          const xMm = xOverL * h + getAxial(xOverL);
-          const lat = getLateral(xOverL) + od / 2;
-          const p = project(xMm, lat);
-          if (i === shape.profile.length - 1) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
-        }
-        // Left wall (bottom to top): outer surface offset by -OD/2
-        for (let i = 0; i < shape.profile.length; i += 1) {
-          const xOverL = i / (shape.profile.length - 1);
-          const xMm = xOverL * h + getAxial(xOverL);
-          const lat = getLateral(xOverL) - od / 2;
-          const p = project(xMm, lat);
-          ctx.lineTo(p.x, p.y);
-        }
-        ctx.closePath();
-      }
-
-      let start = performance.now();
-      function frame(now) {
-        const t = (now - start) / 1000;
-        const oscill = Math.sin(2 * Math.PI * 1.2 * t);
-        ctx.clearRect(0, 0, W, H);
-        // Background
-        ctx.fillStyle = "#f8fbff";
-        ctx.fillRect(0, 0, W, H);
-        // Ground line (fixed bottom)
-        ctx.strokeStyle = "#9aa7b8";
-        ctx.lineWidth = 1;
-        ctx.setLineDash([4, 4]);
-        ctx.beginPath();
-        ctx.moveTo(margin, yBot + 0.5);
-        ctx.lineTo(W - margin, yBot + 0.5);
-        ctx.stroke();
-        ctx.setLineDash([]);
-        // Undeformed reference (light)
-        ctx.strokeStyle = "#c8d4e3";
-        ctx.lineWidth = 1.2;
-        ctx.beginPath();
-        ctx.rect(cx - (od / 2) * scaleY, yTop, od * scaleY, drawH);
-        ctx.stroke();
-        if (id > 0) {
-          ctx.beginPath();
-          ctx.rect(cx - (id / 2) * scaleY, yTop, id * scaleY, drawH);
-          ctx.stroke();
-        }
-        // Deformed shape
-        const getLateral = (xOverL) => {
-          if (shape.axial) return 0;
-          const idx = Math.round(xOverL * (shape.profile.length - 1));
-          return shape.profile[idx] * ampMm * oscill;
-        };
-        const getAxial = (xOverL) => {
-          if (!shape.axial) return 0;
-          const idx = Math.round(xOverL * (shape.profile.length - 1));
-          return shape.profile[idx] * ampMm * oscill;
-        };
-        ctx.fillStyle = "rgba(216, 34, 42, 0.18)";
-        ctx.strokeStyle = "#d8222a";
-        ctx.lineWidth = 1.5;
-        drawSidePolygon(getLateral, getAxial);
-        ctx.fill();
-        ctx.stroke();
-        // Inner bore deformed (only meaningful for bending; axial just shifts uniformly)
-        if (id > 0) {
-          ctx.strokeStyle = "rgba(216, 34, 42, 0.55)";
-          ctx.lineWidth = 1;
-          ctx.beginPath();
-          for (let i = 0; i < shape.profile.length; i += 1) {
-            const xOverL = i / (shape.profile.length - 1);
-            const xMm = xOverL * h + getAxial(xOverL);
-            const lat = getLateral(xOverL) - id / 2;
-            const p = project(xMm, lat);
-            if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
-          }
-          for (let i = shape.profile.length - 1; i >= 0; i -= 1) {
-            const xOverL = i / (shape.profile.length - 1);
-            const xMm = xOverL * h + getAxial(xOverL);
-            const lat = getLateral(xOverL) + id / 2;
-            const p = project(xMm, lat);
-            ctx.lineTo(p.x, p.y);
-          }
-          ctx.closePath();
-          ctx.stroke();
-        }
-        simAnimHandle = requestAnimationFrame(frame);
-      }
-      simAnimHandle = requestAnimationFrame(frame);
-
-      const labels = { b1: "1st bending", b2: "2nd bending", b3: "3rd bending", a1: "1st axial" };
-      const freqLookup = { b1: est.bending[0], b2: est.bending[1], b3: est.bending[2], a1: est.axial1 };
-      if (cap) cap.textContent = labels[simSelectedMode] + " mode shape \u00b7 " + formatHz(freqLookup[simSelectedMode]) + " (animation exaggerated for clarity)";
     }
 
     function stopSimAnimation() {
