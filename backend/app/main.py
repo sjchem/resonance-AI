@@ -1446,6 +1446,31 @@ UI_HTML = """<!doctype html>
       max-height: 420px;
       overflow: auto;
     }
+    .param-panel.collapsed .param-controls {
+      display: none;
+    }
+    .param-title {
+      margin-bottom: 12px;
+    }
+    .param-panel.collapsed .param-title {
+      margin-bottom: 0;
+    }
+    .param-toggle {
+      width: auto;
+      margin: 0;
+      padding: 7px 12px;
+      background: #fff;
+      color: var(--brand);
+      border: 1px solid var(--line);
+      border-radius: 3px;
+      font-size: 13px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .param-toggle:hover {
+      background: #eef3f9;
+      color: var(--brand);
+    }
     .param-row {
       display: grid;
       grid-template-columns: 1fr auto;
@@ -1678,6 +1703,12 @@ UI_HTML = """<!doctype html>
       border-radius: 2px;
       background: #ffffff;
     }
+    .sim-fem-frame {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: stretch;
+    }
     .sim-fem-viewer {
       width: 100%;
       height: clamp(500px, 56vh, 740px);
@@ -1869,7 +1900,7 @@ UI_HTML = """<!doctype html>
       .hero-metrics { grid-template-columns: 1fr; }
       .grid { grid-template-columns: 1fr; }
       .category-family-grid { grid-template-columns: 1fr; }
-      .mesh-viewer-wrap { grid-template-columns: 1fr; }
+      .mesh-viewer-wrap, .sim-fem-frame { grid-template-columns: 1fr; }
       .mesh-legend {
         grid-template-columns: auto auto minmax(120px, 1fr) auto;
         grid-template-rows: auto;
@@ -2060,10 +2091,13 @@ UI_HTML = """<!doctype html>
             </div>
           </div>
         </div>
-        <div class="panel">
-          <div class="section-title">
-            <strong>Parametric Editor</strong>
-            <span id="paramHint" class="muted">Drag a slider to resize the model live.</span>
+        <div class="panel param-panel collapsed" id="paramPanel">
+          <div class="section-title param-title">
+            <div class="title-head">
+              <strong>Parametric Editor</strong>
+              <span id="paramHint" class="muted">Open after a model is generated.</span>
+            </div>
+            <button type="button" class="param-toggle" id="paramToggle" aria-expanded="false" aria-controls="paramControls">Open editor</button>
           </div>
           <div id="paramControls" class="param-controls">
             <p class="muted">Adjustable dimensions will appear here once a model is generated. Use the Download menu to export the edited part.</p>
@@ -2101,6 +2135,8 @@ UI_HTML = """<!doctype html>
 
     const preview = document.getElementById("preview");
     const jsonOutput = document.getElementById("jsonOutput");
+    const paramPanel = document.getElementById("paramPanel");
+    const paramToggle = document.getElementById("paramToggle");
     const paramControls = document.getElementById("paramControls");
     const paramHint = document.getElementById("paramHint");
     const meshResults = document.getElementById("meshResults");
@@ -2146,6 +2182,7 @@ UI_HTML = """<!doctype html>
     // Parametric editor state.
     let currentEditIntent = null;
     let baseGeometry = null;
+    let paramEditorOpen = false;
     let paramRenderQueued = false;
     // When true, ignore the uploaded mesh and render the parametric model instead
     // (set after "Convert to editable bushing").
@@ -2161,6 +2198,24 @@ UI_HTML = """<!doctype html>
     let lastFemContour = null;
     let femBatchCount = 6;
     let femContourMode = 1;
+
+    if (paramToggle) {
+      paramToggle.addEventListener("click", () => {
+        setParamEditorOpen(!paramEditorOpen);
+      });
+      setParamEditorOpen(false);
+    }
+
+    function setParamEditorOpen(open) {
+      paramEditorOpen = Boolean(open);
+      if (paramPanel) {
+        paramPanel.classList.toggle("collapsed", !paramEditorOpen);
+      }
+      if (paramToggle) {
+        paramToggle.textContent = paramEditorOpen ? "Hide editor" : "Open editor";
+        paramToggle.setAttribute("aria-expanded", paramEditorOpen ? "true" : "false");
+      }
+    }
 
     // Defensive: if any of these early listeners blow up (e.g. an element id
     // was renamed), do not block the chat-submit listener registered below.
@@ -2374,6 +2429,7 @@ UI_HTML = """<!doctype html>
         if (previewReady) {
           try {
             await render3DPreview(intent);
+            setParamEditorOpen(false);
             buildParamControls(intent);
           } catch (previewError) {
             cleanupViewer();
@@ -2382,6 +2438,7 @@ UI_HTML = """<!doctype html>
         } else {
           cleanupViewer();
           currentEditIntent = null;
+          setParamEditorOpen(false);
           buildParamControls(null);
           preview.innerHTML = '<div class="placeholder"><p class="muted">I need one more engineering detail before I can show a useful preview.</p></div>';
         }
@@ -2473,6 +2530,7 @@ UI_HTML = """<!doctype html>
             lastExport.name = exportBaseName({ part_type: payload.filename });
             downloadBtn.disabled = false;
             currentEditIntent = null;
+            setParamEditorOpen(false);
             buildParamControls(null);
           } catch (previewError) {
             cleanupViewer();
@@ -3910,6 +3968,12 @@ UI_HTML = """<!doctype html>
       if (state.status === "ok" && state.data) {
         const d = state.data;
         const hasMesh = d.fem_mesh && Array.isArray(d.fem_mesh.faces) && d.fem_mesh.faces.length;
+        const femView = hasMesh
+          ? '<div class="sim-fem-frame">' +
+            '<div class="sim-fem-viewer" id="simFemViewer" aria-label="Interactive FEM contour view"></div>' +
+            femLegendHtml(d.fem_mesh) +
+            '</div>'
+          : '<img alt="von Mises stress contour for mode ' + d.mode + '" src="data:image/png;base64,' + d.contour_png_base64 + '"/>';
         const modesRows = (d.modes || []).map((m) => (
           '<tr class="' + (Number(m.mode_number) === Number(d.mode) ? 'sim-row-active' : '') + '">' +
           '<td>Mode ' + m.mode_number + '</td>' +
@@ -3919,9 +3983,7 @@ UI_HTML = """<!doctype html>
           '<div class="sim-contour">' +
           '<p class="sim-fem-msg"><strong>Validated FEM batch</strong> \u00b7 ' + d.num_modes + ' mode(s) solved \u00b7 showing von Mises contour for mode ' + d.mode +
           ' \u00b7 material ' + escapeHtml(d.material) + '</p>' +
-          (hasMesh
-            ? '<div class="sim-fem-viewer" id="simFemViewer" aria-label="Interactive FEM contour view"></div>'
-            : '<img alt="von Mises stress contour for mode ' + d.mode + '" src="data:image/png;base64,' + d.contour_png_base64 + '"/>') +
+          femView +
           '<div class="sim-head-actions" style="margin-top:10px;justify-content:flex-end">' +
           '<button type="button" class="sim-btn" id="femCsvBtn">Download CSV</button>' +
           '</div>' +
@@ -3937,6 +3999,20 @@ UI_HTML = """<!doctype html>
           });
         }
       }
+    }
+
+    function femLegendHtml(mesh) {
+      const field = mesh && mesh.field ? mesh.field : "S, Mises";
+      const minLabel = formatEngineering(mesh && mesh.scalar_min, mesh && mesh.unit ? mesh.unit : "");
+      const maxLabel = formatEngineering(mesh && mesh.scalar_max, mesh && mesh.unit ? mesh.unit : "");
+      return (
+        '<div class="mesh-legend" aria-label="' + escapeHtml(field) + ' scale">' +
+        '<strong>' + escapeHtml(field) + '</strong>' +
+        '<span>' + escapeHtml(maxLabel) + '</span>' +
+        '<div class="mesh-legend-bar"></div>' +
+        '<span>' + escapeHtml(minLabel) + '</span>' +
+        '</div>'
+      );
     }
 
     function cleanupFemViewer() {
@@ -4186,7 +4262,7 @@ UI_HTML = """<!doctype html>
       const spec = PART_FIELD_SETS[type];
       if (!intent || !spec) {
         paramControls.innerHTML = '<p class="muted">Adjustable dimensions will appear here once a model is generated. Use the Download menu to export the edited part.</p>';
-        if (paramHint) paramHint.textContent = "";
+        if (paramHint) paramHint.textContent = "Open after a model is generated.";
         renderMeshPanel();
         renderSimPanel();
         return;
