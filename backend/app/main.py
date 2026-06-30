@@ -177,13 +177,14 @@ async def export_step(payload: dict) -> FileResponse:
 
 @app.post("/generate-mesh")
 async def generate_mesh(payload: dict) -> dict:
-    """Generate a Gmsh tetrahedral mesh and return quality/readiness stats."""
+    """Generate a Gmsh volume mesh and return quality/readiness stats."""
 
     prompt = str(payload.get("prompt", "")).strip()
     if not prompt:
         raise HTTPException(status_code=400, detail="A prompt is required to generate a mesh.")
 
     name = _safe_export_name(str(payload.get("name", "model")))
+    intent = payload.get("intent") if isinstance(payload.get("intent"), dict) else {}
     element_size = payload.get("element_size_mm")
     try:
         element_size_mm = float(element_size) if element_size not in (None, "") else None
@@ -199,6 +200,10 @@ async def generate_mesh(payload: dict) -> dict:
     try:
         from text_to_cad.cad_agent import generate_with_agent  # noqa: WPS433
         from geometry.step_to_mesh import step_to_mesh  # noqa: WPS433
+        from geometry.hex_swept_mesh import (  # noqa: WPS433
+            StructuredHexUnavailable,
+            step_to_swept_hex_mesh,
+        )
         from geometry.mesh_cleaner import clean_mesh  # noqa: WPS433
         from geometry.mesh_quality import evaluate_mesh  # noqa: WPS433
     except ModuleNotFoundError as exc:
@@ -235,24 +240,56 @@ async def generate_mesh(payload: dict) -> dict:
             raise HTTPException(status_code=500, detail=detail)
 
         raw_mesh = work_dir / f"{name}.msh"
+        mesh_format = "Gmsh tetrahedral volume mesh"
+        mesh_strategy = "tetra"
+        fallback_reason = None
+        if _should_try_structured_hex(prompt, intent):
+            try:
+                raw_mesh = work_dir / f"{name}_hex.msh"
+                mesh_result = step_to_swept_hex_mesh(
+                    step_file=step_path,
+                    output_file=raw_mesh,
+                    target_size_mm=element_size_mm,
+                )
+                mesh_format = "Gmsh structured hex/swept volume mesh"
+                mesh_strategy = "structured_hex"
+            except (StructuredHexUnavailable, Exception) as exc:  # noqa: BLE001
+                fallback_reason = str(exc)
+                raw_mesh = work_dir / f"{name}.msh"
+                mesh_result = step_to_mesh(
+                    step_file=step_path,
+                    output_file=raw_mesh,
+                    target_size_mm=element_size_mm,
+                )
+                mesh_strategy = "tetra_fallback"
+        else:
+            mesh_result = step_to_mesh(
+                step_file=step_path,
+                output_file=raw_mesh,
+                target_size_mm=element_size_mm,
+            )
+
         clean_mesh_path = work_dir / f"{name}_clean.vtk"
-        mesh_result = step_to_mesh(
-            step_file=step_path,
-            output_file=raw_mesh,
-            target_size_mm=element_size_mm,
-        )
         clean_result = clean_mesh(raw_mesh, clean_mesh_path)
+        cell_counts = _mesh_cell_counts(clean_mesh_path)
         quality = evaluate_mesh(clean_mesh_path)
+        quality_payload = _quality_payload(quality, cell_counts)
         surface_mesh = _mesh_surface_preview(clean_mesh_path)
+        hexahedra = _count_hex_cells(cell_counts)
+        tetrahedra = _count_tetra_cells(cell_counts) or getattr(mesh_result, "tetra_count", 0)
 
         return {
             "status": "ok",
-            "mesh_format": "Gmsh tetrahedral volume mesh",
+            "mesh_format": mesh_format,
+            "mesh_strategy": mesh_strategy,
+            "fallback_reason": fallback_reason,
             "step_file": step_path.name,
             "mesh_file": raw_mesh.name,
             "clean_mesh_file": clean_mesh_path.name,
             "nodes": mesh_result.node_count,
-            "tetrahedra": mesh_result.tetra_count,
+            "tetrahedra": tetrahedra,
+            "hexahedra": hexahedra,
+            "cell_counts": cell_counts,
             "min_edge_mm": mesh_result.min_edge_mm,
             "max_edge_mm": mesh_result.max_edge_mm,
             "cleaning": {
@@ -262,12 +299,12 @@ async def generate_mesh(payload: dict) -> dict:
                 "final_cell_count": clean_result.final_cell_count,
             },
             "quality": {
-                "ready_for_fem": quality.is_solvable,
-                "min_quality": quality.min_quality,
-                "mean_quality": quality.mean_quality,
-                "inverted_count": quality.inverted_count,
-                "poor_count": quality.poor_count,
-                "min_volume_mm3": quality.min_volume_mm3,
+                "ready_for_fem": quality_payload["ready_for_fem"],
+                "min_quality": quality_payload["min_quality"],
+                "mean_quality": quality_payload["mean_quality"],
+                "inverted_count": quality_payload["inverted_count"],
+                "poor_count": quality_payload["poor_count"],
+                "min_volume_mm3": quality_payload["min_volume_mm3"],
             },
             "surface_mesh": surface_mesh,
         }
@@ -279,6 +316,68 @@ async def generate_mesh(payload: dict) -> dict:
         shutil.rmtree(work_dir, ignore_errors=True)
 
 
+def _should_try_structured_hex(prompt: str, intent: dict) -> bool:
+    """Use hex-first only for shapes that are likely sweepable/axisymmetric."""
+
+    part_type = str(intent.get("part_type") or "").lower()
+    text = f"{prompt} {part_type}".lower()
+    axisymmetric_tokens = (
+        "bushing",
+        "rubber_mount",
+        "rubber mount",
+        "spring",
+        "air spring",
+        "coil spring",
+        "cylindrical",
+        "axisymmetric",
+    )
+    return any(token in text for token in axisymmetric_tokens)
+
+
+def _mesh_cell_counts(mesh_path: Path) -> dict[str, int]:
+    """Return mesh cell counts by meshio cell type."""
+
+    import meshio
+
+    mesh = meshio.read(str(mesh_path))
+    counts: dict[str, int] = {}
+    for block in mesh.cells:
+        counts[block.type] = counts.get(block.type, 0) + len(block.data)
+    return counts
+
+
+def _count_hex_cells(cell_counts: dict[str, int]) -> int:
+    return sum(count for name, count in cell_counts.items() if name.startswith("hexahedron"))
+
+
+def _count_tetra_cells(cell_counts: dict[str, int]) -> int:
+    return sum(count for name, count in cell_counts.items() if name.startswith("tetra"))
+
+
+def _quality_payload(quality, cell_counts: dict[str, int]) -> dict:
+    """Normalize tetra quality output for tetra or structured hex meshes."""
+
+    hex_count = _count_hex_cells(cell_counts)
+    tetra_count = _count_tetra_cells(cell_counts)
+    if tetra_count > 0:
+        return {
+            "ready_for_fem": quality.is_solvable,
+            "min_quality": quality.min_quality,
+            "mean_quality": quality.mean_quality,
+            "inverted_count": quality.inverted_count,
+            "poor_count": quality.poor_count,
+            "min_volume_mm3": quality.min_volume_mm3,
+        }
+    return {
+        "ready_for_fem": hex_count > 0,
+        "min_quality": None,
+        "mean_quality": None,
+        "inverted_count": 0,
+        "poor_count": 0,
+        "min_volume_mm3": None,
+    }
+
+
 def _mesh_surface_preview(mesh_path: Path, *, max_faces: int = 12000) -> dict:
     """Extract exterior mesh triangles for the browser preview."""
 
@@ -287,28 +386,22 @@ def _mesh_surface_preview(mesh_path: Path, *, max_faces: int = 12000) -> dict:
 
     mesh = meshio.read(str(mesh_path))
     points = np.asarray(mesh.points, dtype=float)
-    face_map: dict[tuple[int, int, int], dict] = {}
+    face_map: dict[tuple[int, ...], dict] = {}
     volumes: list[float] = []
 
-    # Only corner nodes are needed for the exterior face preview.
-    face_corners = ((0, 2, 1), (0, 1, 3), (1, 2, 3), (2, 0, 3))
     for block in mesh.cells:
-        if block.type not in ("tetra", "tetra10"):
+        spec = _cell_preview_spec(block.type)
+        if spec is None:
             continue
         cells = np.asarray(block.data, dtype=int)
         if cells.size == 0:
             continue
-        corners = cells[:, :4]
-        p0 = points[corners[:, 0]]
-        p1 = points[corners[:, 1]]
-        p2 = points[corners[:, 2]]
-        p3 = points[corners[:, 3]]
-        tet_volumes = np.abs(np.einsum("ij,ij->i", np.cross(p1 - p0, p2 - p0), p3 - p0) / 6.0)
-        for tet_index, tet in enumerate(corners):
-            volume = float(tet_volumes[tet_index])
+        corners = cells[:, : spec["corner_count"]]
+        for cell in corners:
+            volume = _cell_volume(points, cell, spec["volume_tets"])
             volumes.append(volume)
-            for local_face in face_corners:
-                face = tuple(int(tet[i]) for i in local_face)
+            for local_face in spec["faces"]:
+                face = tuple(int(cell[i]) for i in local_face)
                 key = tuple(sorted(face))
                 if key in face_map:
                     face_map[key]["count"] += 1
@@ -328,16 +421,20 @@ def _mesh_surface_preview(mesh_path: Path, *, max_faces: int = 12000) -> dict:
     faces = []
     for item in exterior:
         value = float(item["value"])
-        faces.append(
-            {
-                "color": _contour_hex(value, vmin, vmax),
-                "value": value,
-                "points": [
-                    {"x": float(points[node_id][0]), "y": float(points[node_id][1]), "z": float(points[node_id][2])}
-                    for node_id in item["face"]
-                ],
-            }
-        )
+        color = _contour_hex(value, vmin, vmax)
+        face = item["face"]
+        triangles = (face,) if len(face) == 3 else ((face[0], face[1], face[2]), (face[0], face[2], face[3]))
+        for tri in triangles:
+            faces.append(
+                {
+                    "color": color,
+                    "value": value,
+                    "points": [
+                        {"x": float(points[node_id][0]), "y": float(points[node_id][1]), "z": float(points[node_id][2])}
+                        for node_id in tri
+                    ],
+                }
+            )
 
     return {
         "faces": faces,
@@ -347,6 +444,45 @@ def _mesh_surface_preview(mesh_path: Path, *, max_faces: int = 12000) -> dict:
         "scalar_max": float(vmax),
         "face_count": len(faces),
     }
+
+
+def _cell_preview_spec(cell_type: str) -> dict | None:
+    """Return corner count, exterior faces and volume decomposition for a cell."""
+
+    if cell_type in ("tetra", "tetra10"):
+        return {
+            "corner_count": 4,
+            "faces": ((0, 2, 1), (0, 1, 3), (1, 2, 3), (2, 0, 3)),
+            "volume_tets": ((0, 1, 2, 3),),
+        }
+    if cell_type.startswith("hexahedron"):
+        return {
+            "corner_count": 8,
+            "faces": ((0, 3, 2, 1), (4, 5, 6, 7), (0, 1, 5, 4), (1, 2, 6, 5), (2, 3, 7, 6), (3, 0, 4, 7)),
+            "volume_tets": ((0, 1, 3, 4), (1, 2, 3, 6), (1, 3, 4, 6), (1, 5, 4, 6), (3, 7, 4, 6)),
+        }
+    if cell_type.startswith("wedge"):
+        return {
+            "corner_count": 6,
+            "faces": ((0, 2, 1), (3, 4, 5), (0, 1, 4, 3), (1, 2, 5, 4), (2, 0, 3, 5)),
+            "volume_tets": ((0, 1, 2, 3), (1, 2, 4, 3), (2, 4, 5, 3)),
+        }
+    return None
+
+
+def _cell_volume(points, cell, volume_tets) -> float:
+    """Approximate a cell volume by tetrahedral decomposition."""
+
+    import numpy as np
+
+    volume = 0.0
+    for a, b, c, d in volume_tets:
+        p0 = points[int(cell[a])]
+        p1 = points[int(cell[b])]
+        p2 = points[int(cell[c])]
+        p3 = points[int(cell[d])]
+        volume += abs(float(np.dot(np.cross(p1 - p0, p2 - p0), p3 - p0) / 6.0))
+    return volume
 
 
 def _contour_hex(value: float, vmin: float, vmax: float) -> str:
@@ -3352,7 +3488,7 @@ UI_HTML = """<!doctype html>
       }
       const body = lastMeshResult
         ? meshResultHtml(lastMeshResult)
-        : '<div class="mesh-output">Generate a Gmsh tetrahedral mesh before running full FEM.</div>';
+        : '<div class="mesh-output">Generate a Gmsh mesh before running full FEM. Axisymmetric parts try structured hex/swept meshing first; other parts use tetra meshing.</div>';
       meshResults.innerHTML =
         '<div class="mesh-block">' +
         '<div class="sim-head"><strong>Gmsh mesh</strong>' +
@@ -3371,7 +3507,7 @@ UI_HTML = """<!doctype html>
     function meshResultHtml(result) {
       if (!result) return "";
       if (result.status === "loading") {
-        return '<div class="mesh-output">Generating STEP, meshing with Gmsh, then checking element quality...</div>';
+        return '<div class="mesh-output">Generating STEP, trying structured hex/swept meshing when suitable, then checking mesh quality...</div>';
       }
       if (result.status === "error") {
         return '<div class="mesh-output err">Mesh generation failed: ' + escapeHtml(result.message) + '</div>';
@@ -3379,11 +3515,14 @@ UI_HTML = """<!doctype html>
       const q = result.quality || {};
       const cleaning = result.cleaning || {};
       const ready = q.ready_for_fem ? "Ready for FEM" : "Needs attention";
+      const strategyNote = meshStrategyNote(result);
       return (
         '<div class="mesh-output">' +
         '<strong>' + ready + '</strong> · ' + escapeHtml(result.mesh_format || "Gmsh mesh") +
+        strategyNote +
         '<div class="mesh-stats">' +
         '<span>Nodes: <strong>' + formatInt(result.nodes) + '</strong></span>' +
+        '<span>Hexahedra: <strong>' + formatInt(result.hexahedra) + '</strong></span>' +
         '<span>Tetrahedra: <strong>' + formatInt(result.tetrahedra) + '</strong></span>' +
         '<span>Element edge: <strong>' + formatRange(result.min_edge_mm, result.max_edge_mm, " mm") + '</strong></span>' +
         '<span>Mean quality: <strong>' + formatNumber(q.mean_quality, 3) + '</strong></span>' +
@@ -3395,6 +3534,17 @@ UI_HTML = """<!doctype html>
         meshViewerHtml(result.surface_mesh) +
         '</div>'
       );
+    }
+
+    function meshStrategyNote(result) {
+      if (!result || !result.mesh_strategy) return "";
+      if (result.mesh_strategy === "structured_hex") {
+        return '<div class="muted" style="margin-top:6px">Structured hex/swept mesh succeeded for this geometry.</div>';
+      }
+      if (result.mesh_strategy === "tetra_fallback") {
+        return '<div class="muted" style="margin-top:6px">Structured hex was attempted, but this topology needed tetra fallback.</div>';
+      }
+      return '<div class="muted" style="margin-top:6px">Tetra mesh used for this geometry.</div>';
     }
 
     function meshViewerHtml(mesh) {
@@ -3421,6 +3571,7 @@ UI_HTML = """<!doctype html>
     }
 
     function formatNumber(value, digits) {
+      if (value === null || value === undefined || value === "") return "-";
       const n = Number(value);
       return Number.isFinite(n) ? n.toFixed(digits) : "-";
     }
@@ -3458,6 +3609,7 @@ UI_HTML = """<!doctype html>
           body: JSON.stringify({
             prompt: prompt,
             name: lastExport.name || "model",
+            intent: lastExport.intent || {},
           }),
         });
         const payload = await response.json().catch(() => ({}));
