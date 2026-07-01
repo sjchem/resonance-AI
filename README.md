@@ -1,54 +1,171 @@
-# VC.ResonanceAI
+# Resonance AI
 
-POC for a text-to-CAD plus simulation-surrogate workflow.
+Resonance AI is a proof-of-concept CAD and FEM assistant for vibroacoustic and
+mechanical components. It turns an engineering request into validated CAD JSON,
+shows an interactive 3D preview, exports CAD files, generates a Gmsh mesh, and
+runs first-pass modal FEM results in the web app.
 
-## OpenAI CAD Prompt Parser
+The current POC is focused on bushings, rubber mounts, brackets, plates, and
+springs, with deterministic fallback paths where possible.
 
-This POC backend uses Azure OpenAI or the public OpenAI API with Structured
-Outputs. It converts a natural-language CAD prompt into validated structured
-JSON and returns an interactive preview in the web app.
+## What The App Does
 
-For Azure deployment, configure:
+- Chat-style CAD intent capture with Azure OpenAI or OpenAI.
+- Upload context from documents, images, JSON, and CAD-like files.
+- Validated structured CAD JSON using Pydantic schemas.
+- Interactive browser CAD preview with downloadable STL, GLB, DXF, PNG, PDF, and JSON.
+- Server-side STEP export through the CadQuery CAD pipeline.
+- Gmsh mesh generation with structured hex/swept mesh attempted first for suitable axisymmetric parts, then tetra fallback.
+- Mesh quality summary and interactive mesh preview.
+- FEM modal batch runs through CalculiX with interactive von Mises contour preview and color scale.
+- Azure App Service deployment through GitHub Actions and GHCR container images.
+
+## Web UI
+
+Run the app and open:
 
 ```text
-AZURE_OPENAI_API_KEY=<your-azure-openai-key>
-AZURE_OPENAI_ENDPOINT=https://<resource-name>.services.ai.azure.com/
-AZURE_OPENAI_DEPLOYMENT=<deployment-name>
-AZURE_OPENAI_API_VERSION=2024-10-21
+http://localhost:8000/generate
 ```
 
-The app also accepts an Azure AI Foundry project URL such as
-`https://<resource-name>.services.ai.azure.com/api/projects/<project-name>`.
-It normalizes that to the OpenAI-compatible inference base automatically.
-
-For the public OpenAI API instead, configure:
+The same UI is also available at:
 
 ```text
-OPENAI_API_KEY=<your-openai-api-key>
+http://localhost:8000/ui
+```
+
+The main workflow is:
+
+1. Add a CAD request in Engineering Chat, or attach a supported file.
+2. Review the assistant summary and type `proceed` when ready.
+3. Inspect the interactive CAD preview.
+4. Open the Parametric Editor only when dimensions need live editing.
+5. Generate a Gmsh mesh.
+6. Run simulation or FEM batch and inspect the contour result.
+7. Download CAD, mesh-friendly formats, images, PDF, or JSON.
+
+## Repository Layout
+
+```text
+backend/app/             FastAPI app, schemas, OpenAI client, upload handling, UI
+text_to_cad/             Prompt-to-CAD agent, deterministic fallback, CadQuery export
+geometry/                STEP-to-mesh, mesh cleaning, mesh quality, hex/swept meshing
+simulate/                Gmsh/CalculiX modal pipeline and contour visualization
+examples/                Example prompts
+outputs/                 Local generated outputs
+Dockerfile               FEM-capable Azure container image
+Dockerfile.web           Lighter web image kept for quick web-only iteration
+requirements-web-fem.txt Container Python stack for CAD + FEM
+backend/requirements.txt Lightweight web/API requirements
+main.py                  Azure/root entrypoint that imports backend/app/main.py
+startup.sh               Non-container App Service startup script
+```
+
+## Configuration
+
+Create `backend/.env` for local development. Do not commit this file.
+
+Azure OpenAI / Azure AI Foundry:
+
+```text
+AZURE_OPENAI_API_KEY=<your-key>
+AZURE_OPENAI_ENDPOINT=https://<resource-name>.cognitiveservices.azure.com/
+AZURE_OPENAI_DEPLOYMENT=<deployment-name>
+AZURE_OPENAI_API_VERSION=2024-12-01-preview
+```
+
+Important: `AZURE_OPENAI_DEPLOYMENT` must be the deployment name shown in Azure
+AI Foundry or Azure OpenAI, not only the base model name.
+
+The endpoint may also be an Azure AI Foundry project URL such as:
+
+```text
+https://<resource-name>.services.ai.azure.com/api/projects/<project-name>
+```
+
+The app normalizes supported Foundry/OpenAI endpoint formats internally.
+
+Public OpenAI fallback:
+
+```text
+OPENAI_API_KEY=<your-openai-key>
 OPENAI_MODEL=gpt-4.1-mini
 ```
 
-Start the FastAPI backend:
+## Run Locally
+
+### Lightweight web/API mode
+
+This is enough for chat, parsing, upload context, and browser-side preview.
 
 ```bash
-cd backend
-pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r backend/requirements.txt
+python -m uvicorn main:app --reload --port 8000
 ```
 
-Health check:
+Open:
+
+```text
+http://localhost:8000/generate
+```
+
+### FEM-capable local mode
+
+Use this when testing STEP export, Gmsh, CalculiX, PyVista, and FEM contours.
 
 ```bash
-curl http://localhost:8000/
+sudo apt-get update
+sudo apt-get install -y \
+  calculix-ccx \
+  libgomp1 \
+  libglu1-mesa \
+  libgl1 \
+  libxrender1 \
+  libxext6 \
+  libsm6 \
+  libxt6 \
+  xvfb
+
+python -m pip install -r requirements-web-fem.txt
+python -m uvicorn main:app --reload --port 8000
 ```
 
-Check model configuration:
+### Docker FEM container
+
+This matches the production-style FEM image more closely.
 
 ```bash
-curl http://localhost:8000/models
+docker build -f Dockerfile -t resonance-ai:fem .
+docker run --rm -p 8000:8000 --env-file backend/.env resonance-ai:fem
 ```
 
-Parse a CAD prompt:
+Then open:
+
+```text
+http://localhost:8000/generate
+```
+
+## API Endpoints
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/` | Health check |
+| `GET` | `/models` | Show configured provider/model without secrets |
+| `GET` | `/generate` | Main web UI |
+| `GET` | `/ui` | Same web UI |
+| `POST` | `/parse-cad` | Natural-language prompt -> validated CAD JSON |
+| `POST` | `/chat-cad` | Interactive chat reply plus current CAD state |
+| `POST` | `/generate-cad` | Parsed JSON plus lightweight preview payload |
+| `POST` | `/preview-cad` | Preview from already-structured CAD JSON |
+| `POST` | `/upload-context` | Extract context from uploaded document/image/CAD file |
+| `POST` | `/export/step` | Generate a real STEP file through CadQuery |
+| `POST` | `/generate-mesh` | Generate and evaluate a Gmsh volume mesh |
+| `POST` | `/run-fem` | Run modal FEM batch and return contour data |
+
+Example prompt parse:
 
 ```bash
 curl -X POST http://localhost:8000/parse-cad \
@@ -58,88 +175,73 @@ curl -X POST http://localhost:8000/parse-cad \
   }'
 ```
 
-Generate parsed JSON plus CAD preview SVG:
+Check model configuration:
 
 ```bash
-curl -X POST http://localhost:8000/generate-cad \
-  -H "Content-Type: application/json" \
-  -d '{
-    "prompt": "Create a rubber bushing with outer diameter 60 mm, inner diameter 20 mm, height 40 mm and chamfer 2 mm."
-  }'
+curl http://localhost:8000/models
 ```
 
-Open the UI locally only if you need to test the same flow as the deployed POC:
+## Azure Deployment
+
+The active GitHub Actions workflow builds the heavy FEM container and deploys it
+to Azure App Service:
 
 ```text
-http://localhost:8000/ui
+.github/workflows/main_ext-sjana-vibrac.yml
 ```
 
-## Phase A: Text to CAD
+Current workflow behavior:
 
-Phase A converts a short engineering prompt into a deterministic CadQuery script,
-a STEP file, an STL file, a quick 2D preview, and a standalone live 3D CAD
-viewer.
+1. Build `Dockerfile`.
+2. Push image to GitHub Container Registry:
+   `ghcr.io/sjchem/resonance-ai`.
+3. Point Azure Web App `ext-sjana-vibrac` at the new image.
+4. Set container runtime app settings.
+5. Restart the web app.
 
-Run the bracket example:
+Required GitHub/Azure setup:
 
-```bash
-python -m text_to_cad.cad_generator \
-  --prompt-file examples/bracket_prompt.txt \
-  --output-dir outputs/phase_a/bracket \
-  --name bracket
+- GitHub Actions workflow permissions must allow package write.
+- Azure login secrets must exist for the workflow.
+- Azure App Service must have Azure OpenAI settings.
+- For private GHCR pulls, App Service must have registry credentials.
+
+Important App Service settings:
+
+```text
+AZURE_OPENAI_API_KEY=<key>
+AZURE_OPENAI_ENDPOINT=https://<resource-name>.cognitiveservices.azure.com/
+AZURE_OPENAI_DEPLOYMENT=<deployment-name>
+AZURE_OPENAI_API_VERSION=2024-12-01-preview
+WEBSITES_PORT=8000
+PORT=8000
+WEBSITES_CONTAINER_START_TIME_LIMIT=1800
+GUNICORN_TIMEOUT=600
 ```
 
-Generate files without executing CadQuery:
+For private GitHub Container Registry images, also configure:
+
+```text
+DOCKER_REGISTRY_SERVER_URL=https://ghcr.io
+DOCKER_REGISTRY_SERVER_USERNAME=<github-username>
+DOCKER_REGISTRY_SERVER_PASSWORD=<GitHub PAT with read:packages>
+```
+
+For the container deployment, leave the Azure Startup Command empty. The
+container runs `docker-entrypoint.sh`, which starts Xvfb and gunicorn.
+
+## Text-To-CAD CLI
+
+Deterministic Phase A generator:
 
 ```bash
 python -m text_to_cad.cad_generator \
   --prompt "Create a 100 mm x 50 mm x 4 mm simple rectangular steel plate." \
   --output-dir outputs/phase_a/plate \
-  --name plate \
-  --dry-run
+  --name plate
 ```
 
-Expected files:
-
-```text
-outputs/phase_a/bracket/
-├── bracket.step
-├── bracket.stl
-├── generated_cad.py
-├── preview.png
-├── prompt.txt
-├── spec.json
-└── viewer.html
-```
-
-Open the live 3D viewer:
-
-```bash
-python -m text_to_cad.open_viewer outputs/phase_a/bracket/viewer.html
-```
-
-On WSL you can also open it directly through Windows Explorer:
-
-```bash
-explorer.exe "$(wslpath -w outputs/phase_a/bracket/viewer.html)"
-```
-
-The viewer is self-contained and includes the STL geometry, CAD dimensions, hole
-details, mesh triangle count, and generated file names.
-
-Install dependencies:
-
-```bash
-pip install -r requirements.txt
-```
-
-## Phase B: LLM CAD Agent
-
-Phase B adds a structured CAD-agent path. The agent asks Azure OpenAI for a
-validated CAD document JSON, exports it locally with CadQuery, and still falls
-back to the deterministic Phase A parser when Azure is not configured.
-
-Run with deterministic fallback:
+LLM CAD agent with deterministic fallback:
 
 ```bash
 python -m text_to_cad.cad_agent \
@@ -149,167 +251,87 @@ python -m text_to_cad.cad_agent \
   --provider fallback
 ```
 
-Run with Azure OpenAI:
+LLM CAD agent with Azure:
 
 ```bash
-export AZURE_OPENAI_ENDPOINT="https://<resource-name>.openai.azure.com"
-export AZURE_OPENAI_API_KEY="<key>"
-export AZURE_OPENAI_DEPLOYMENT="<deployment-name>"
-export AZURE_OPENAI_API_VERSION="2024-10-21"
-
 python -m text_to_cad.cad_agent \
-  --prompt "Create a 120 mm x 60 mm x 5 mm bracket with four bolt holes and rounded outer edges." \
-  --output-dir outputs/phase_b/rounded_bracket \
-  --name rounded_bracket \
+  --prompt "Create a flanged rubber bushing with OD 60 mm, ID 20 mm, height 40 mm, flange diameter 90 mm and flange thickness 5 mm." \
+  --output-dir outputs/phase_b/flanged_bushing \
+  --name flanged_bushing \
   --provider azure
 ```
 
-Expected Phase B files:
+Expected generated files commonly include:
 
 ```text
-outputs/phase_b/bracket/
-├── agent_document.json
-├── agent_generated_cad.py
-├── agent_source.txt
-├── bracket.step
-├── bracket.stl
-├── preview.png
-├── prompt.txt
-└── viewer.html
+agent_document.json
+agent_generated_cad.py
+agent_source.txt
+<name>.step
+<name>.stl
+preview.png
+prompt.txt
+viewer.html
 ```
 
-Open the Phase B viewer:
+Open a generated standalone viewer:
 
 ```bash
 python -m text_to_cad.open_viewer outputs/phase_b/bracket/viewer.html
 ```
 
-## Phase C: Simulation (STEP to natural frequencies)
-
-Phase C runs a local NVH modal analysis on any generated STEP file using the
-open-source toolchain: **Gmsh** for meshing and **CalculiX** for solving. The
-full workflow is:
-
-```text
-STEP -> tetra mesh (Gmsh) -> clean -> quality check -> CalculiX modal -> frequencies (Hz)
-```
-
-### System dependencies
-
-The mesher and solver are native tools, not pip packages:
+On WSL, opening through Windows Explorer is often easiest:
 
 ```bash
-sudo apt-get install -y libglu1-mesa calculix-ccx
-pip install -r requirements.txt
+explorer.exe "$(wslpath -w outputs/phase_b/bracket/viewer.html)"
 ```
 
-`libglu1-mesa` is required by the Gmsh Python binding; `calculix-ccx` provides
-the `ccx` solver.
+## Meshing And FEM CLI
 
-### One command: full pipeline
+Run the full modal pipeline from a STEP file:
 
 ```bash
-python -m simulate.pipeline outputs/phase_a/bracket/bracket.step \
+python -m simulate.pipeline outputs/phase_b/bracket/bracket.step \
   --output-dir outputs/simulation/bracket \
   --modes 8 \
-  --boundary fixed_bottom
+  --boundary fixed_bottom \
+  --material rubber
 ```
 
-The material is auto-detected from a sibling `spec.json` (`material_hint`) when
-present, or set it explicitly with `--material steel`. Boundary presets are
-`free`, `fixed_bottom`, `fixed_top`, and `encastre`.
-
-Expected output:
-
-```text
-[1/5] Meshing bracket.step ...
-[2/5] Cleaning mesh ...
-[3/5] Checking mesh quality ...
-[4/5] Solving modal analysis with CalculiX (steel) ...
-[5/5] Extracting natural frequencies ...
-
-Natural frequencies from bracket.dat:
-  Mode  1:   3155.654 Hz
-  ...
-Fundamental flexible frequency: 3155.654 Hz
-```
-
-Generated files in the output directory:
-
-```text
-outputs/simulation/bracket/
-├── bracket.msh          # Gmsh volume mesh
-├── bracket_clean.vtk    # cleaned mesh
-├── bracket.inp          # CalculiX input deck
-├── bracket.dat          # solver eigenvalue output
-├── bracket.frd          # mode shapes (open in ParaView / CalculiX cgx)
-└── bracket_modal.json   # parsed natural frequencies
-```
-
-### Individual stages
-
-Each stage is also runnable on its own:
+Run stages individually:
 
 ```bash
-# 1. STEP -> volume mesh
-python -m geometry.step_to_mesh outputs/phase_a/bracket/bracket.step outputs/simulation/bracket/bracket.msh
+# STEP -> Gmsh volume mesh
+python -m geometry.step_to_mesh outputs/phase_b/bracket/bracket.step outputs/simulation/bracket/bracket.msh
 
-# 2. Clean the mesh
+# Clean mesh
 python -m geometry.mesh_cleaner outputs/simulation/bracket/bracket.msh outputs/simulation/bracket/bracket_clean.vtk
 
-# 3. Check mesh quality
+# Check quality
 python -m geometry.mesh_quality outputs/simulation/bracket/bracket_clean.vtk
 
-# 4. Run the modal solver
-python -m simulate.modal_solver outputs/simulation/bracket/bracket_clean.vtk --material steel --modes 8
+# Run CalculiX modal solve
+python -m simulate.modal_solver outputs/simulation/bracket/bracket_clean.vtk --material rubber --modes 8
 
-# 5. Parse natural frequencies
-python -m simulate.results outputs/simulation/bracket/modal.dat --json report.json
-```
-
-### Contour images (von Mises stress / displacement)
-
-The pipeline also renders a coloured contour PNG of the first mode (deformed
-mode shape coloured by von Mises stress) using PyVista — no ParaView/cgx GUI
-needed. It is written next to the other results, e.g.
-`bracket_mode1_mises.png`.
-
-Disable it with `--no-contour`, or pick a different mode with
-`--contour-mode 2`.
-
-Render a contour from any existing `.frd` directly:
-
-```bash
-# Von Mises stress on the deformed mode shape
+# Render contour image from FRD
 python -m simulate.visualize outputs/simulation/bracket/bracket.frd \
-  --field mises --mode 1 --warp \
+  --field mises \
+  --mode 1 \
+  --warp \
   --output outputs/simulation/bracket/bracket_mode1_mises.png
-
-# Displacement magnitude
-python -m simulate.visualize outputs/simulation/bracket/bracket.frd \
-  --field disp --mode 2 --warp
 ```
 
-Options: `--field {mises,disp}`, `--mode N`, `--warp` (deform by the mode
-shape), `--warp-scale`, `--cmap` (default `jet`), and `--colors` (number of
-discrete contour bands). Modal stress is an eigenvector quantity, so the
-contour *pattern* is meaningful while the absolute magnitude is relative.
+Notes:
 
-### Visualize mode shapes
+- Units are millimetres in CAD.
+- The solver uses a tonne-mm-s unit system.
+- Natural frequencies are reported in Hz.
+- Rubber materials are treated as linear-elastic first-pass approximations.
+- Modal stress contours show useful spatial patterns; absolute stress magnitude is relative for eigenmodes.
 
-Open the `.frd` file in [ParaView](https://www.paraview.org/) or CalculiX `cgx`:
+## MCP Server
 
-```bash
-cgx -o outputs/simulation/bracket/bracket.frd
-```
-
-> Units: geometry is in millimetres, so the solver uses a tonne-mm-s unit
-> system and natural frequencies are reported directly in Hz. Rubber/EPDM are
-> modelled as soft linear-elastic solids for a first-pass estimate.
-
-## Resonance CAD MCP Server
-
-The local MCP server exposes renamed Resonance CAD tools over stdio:
+The local MCP server exposes Resonance CAD tools over stdio:
 
 ```text
 create_resonance_cad_document
@@ -317,7 +339,7 @@ inspect_resonance_cad
 export_resonance_cad
 ```
 
-MCP server command:
+Run it:
 
 ```bash
 python -m text_to_cad.mcp_server
@@ -337,73 +359,51 @@ Example MCP config:
 }
 ```
 
-## Azure Web App
+## Troubleshooting
 
-This repo includes a lightweight FastAPI web UI with a prompt box, validated
-OpenAI CAD JSON, and an SVG CAD-style preview. The Azure deployment packages
-only [main.py](main.py), [startup.sh](startup.sh), and the `backend/` app so App
-Service does not need CadQuery or native OpenCascade libraries.
+### Azure OpenAI 404 Resource not found
 
-Set these App Service application settings:
+Check these values in Azure App Service environment variables:
 
 ```text
-AZURE_OPENAI_API_KEY=<your-azure-openai-key>
-AZURE_OPENAI_ENDPOINT=https://<resource-name>.openai.azure.com
-AZURE_OPENAI_DEPLOYMENT=<deployment-name>
-AZURE_OPENAI_API_VERSION=2024-10-21
-SCM_DO_BUILD_DURING_DEPLOYMENT=true
+AZURE_OPENAI_ENDPOINT
+AZURE_OPENAI_DEPLOYMENT
+AZURE_OPENAI_API_VERSION
 ```
 
-Use this startup command:
-
-```bash
-bash startup.sh
-```
-
-Run locally:
-
-```bash
-python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
-```
-
-Then open:
+The deployment value must match the deployment name in Azure AI Foundry or Azure
+OpenAI. The endpoint should normally look like:
 
 ```text
-http://localhost:8000/generate
+https://<resource-name>.cognitiveservices.azure.com/
 ```
 
-The same UI is also available at `/ui`. The root `/` remains a JSON health
-check endpoint.
+### FEM error: `libgomp.so.1` missing
 
-The configured Azure Web App name in the workflow is:
+The FEM/Gmsh stack needs OpenMP runtime support. The production `Dockerfile`
+installs:
 
 ```text
-ext-sjana-vibrac
+libgomp1
 ```
 
-The public URL will be:
+Rebuild and redeploy the FEM container after Dockerfile changes.
+
+### Container timeout on Azure
+
+Useful settings:
 
 ```text
-https://ext-sjana-vibrac.azurewebsites.net
+WEBSITES_CONTAINER_START_TIME_LIMIT=1800
+WEBSITES_PORT=8000
+PORT=8000
+GUNICORN_TIMEOUT=600
 ```
 
-Azure App Service settings to configure:
+For private GHCR images, verify the App Service registry credentials and that
+the PAT has `read:packages`.
 
-```text
-Runtime stack: Python 3.12 or newer on Linux
-Startup command: bash startup.sh
-SCM_DO_BUILD_DURING_DEPLOYMENT: true
-AZURE_OPENAI_API_KEY: <key>
-AZURE_OPENAI_ENDPOINT: https://<resource-name>.openai.azure.com
-AZURE_OPENAI_DEPLOYMENT: <deployment-name>
-AZURE_OPENAI_API_VERSION: 2024-10-21
-```
+### Do not commit secrets
 
-GitHub Actions deployment uses a publish profile. Add this repository secret:
-
-```text
-AZURE_WEBAPP_PUBLISH_PROFILE
-```
-
-Paste the publish profile XML downloaded from the Azure Web App Deployment
-Center or Overview page.
+Keep `backend/.env` local. Azure secrets belong in App Service environment
+variables or GitHub Actions secrets.
