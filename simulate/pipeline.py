@@ -65,12 +65,13 @@ def run_pipeline(config: PipelineConfig) -> int:
 
     print(f"[1/5] Meshing {config.step_file.name} ...")
     mesh_result, mesh_kind, fallback_reason = _generate_volume_mesh(config, raw_mesh)
+    generated_mesh = Path(mesh_result.mesh_file)
     print(f"      {_mesh_summary(mesh_result, mesh_kind)}")
     if fallback_reason:
         print(f"      Hex mesh fallback: {fallback_reason}")
 
     print("[2/5] Cleaning mesh ...")
-    clean_result = clean_mesh(raw_mesh, clean_inp)
+    clean_result = clean_mesh(generated_mesh, clean_inp)
     print(f"      {clean_result.summary()}")
 
     print("[3/5] Checking mesh quality ...")
@@ -100,6 +101,7 @@ def run_pipeline(config: PipelineConfig) -> int:
     print("[5/5] Extracting natural frequencies ...")
     results = parse_dat(run.dat_file)
     report_path = write_report(results, config.output_dir / f"{config.name}_modal.json")
+    pca_path = _try_pca(run.frd_file, config)
 
     contour_path = None
     if config.contour_image:
@@ -112,6 +114,8 @@ def run_pipeline(config: PipelineConfig) -> int:
     print(f"Deck:    {run.inp_file}")
     print(f"Results: {run.dat_file}")
     print(f"Report:  {report_path}")
+    if pca_path is not None:
+        print(f"PCA:     {pca_path}")
     if contour_path is not None:
         print(f"Contour: {contour_path}")
     print(f"View:    open {run.frd_file} in ParaView or CalculiX cgx")
@@ -137,6 +141,23 @@ def _try_contour(frd_file: Path, config: "PipelineConfig") -> Path | None:
         )
     except Exception as exc:  # noqa: BLE001 - visualization is best-effort
         print(f"      Contour image skipped: {exc}", file=sys.stderr)
+        return None
+
+
+def _try_pca(frd_file: Path, config: "PipelineConfig") -> Path | None:
+    """Write a modal displacement PCA JSON report; never fail the pipeline."""
+
+    try:
+        from simulate.pca import analyze_modal_pca, write_pca_report
+    except ImportError:
+        from pca import analyze_modal_pca, write_pca_report  # pragma: no cover
+
+    output = config.output_dir / f"{config.name}_pca.json"
+    try:
+        result = analyze_modal_pca(frd_file, max_components=min(6, config.num_modes))
+        return write_pca_report(result, output)
+    except Exception as exc:  # noqa: BLE001 - PCA is best-effort post-processing
+        print(f"      PCA skipped: {exc}", file=sys.stderr)
         return None
 
 

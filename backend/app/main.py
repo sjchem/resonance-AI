@@ -640,7 +640,9 @@ async def run_fem(payload: dict) -> dict:
             fem_mesh = None
 
         modal_path = sim_dir / f"{name}_modal.json"
+        pca_path = sim_dir / f"{name}_pca.json"
         modes_payload: list[dict] = []
+        pca_payload: dict | None = None
         fundamental_hz = None
         if modal_path.exists():
             try:
@@ -649,6 +651,11 @@ async def run_fem(payload: dict) -> dict:
                 modes_payload = modal.get("modes", [])
             except (OSError, json.JSONDecodeError):
                 pass
+        if pca_path.exists():
+            try:
+                pca_payload = json.loads(pca_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                pca_payload = None
 
         image_b64 = base64.b64encode(contour_path.read_bytes()).decode("ascii")
         return {
@@ -658,6 +665,7 @@ async def run_fem(payload: dict) -> dict:
             "material": material or "generic",
             "fundamental_hz": fundamental_hz,
             "modes": modes_payload,
+            "pca": pca_payload,
             "field": "mises",
             "fem_mesh": fem_mesh,
         }
@@ -3982,6 +3990,7 @@ UI_HTML = """<!doctype html>
           '<td>Mode ' + m.mode_number + '</td>' +
           '<td class="sim-value">' + formatHz(m.frequency_hz) + '</td></tr>'
         )).join("");
+        const pcaHtml = femPcaHtml(d.pca);
         container.innerHTML =
           '<div class="sim-contour">' +
           '<p class="sim-fem-msg"><strong>Validated FEM batch</strong> \u00b7 ' + d.num_modes + ' mode(s) solved \u00b7 showing von Mises contour for mode ' + d.mode +
@@ -3990,6 +3999,7 @@ UI_HTML = """<!doctype html>
           '<div class="sim-head-actions" style="margin-top:10px;justify-content:flex-end">' +
           '<button type="button" class="sim-btn" id="femCsvBtn">Download CSV</button>' +
           '</div>' +
+          pcaHtml +
           (modesRows ? ('<table class="sim-table sim-table-rows" style="margin-top:10px"><tr><th>FEM mode</th><th style="text-align:right">Frequency</th></tr>' + modesRows + '</table>') : '') +
           '</div>';
         if (hasMesh) {
@@ -4002,6 +4012,32 @@ UI_HTML = """<!doctype html>
           });
         }
       }
+    }
+
+    function femPcaHtml(pca) {
+      const components = pca && Array.isArray(pca.components) ? pca.components : [];
+      if (!components.length) return "";
+      const rows = components.map((pc) => {
+        const ratio = Number(pc.explained_variance_ratio || 0) * 100;
+        const cumulative = Number(pc.cumulative_variance_ratio || 0) * 100;
+        return (
+          '<tr>' +
+          '<td>PC' + pc.component + '</td>' +
+          '<td class="sim-value">' + ratio.toFixed(1) + '%</td>' +
+          '<td class="sim-value">' + cumulative.toFixed(1) + '%</td>' +
+          '<td>Mode ' + pc.dominant_mode + ' (' + formatHz(pc.dominant_frequency_hz) + ')</td>' +
+          '</tr>'
+        );
+      }).join("");
+      return (
+        '<div class="sim-pca" style="margin-top:10px">' +
+        '<div class="category-subhead" style="margin:0 0 2px"><strong>Mode-shape PCA</strong><span>' +
+        pca.mode_count + ' modes \u00b7 ' + pca.node_count + ' nodes</span></div>' +
+        '<table class="sim-table sim-table-rows"><tr><th>Component</th><th style="text-align:right">Variance</th><th style="text-align:right">Cumulative</th><th>Dominant mode</th></tr>' +
+        rows +
+        '</table>' +
+        '</div>'
+      );
     }
 
     function femLegendHtml(mesh) {
@@ -5077,14 +5113,19 @@ UI_HTML = """<!doctype html>
     }
 
     function femCsvBlob(data) {
-      const rows = [["mode_number", "frequency_hz", "eigenvalue", "selected_contour", "material"]];
+      const componentCount = data && data.pca && Array.isArray(data.pca.components) ? data.pca.components.length : 0;
+      const pcHeaders = Array.from({ length: componentCount }, (_, index) => "pc" + (index + 1));
+      const rows = [["mode_number", "frequency_hz", "eigenvalue", "selected_contour", "material", ...pcHeaders]];
+      const scoreByMode = new Map(((data && data.pca && data.pca.mode_scores) || []).map((entry) => [Number(entry.mode_number), entry.scores || []]));
       for (const mode of (data && data.modes) || []) {
+        const scores = scoreByMode.get(Number(mode.mode_number)) || [];
         rows.push([
           mode.mode_number,
           mode.frequency_hz,
           mode.eigenvalue,
           Number(mode.mode_number) === Number(data.mode) ? "yes" : "no",
           data.material || "generic",
+          ...pcHeaders.map((_, index) => scores[index]),
         ]);
       }
       const csv = rows.map((row) => row.map(csvCell).join(",")).join("\\n") + "\\n";
