@@ -28,6 +28,8 @@ from app.upload_context import UploadContext, build_upload_context
 
 app = FastAPI(title="Resonance AI", version="0.1.0")
 
+MAX_FEM_MODES = 100
+
 
 @app.get("/")
 async def health_check() -> dict[str, str]:
@@ -527,7 +529,7 @@ async def run_fem(payload: dict) -> dict:
         num_modes = int(payload.get("num_modes", 6) or 6)
     except (TypeError, ValueError):
         num_modes = 6
-    num_modes = max(1, min(num_modes, 10))
+    num_modes = max(1, min(num_modes, MAX_FEM_MODES))
     try:
         mode = int(payload.get("mode", 1) or 1)
     except (TypeError, ValueError):
@@ -3568,19 +3570,20 @@ UI_HTML = """<!doctype html>
     }
 
     function simBatchControlsHtml() {
-      const count = clampInt(femBatchCount, 1, 10, 6);
+      const maxFemModes = 100;
+      const count = clampInt(femBatchCount, 1, maxFemModes, 6);
       const contour = clampInt(femContourMode || selectedFemMode(), 1, count, 1);
       return (
         '<div class="sim-batch-controls">' +
         '<div class="sim-batch-field">' +
         '<label for="simBatchCount">Number of simulations</label>' +
-        '<input id="simBatchCount" type="number" min="1" max="10" step="1" value="' + count + '">' +
+        '<input id="simBatchCount" type="number" min="1" max="' + maxFemModes + '" step="1" value="' + count + '">' +
         '</div>' +
         '<div class="sim-batch-field">' +
         '<label for="simContourMode">Contour mode</label>' +
         '<input id="simContourMode" type="number" min="1" max="' + count + '" step="1" value="' + contour + '">' +
         '</div>' +
-        '<div class="sim-batch-note">One CAD mesh is generated, then CalculiX solves up to 10 modal results. Larger batches can take several minutes on Azure.</div>' +
+        '<div class="sim-batch-note">One CAD mesh is generated, then CalculiX solves up to 100 modal results. Larger batches can take several minutes on Azure.</div>' +
         '</div>'
       );
     }
@@ -3590,7 +3593,7 @@ UI_HTML = """<!doctype html>
       const contourInput = document.getElementById("simContourMode");
       if (countInput) {
         countInput.addEventListener("input", () => {
-          femBatchCount = readClampedInput(countInput, 1, 10, femBatchCount || 6);
+          femBatchCount = readClampedInput(countInput, 1, 100, femBatchCount || 6);
           if (contourInput) {
             contourInput.max = String(femBatchCount);
             femContourMode = readClampedInput(contourInput, 1, femBatchCount, femContourMode || 1);
