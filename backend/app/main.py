@@ -1606,6 +1606,73 @@ UI_HTML = """<!doctype html>
       font-size: 12px;
       line-height: 1.4;
     }
+    .sim-pca-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1.05fr) minmax(320px, 0.95fr);
+      gap: 10px;
+      align-items: start;
+      margin-top: 10px;
+    }
+    .sim-pca-plot {
+      min-height: 340px;
+      border: 1px solid var(--line);
+      border-radius: 3px;
+      background: #fff;
+      overflow: hidden;
+    }
+    .sim-pca-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--line);
+      background: #f8fbff;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .sim-pca-toggle {
+      display: inline-flex;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      overflow: hidden;
+      background: #fff;
+    }
+    .sim-pca-toggle button {
+      width: auto;
+      margin: 0;
+      padding: 5px 10px;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      color: var(--brand);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .sim-pca-toggle button.active {
+      background: var(--brand);
+      color: #fff;
+    }
+    .sim-pca-canvas {
+      width: 100%;
+      height: 300px;
+      display: block;
+    }
+    .sim-pca-features {
+      min-width: 0;
+    }
+    .sim-pca .axis-pill {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 24px;
+      padding: 2px 6px;
+      border-radius: 999px;
+      background: #e8f0fb;
+      color: var(--brand);
+      font-size: 11px;
+      font-weight: 800;
+    }
     .mesh-block {
       margin-top: 14px;
       padding-top: 12px;
@@ -4005,6 +4072,7 @@ UI_HTML = """<!doctype html>
         if (hasMesh) {
           renderFemMeshCanvas(document.getElementById("simFemViewer"), d.fem_mesh);
         }
+        bindFemPcaPlot(d.pca);
         const csvBtn = document.getElementById("femCsvBtn");
         if (csvBtn) {
           csvBtn.addEventListener("click", () => {
@@ -4020,24 +4088,146 @@ UI_HTML = """<!doctype html>
       const rows = components.map((pc) => {
         const ratio = Number(pc.explained_variance_ratio || 0) * 100;
         const cumulative = Number(pc.cumulative_variance_ratio || 0) * 100;
+        const axis = String(pc.dominant_axis || "").toUpperCase();
+        const axisEnergy = pc.axis_energy || {};
+        const axisLabel = axis ? '<span class="axis-pill">' + escapeHtml(axis) + '</span>' : "";
         return (
           '<tr>' +
           '<td>PC' + pc.component + '</td>' +
           '<td class="sim-value">' + ratio.toFixed(1) + '%</td>' +
           '<td class="sim-value">' + cumulative.toFixed(1) + '%</td>' +
+          '<td>' + escapeHtml(pc.characteristic || "Mode-family variation") + ' ' + axisLabel + '</td>' +
           '<td>Mode ' + pc.dominant_mode + ' (' + formatHz(pc.dominant_frequency_hz) + ')</td>' +
+          '<td class="sim-value">X ' + percent(axisEnergy.x) + ' / Y ' + percent(axisEnergy.y) + ' / Z ' + percent(axisEnergy.z) + '</td>' +
           '</tr>'
         );
       }).join("");
+      const has3d = components.length >= 3 && (pca.mode_scores || []).some((entry) => (entry.scores || []).length >= 3);
       return (
         '<div class="sim-pca" style="margin-top:10px">' +
         '<div class="category-subhead" style="margin:0 0 2px"><strong>Mode-shape PCA</strong><span>' +
         pca.mode_count + ' modes \u00b7 ' + pca.node_count + ' nodes</span></div>' +
-        '<table class="sim-table sim-table-rows"><tr><th>Component</th><th style="text-align:right">Variance</th><th style="text-align:right">Cumulative</th><th>Dominant mode</th></tr>' +
+        '<div class="sim-pca-layout">' +
+        '<div class="sim-pca-plot">' +
+        '<div class="sim-pca-toolbar"><span>PC score map</span><span class="sim-pca-toggle"><button type="button" class="active" data-pca-view="2d">2D</button><button type="button" data-pca-view="3d"' + (has3d ? '' : ' disabled') + '>3D</button></span></div>' +
+        '<canvas class="sim-pca-canvas" id="simPcaCanvas" aria-label="PCA mode score plot"></canvas>' +
+        '</div>' +
+        '<div class="sim-pca-features">' +
+        '<table class="sim-table sim-table-rows"><tr><th>PC</th><th style="text-align:right">Variance</th><th style="text-align:right">Cumulative</th><th>Characteristic feature</th><th>Dominant mode</th><th style="text-align:right">Axis energy</th></tr>' +
         rows +
         '</table>' +
+        '</div>' +
+        '</div>' +
         '</div>'
       );
+    }
+
+    function percent(value) {
+      const numeric = Number(value);
+      return Number.isFinite(numeric) ? (numeric * 100).toFixed(0) + '%' : '0%';
+    }
+
+    function bindFemPcaPlot(pca) {
+      const canvas = document.getElementById("simPcaCanvas");
+      if (!canvas || !pca || !Array.isArray(pca.mode_scores)) return;
+      let view = "2d";
+      const buttons = Array.from(document.querySelectorAll("[data-pca-view]"));
+      buttons.forEach((button) => {
+        button.addEventListener("click", () => {
+          if (button.disabled) return;
+          view = button.getAttribute("data-pca-view") || "2d";
+          buttons.forEach((item) => item.classList.toggle("active", item === button));
+          drawPcaPlot(canvas, pca, view);
+        });
+      });
+      drawPcaPlot(canvas, pca, view);
+      const resizeObserver = new ResizeObserver(() => drawPcaPlot(canvas, pca, view));
+      resizeObserver.observe(canvas.parentElement || canvas);
+    }
+
+    function drawPcaPlot(canvas, pca, view) {
+      const context = canvas.getContext("2d");
+      if (!context) return;
+      const rect = canvas.getBoundingClientRect();
+      const width = Math.max(360, Math.floor(rect.width || 520));
+      const height = Math.max(300, Math.floor(rect.height || 300));
+      const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+      canvas.width = Math.floor(width * pixelRatio);
+      canvas.height = Math.floor(height * pixelRatio);
+      context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+      context.clearRect(0, 0, width, height);
+      context.fillStyle = "#ffffff";
+      context.fillRect(0, 0, width, height);
+
+      const entries = (pca.mode_scores || []).filter((entry) => Array.isArray(entry.scores) && entry.scores.length >= 2);
+      if (!entries.length) return;
+      const projected = entries.map((entry) => {
+        const scores = entry.scores || [];
+        const x = Number(scores[0]) || 0;
+        const y = Number(scores[1]) || 0;
+        const z = view === "3d" ? Number(scores[2]) || 0 : 0;
+        return { entry, x: x + z * 0.44, y: y - z * 0.28, z };
+      });
+      const xs = projected.map((p) => p.x);
+      const ys = projected.map((p) => p.y);
+      const padding = { left: 48, right: 24, top: 28, bottom: 42 };
+      const minX = Math.min(...xs, 0);
+      const maxX = Math.max(...xs, 0);
+      const minY = Math.min(...ys, 0);
+      const maxY = Math.max(...ys, 0);
+      const spanX = Math.max(maxX - minX, 1e-9);
+      const spanY = Math.max(maxY - minY, 1e-9);
+      const plotW = width - padding.left - padding.right;
+      const plotH = height - padding.top - padding.bottom;
+      const mapX = (value) => padding.left + ((value - minX) / spanX) * plotW;
+      const mapY = (value) => padding.top + (1 - (value - minY) / spanY) * plotH;
+
+      drawPcaGrid(context, width, height, padding, mapX(0), mapY(0), view);
+      projected.sort((a, b) => a.z - b.z).forEach((point) => {
+        const modeNo = Number(point.entry.mode_number) || 0;
+        const radius = view === "3d" ? clamp(5 + Math.abs(point.z) * 8, 5, 12) : 6;
+        const x = mapX(point.x);
+        const y = mapY(point.y);
+        context.beginPath();
+        context.arc(x, y, radius, 0, Math.PI * 2);
+        context.fillStyle = pcaPointColor(modeNo);
+        context.fill();
+        context.strokeStyle = "#ffffff";
+        context.lineWidth = 2;
+        context.stroke();
+        context.fillStyle = "#10243f";
+        context.font = "11px Inter, system-ui, sans-serif";
+        context.fillText("M" + modeNo, x + radius + 3, y - radius - 2);
+      });
+      context.fillStyle = "#4f5d75";
+      context.font = "12px Inter, system-ui, sans-serif";
+      context.fillText(view === "3d" ? "PC1 / PC2 / PC3 projected" : "PC1 vs PC2", padding.left, height - 12);
+    }
+
+    function drawPcaGrid(context, width, height, padding, zeroX, zeroY, view) {
+      context.strokeStyle = "#e4ebf3";
+      context.lineWidth = 1;
+      for (let i = 0; i <= 4; i++) {
+        const x = padding.left + ((width - padding.left - padding.right) * i) / 4;
+        const y = padding.top + ((height - padding.top - padding.bottom) * i) / 4;
+        context.beginPath(); context.moveTo(x, padding.top); context.lineTo(x, height - padding.bottom); context.stroke();
+        context.beginPath(); context.moveTo(padding.left, y); context.lineTo(width - padding.right, y); context.stroke();
+      }
+      context.strokeStyle = "#9aa8ba";
+      context.beginPath(); context.moveTo(zeroX, padding.top); context.lineTo(zeroX, height - padding.bottom); context.stroke();
+      context.beginPath(); context.moveTo(padding.left, zeroY); context.lineTo(width - padding.right, zeroY); context.stroke();
+      context.fillStyle = "#233b5f";
+      context.font = "12px Inter, system-ui, sans-serif";
+      context.fillText("PC2", 10, padding.top + 12);
+      context.fillText("PC1", width - padding.right - 28, height - padding.bottom + 24);
+      if (view === "3d") {
+        context.fillText("PC3 depth", width - padding.right - 72, padding.top + 12);
+      }
+    }
+
+    function pcaPointColor(modeNo) {
+      const colors = ["#2166ac", "#1a9850", "#fdae61", "#d7191c", "#7b3294", "#008c8c", "#b35806"];
+      return colors[Math.abs(modeNo || 0) % colors.length];
     }
 
     function femLegendHtml(mesh) {

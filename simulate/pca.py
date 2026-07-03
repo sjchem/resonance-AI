@@ -31,6 +31,9 @@ class PcaComponent:
     cumulative_variance_ratio: float
     dominant_mode: int
     dominant_frequency_hz: float
+    dominant_axis: str
+    axis_energy: dict[str, float]
+    characteristic: str
     score_min: float
     score_max: float
 
@@ -93,6 +96,8 @@ def analyze_modal_pca(frd_file: Path, *, max_components: int = 6) -> ModalPcaRes
         component_scores = scores[:, index]
         dominant_index = int(np.argmax(np.abs(component_scores)))
         dominant_field = disp_fields[dominant_index]
+        axis_energy = _axis_energy(vt[index], mesh.points.shape[0])
+        dominant_axis = max(axis_energy, key=axis_energy.get)
         components.append(
             PcaComponent(
                 component=index + 1,
@@ -100,6 +105,9 @@ def analyze_modal_pca(frd_file: Path, *, max_components: int = 6) -> ModalPcaRes
                 cumulative_variance_ratio=float(cumulative[index]),
                 dominant_mode=int(dominant_field.mode),
                 dominant_frequency_hz=float(dominant_field.frequency_hz),
+                dominant_axis=dominant_axis,
+                axis_energy=axis_energy,
+                characteristic=_characteristic_label(index + 1, ratios[index], dominant_axis),
                 score_min=float(component_scores.min()),
                 score_max=float(component_scores.max()),
             )
@@ -144,6 +152,30 @@ def _normalized_mode_vector(displacements: np.ndarray) -> np.ndarray:
         if vector[pivot] < 0:
             vector = -vector
     return vector
+
+
+def _axis_energy(component_vector: np.ndarray, node_count: int) -> dict[str, float]:
+    """Return normalized component energy in global X/Y/Z displacement axes."""
+
+    if node_count <= 0:
+        return {"x": 0.0, "y": 0.0, "z": 0.0}
+    vectors = np.asarray(component_vector, dtype=float).reshape(node_count, 3)
+    energy = np.sum(vectors * vectors, axis=0)
+    total = float(energy.sum())
+    if total <= 0.0:
+        return {"x": 0.0, "y": 0.0, "z": 0.0}
+    return {"x": float(energy[0] / total), "y": float(energy[1] / total), "z": float(energy[2] / total)}
+
+
+def _characteristic_label(component: int, variance_ratio: float, dominant_axis: str) -> str:
+    axis_label = {"x": "X lateral", "y": "Y lateral", "z": "Z axial"}.get(dominant_axis, dominant_axis.upper())
+    if component == 1:
+        prefix = "Primary mode-family variation"
+    elif variance_ratio >= 0.15:
+        prefix = "Secondary mode-family variation"
+    else:
+        prefix = "Detail/local mode variation"
+    return f"{prefix} ({axis_label} dominant)"
 
 
 def main(argv: list[str] | None = None) -> int:
