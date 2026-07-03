@@ -2,7 +2,7 @@
 
 This single command runs the full "best practical workflow":
 
-    1. STEP  -> tetrahedral volume mesh        (geometry.step_to_mesh)
+    1. STEP  -> hex-first or tetra volume mesh (geometry.*_mesh)
     2. clean -> merge nodes, drop bad cells     (geometry.mesh_cleaner)
     3. check -> mesh quality / solver readiness  (geometry.mesh_quality)
     4. solve -> CalculiX modal analysis          (simulate.modal_solver)
@@ -27,6 +27,7 @@ import sys
 
 try:
     from geometry.step_to_mesh import step_to_mesh
+    from geometry.hex_swept_mesh import StructuredHexUnavailable, step_to_swept_hex_mesh
     from geometry.mesh_cleaner import clean_mesh
     from geometry.mesh_quality import evaluate_mesh
     from simulate.materials import Material, resolve_material
@@ -35,6 +36,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - allow `python simulate/pipeline.py`
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from geometry.step_to_mesh import step_to_mesh
+    from geometry.hex_swept_mesh import StructuredHexUnavailable, step_to_swept_hex_mesh
     from geometry.mesh_cleaner import clean_mesh
     from geometry.mesh_quality import evaluate_mesh
     from simulate.materials import Material, resolve_material
@@ -50,6 +52,7 @@ class PipelineConfig:
     num_modes: int = 10
     boundary: str = "fixed_bottom"
     element_size_mm: float | None = None
+    mesh_strategy: str = "auto"
     name: str = "part"
     contour_image: bool = True
     contour_mode: int = 1
@@ -61,12 +64,10 @@ def run_pipeline(config: PipelineConfig) -> int:
     clean_inp = config.output_dir / f"{config.name}_clean.vtk"
 
     print(f"[1/5] Meshing {config.step_file.name} ...")
-    mesh_result = step_to_mesh(
-        step_file=config.step_file,
-        output_file=raw_mesh,
-        target_size_mm=config.element_size_mm,
-    )
-    print(f"      {mesh_result.summary()}")
+    mesh_result, mesh_kind, fallback_reason = _generate_volume_mesh(config, raw_mesh)
+    print(f"      {_mesh_summary(mesh_result, mesh_kind)}")
+    if fallback_reason:
+        print(f"      Hex mesh fallback: {fallback_reason}")
 
     print("[2/5] Cleaning mesh ...")
     clean_result = clean_mesh(raw_mesh, clean_inp)
@@ -139,6 +140,57 @@ def _try_contour(frd_file: Path, config: "PipelineConfig") -> Path | None:
         return None
 
 
+def _generate_volume_mesh(config: PipelineConfig, raw_mesh: Path):
+    """Generate a hex-first or tetra volume mesh, with conservative fallback."""
+
+    strategy = (config.mesh_strategy or "auto").lower()
+    if strategy not in {"auto", "tetra", "hex"}:
+        raise ValueError("mesh_strategy must be one of: auto, tetra, hex")
+
+    if strategy in {"auto", "hex"}:
+        hex_mesh = raw_mesh.with_name(f"{raw_mesh.stem}_hex{raw_mesh.suffix}")
+        try:
+            return (
+                step_to_swept_hex_mesh(
+                    step_file=config.step_file,
+                    output_file=hex_mesh,
+                    target_size_mm=config.element_size_mm,
+                ),
+                "structured_hex",
+                None,
+            )
+        except StructuredHexUnavailable as exc:
+            if strategy == "hex":
+                raise
+            fallback_reason = str(exc)
+        except Exception as exc:  # noqa: BLE001 - Gmsh can reject non-sweepable imported topology
+            if strategy == "hex":
+                raise
+            fallback_reason = str(exc)
+    else:
+        fallback_reason = None
+
+    return (
+        step_to_mesh(
+            step_file=config.step_file,
+            output_file=raw_mesh,
+            target_size_mm=config.element_size_mm,
+        ),
+        "tetra" if fallback_reason is None else "tetra_fallback",
+        fallback_reason,
+    )
+
+
+def _mesh_summary(mesh_result, mesh_kind: str) -> str:
+    if hasattr(mesh_result, "summary"):
+        return f"{mesh_kind}: {mesh_result.summary()}"
+    element_counts = ", ".join(f"{name}={count}" for name, count in mesh_result.element_counts.items())
+    return (
+        f"{mesh_kind}: Mesh: {mesh_result.mesh_file.name} | nodes={mesh_result.node_count} "
+        f"{element_counts} | element size {mesh_result.min_edge_mm:.3f}-{mesh_result.max_edge_mm:.3f} mm"
+    )
+
+
 def _material_from_spec(step_file: Path, explicit: str | None) -> Material:
     if explicit:
         return resolve_material(explicit)
@@ -167,6 +219,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Boundary condition preset.",
     )
     parser.add_argument("--element-size", type=float, default=None, help="Target element size in mm.")
+    parser.add_argument(
+        "--mesh-strategy",
+        choices=("auto", "tetra", "hex"),
+        default="auto",
+        help="Volume meshing strategy: auto tries structured hex first, tetra forces tetra, hex fails if hex is unavailable.",
+    )
     parser.add_argument("--name", default=None, help="Job basename (default: STEP stem).")
     parser.add_argument(
         "--no-contour",
@@ -197,6 +255,7 @@ def main(argv: list[str] | None = None) -> int:
         num_modes=args.modes,
         boundary=args.boundary,
         element_size_mm=args.element_size,
+        mesh_strategy=args.mesh_strategy,
         name=name,
         contour_image=not args.no_contour,
         contour_mode=args.contour_mode,

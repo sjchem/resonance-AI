@@ -1,8 +1,12 @@
-"""CalculiX modal (eigenfrequency) analysis from a tetrahedral mesh.
+"""CalculiX modal (eigenfrequency) analysis from a solid volume mesh.
 
 Given a volume mesh and a material, this module writes a CalculiX input deck
 (`.inp`), runs the ``ccx`` solver, and returns the path to the result (`.dat`/
 `.frd`) files. Natural-frequency extraction is handled in :mod:`simulate.results`.
+
+Supported solid elements are tetrahedra (C3D4/C3D10) and hexahedra
+(C3D8/C3D20). Gmsh quadratic 27-node hexes are reduced to the 20-node CalculiX
+layout by dropping face/volume center nodes.
 
 Unit system: tonne-mm-s (see :mod:`simulate.materials`), so frequencies are Hz.
 """
@@ -37,6 +41,14 @@ class ModalSetup:
     material: Material
     num_modes: int = 10
     boundary: str = "fixed_bottom"
+
+
+@dataclass(frozen=True)
+class ElementBlock:
+    """A homogeneous CalculiX element block."""
+
+    connectivity: np.ndarray
+    calculix_type: str
 
 
 @dataclass(frozen=True)
@@ -75,11 +87,11 @@ def write_inp_deck(setup: ModalSetup, inp_file: Path) -> None:
     mesh = meshio.read(str(setup.mesh_file))
     points = np.asarray(mesh.points, dtype=float)
 
-    elements, element_type = _extract_tetra(mesh)
-    if elements.size == 0:
-        raise ValueError("Mesh contains no tetrahedral elements to solve.")
+    element_blocks = _extract_solid_elements(mesh)
+    if not element_blocks:
+        raise ValueError("Mesh contains no tetrahedral or hexahedral solid elements to solve.")
 
-    fixed_nodes = _boundary_nodes(points, elements, setup.boundary)
+    fixed_nodes = _boundary_nodes(points, element_blocks, setup.boundary)
 
     inp_file.parent.mkdir(parents=True, exist_ok=True)
     lines: list[str] = []
@@ -91,11 +103,15 @@ def write_inp_deck(setup: ModalSetup, inp_file: Path) -> None:
     for index, (x, y, z) in enumerate(points, start=1):
         lines.append(f"{index}, {x:.6f}, {y:.6f}, {z:.6f}")
 
-    # Elements.
-    lines.append(f"*ELEMENT, TYPE={element_type}, ELSET=EALL")
-    for elem_index, connectivity in enumerate(elements, start=1):
-        node_ids = ", ".join(str(int(n) + 1) for n in connectivity)
-        lines.append(f"{elem_index}, {node_ids}")
+    # Elements. CalculiX allows multiple homogeneous sections to append to the
+    # same element set, which lets us solve mixed tet/hex meshes from Gmsh.
+    elem_index = 1
+    for block in element_blocks:
+        lines.append(f"*ELEMENT, TYPE={block.calculix_type}, ELSET=EALL")
+        for connectivity in block.connectivity:
+            node_ids = ", ".join(str(int(node) + 1) for node in connectivity)
+            lines.append(f"{elem_index}, {node_ids}")
+            elem_index += 1
 
     # Material.
     mat = setup.material
@@ -162,22 +178,33 @@ def run_modal(setup: ModalSetup, output_dir: Path, job_name: str = "modal") -> S
     )
 
 
-def _extract_tetra(mesh) -> tuple[np.ndarray, str]:
-    """Return tetra connectivity and the matching CalculiX element type."""
+def _extract_solid_elements(mesh) -> list[ElementBlock]:
+    """Return supported solid element blocks in CalculiX-ready connectivity."""
 
-    for block in mesh.cells:
-        if block.type == "tetra10":
-            return np.asarray(block.data, dtype=int), "C3D10"
-    for block in mesh.cells:
-        if block.type == "tetra":
-            return np.asarray(block.data, dtype=int), "C3D4"
-    return np.empty((0, 4), dtype=int), "C3D4"
+    specs = {
+        "hexahedron20": ("C3D20", 20),
+        "hexahedron27": ("C3D20", 20),
+        "hexahedron": ("C3D8", 8),
+        "tetra10": ("C3D10", 10),
+        "tetra": ("C3D4", 4),
+    }
+    blocks: list[ElementBlock] = []
+    for mesh_block in mesh.cells:
+        spec = specs.get(mesh_block.type)
+        if spec is None:
+            continue
+        calculix_type, node_count = spec
+        data = np.asarray(mesh_block.data, dtype=int)
+        if data.size == 0:
+            continue
+        blocks.append(ElementBlock(connectivity=data[:, :node_count], calculix_type=calculix_type))
+    return blocks
 
 
-def _boundary_nodes(points: np.ndarray, elements: np.ndarray, boundary: str) -> np.ndarray:
+def _boundary_nodes(points: np.ndarray, element_blocks: list[ElementBlock], boundary: str) -> np.ndarray:
     """Pick the node indices to clamp for the chosen boundary condition."""
 
-    used = np.unique(elements)
+    used = np.unique(np.concatenate([block.connectivity.ravel() for block in element_blocks])) if element_blocks else np.empty(0, dtype=int)
     if boundary == "free" or used.size == 0:
         return np.empty(0, dtype=int)
     if boundary == "encastre":
@@ -208,8 +235,8 @@ def _chunk_ids(ids: np.ndarray, per_line: int = 8) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Run a CalculiX modal analysis on a mesh.")
-    parser.add_argument("mesh_file", type=Path, help="Tetrahedral mesh (.msh/.inp/.vtk).")
+    parser = argparse.ArgumentParser(description="Run a CalculiX modal analysis on a solid mesh.")
+    parser.add_argument("mesh_file", type=Path, help="Solid mesh (.msh/.inp/.vtk) with tetra or hex cells.")
     parser.add_argument("--material", default="steel", help="Material name or hint.")
     parser.add_argument("--modes", type=int, default=10, help="Number of modes to extract.")
     parser.add_argument(
