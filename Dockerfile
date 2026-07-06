@@ -53,6 +53,7 @@ RUN python -m pip install --upgrade pip \
 # Application code (everything the entrypoint + /run-fem pipeline imports).
 COPY main.py ./
 COPY backend/ ./backend/
+COPY cad_backends/ ./cad_backends/
 COPY text_to_cad/ ./text_to_cad/
 COPY simulate/ ./simulate/
 COPY geometry/ ./geometry/

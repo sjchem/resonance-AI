@@ -1,0 +1,255 @@
+"""OpenSCAD backend for basic bushing exports."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+from typing import Any
+
+
+class OpenScadUnavailable(RuntimeError):
+    """Raised when no configured OpenSCAD runner is available."""
+
+
+class OpenScadExportError(RuntimeError):
+    """Raised when OpenSCAD is available but cannot export the requested model."""
+
+
+@dataclass(frozen=True)
+class OpenScadBushing:
+    scad_text: str
+    parameters: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class OpenScadExportResult:
+    stl_path: Path | None
+    png_path: Path | None
+    warnings: list[str]
+
+
+def generate_openscad_bushing(spec: dict[str, Any]) -> OpenScadBushing:
+    """Generate OpenSCAD source and normalized parameters for a bushing spec."""
+
+    part_type = str(spec.get("part_type", "bushing") or "bushing").lower()
+    if part_type not in {"bushing", "rubber_mount"}:
+        raise ValueError("OpenSCAD export currently supports bushing and rubber_mount parts only.")
+
+    geometry = _geometry(spec)
+    outer_diameter = _positive(geometry, "outer_diameter_mm", _positive(geometry, "length_mm", 60.0))
+    inner_diameter = _positive(geometry, "inner_diameter_mm", _positive(geometry, "hole_diameter_mm", outer_diameter * 0.35))
+    height = _positive(geometry, "height_mm", _positive(geometry, "thickness_mm", 40.0))
+    if inner_diameter >= outer_diameter:
+        raise ValueError("OpenSCAD bushing export requires inner_diameter_mm to be smaller than outer_diameter_mm.")
+
+    wall = (outer_diameter - inner_diameter) / 2.0
+    max_edge_break = max(0.0, min(height * 0.45, wall * 0.45))
+    chamfer = min(max(0.0, _number(geometry.get("chamfer_mm"), 0.0)), max_edge_break)
+    outer_sleeve_thickness = min(max(0.0, _number(geometry.get("metal_sleeve_thickness_mm"), 0.0)), wall * 0.45)
+    inner_sleeve_thickness = min(max(0.0, _number(geometry.get("inner_sleeve_thickness_mm"), 0.0)), wall * 0.45)
+
+    parameters = {
+        "cad_engine": "openscad",
+        "part_type": part_type,
+        "outer_diameter_mm": outer_diameter,
+        "inner_diameter_mm": inner_diameter,
+        "height_mm": height,
+        "chamfer_mm": chamfer,
+        "metal_sleeve_thickness_mm": outer_sleeve_thickness,
+        "inner_sleeve_thickness_mm": inner_sleeve_thickness,
+        "source_geometry": geometry,
+    }
+    return OpenScadBushing(scad_text=_render_bushing_scad(parameters), parameters=parameters)
+
+
+def run_openscad_export(scad_path: Path | str, output_dir: Path | str) -> OpenScadExportResult:
+    """Run OpenSCAD by local CLI or configured Docker image to export STL/PNG."""
+
+    scad_path = Path(scad_path)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stl_path = output_dir / f"{scad_path.stem}.stl"
+    png_path = output_dir / f"{scad_path.stem}.png"
+    warnings: list[str] = []
+
+    runner = _runner()
+    if runner[0] == "cli":
+        binary = runner[1]
+        _run([binary, "-o", str(stl_path), str(scad_path)], "OpenSCAD STL export failed")
+        try:
+            _run(
+                [binary, "-o", str(png_path), "--imgsize=1200,900", "--viewall", "--autocenter", str(scad_path)],
+                "OpenSCAD PNG preview export failed",
+            )
+        except OpenScadExportError as exc:
+            warnings.append(str(exc))
+    else:
+        image = runner[1]
+        docker = runner[2]
+        mount = f"{output_dir.resolve()}:/work"
+        scad_name = scad_path.name
+        stl_name = stl_path.name
+        png_name = png_path.name
+        _run(
+            [docker, "run", "--rm", "-v", mount, "-w", "/work", image, "openscad", "-o", stl_name, scad_name],
+            "OpenSCAD Docker STL export failed",
+        )
+        try:
+            _run(
+                [
+                    docker,
+                    "run",
+                    "--rm",
+                    "-v",
+                    mount,
+                    "-w",
+                    "/work",
+                    image,
+                    "openscad",
+                    "-o",
+                    png_name,
+                    "--imgsize=1200,900",
+                    "--viewall",
+                    "--autocenter",
+                    scad_name,
+                ],
+                "OpenSCAD Docker PNG preview export failed",
+            )
+        except OpenScadExportError as exc:
+            warnings.append(str(exc))
+
+    return OpenScadExportResult(
+        stl_path=stl_path if stl_path.exists() else None,
+        png_path=png_path if png_path.exists() else None,
+        warnings=warnings,
+    )
+
+
+def write_parameters_json(path: Path | str, parameters: dict[str, Any]) -> Path:
+    """Write normalized OpenSCAD export parameters."""
+
+    target = Path(path)
+    target.write_text(json.dumps(parameters, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return target
+
+
+def _geometry(spec: dict[str, Any]) -> dict[str, Any]:
+    geometry = spec.get("geometry", spec)
+    if hasattr(geometry, "model_dump"):
+        geometry = geometry.model_dump()
+    if not isinstance(geometry, dict):
+        raise ValueError("OpenSCAD export requires a bushing parameter JSON object.")
+    return dict(geometry)
+
+
+def _positive(geometry: dict[str, Any], key: str, fallback: float) -> float:
+    value = _number(geometry.get(key), fallback)
+    return value if value > 0 else fallback
+
+
+def _number(value: Any, fallback: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    return parsed if parsed == parsed else fallback
+
+
+def _runner() -> tuple[str, str] | tuple[str, str, str]:
+    configured_bin = os.environ.get("OPENSCAD_BIN")
+    binary = configured_bin or shutil.which("openscad")
+    if binary:
+        return ("cli", binary)
+
+    image = os.environ.get("OPENSCAD_DOCKER_IMAGE")
+    if image:
+        docker = shutil.which("docker")
+        if not docker:
+            raise OpenScadUnavailable(
+                "OpenSCAD Docker export is configured, but Docker is not available. "
+                "Install Docker or set OPENSCAD_BIN to an OpenSCAD executable."
+            )
+        return ("docker", image, docker)
+
+    raise OpenScadUnavailable(
+        "OpenSCAD STL/PNG export needs OpenSCAD installed. Set OPENSCAD_BIN, install "
+        "openscad on PATH, or set OPENSCAD_DOCKER_IMAGE for a Docker-based runner."
+    )
+
+
+def _run(command: list[str], failure_prefix: str) -> None:
+    try:
+        result = subprocess.run(command, check=False, capture_output=True, text=True, timeout=120)
+    except FileNotFoundError as exc:
+        raise OpenScadUnavailable(f"OpenSCAD runner was not found: {command[0]}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise OpenScadExportError(f"{failure_prefix}: command timed out after 120 seconds") from exc
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "OpenSCAD returned a non-zero exit code.").strip()
+        raise OpenScadExportError(f"{failure_prefix}: {detail}")
+
+
+def _render_bushing_scad(parameters: dict[str, Any]) -> str:
+    od = parameters["outer_diameter_mm"]
+    inner_diameter = parameters["inner_diameter_mm"]
+    height = parameters["height_mm"]
+    chamfer = parameters["chamfer_mm"]
+    outer_sleeve = parameters["metal_sleeve_thickness_mm"]
+    inner_sleeve = parameters["inner_sleeve_thickness_mm"]
+    ro = od / 2.0
+    ri = inner_diameter / 2.0
+    rubber_outer = max(ri + 0.1, ro - outer_sleeve)
+    rubber_inner = min(rubber_outer - 0.1, ri + inner_sleeve)
+
+    return f"""// Generated by Resonance AI OpenSCAD backend.
+// Units: millimeters.
+$fn = 96;
+
+outer_diameter = {_scad_num(od)};
+inner_diameter = {_scad_num(inner_diameter)};
+height = {_scad_num(height)};
+chamfer = {_scad_num(chamfer)};
+outer_sleeve_thickness = {_scad_num(outer_sleeve)};
+inner_sleeve_thickness = {_scad_num(inner_sleeve)};
+
+module annular_prism(r_outer, r_inner, part_height, edge_break) {{
+  safe_edge = min(max(edge_break, 0), min((r_outer - r_inner) * 0.45, part_height * 0.45));
+  rotate_extrude(convexity = 8)
+    polygon(points = safe_edge > 0 ? [
+      [r_inner + safe_edge, -part_height / 2],
+      [r_outer - safe_edge, -part_height / 2],
+      [r_outer, -part_height / 2 + safe_edge],
+      [r_outer, part_height / 2 - safe_edge],
+      [r_outer - safe_edge, part_height / 2],
+      [r_inner + safe_edge, part_height / 2],
+      [r_inner, part_height / 2 - safe_edge],
+      [r_inner, -part_height / 2 + safe_edge]
+    ] : [
+      [r_inner, -part_height / 2],
+      [r_outer, -part_height / 2],
+      [r_outer, part_height / 2],
+      [r_inner, part_height / 2]
+    ]);
+}}
+
+module bushing() {{
+  // Outer metal sleeve, rubber annulus, then inner metal sleeve.
+  if (outer_sleeve_thickness > 0)
+    color([0.62, 0.66, 0.70]) annular_prism({_scad_num(ro)}, {_scad_num(rubber_outer)}, height, chamfer);
+
+  color([0.06, 0.06, 0.06]) annular_prism({_scad_num(rubber_outer)}, {_scad_num(rubber_inner)}, height, chamfer);
+
+  if (inner_sleeve_thickness > 0)
+    color([0.68, 0.72, 0.76]) annular_prism({_scad_num(rubber_inner)}, {_scad_num(ri)}, height, chamfer);
+}}
+
+bushing();
+"""
+
+
+def _scad_num(value: float) -> str:
+    return f"{float(value):.6g}"

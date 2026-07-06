@@ -24,6 +24,13 @@ from app.openai_client import (
 )
 from app.schemas import CADChatRequest, CADChatResponse, CADPromptOutput, CADPromptRequest
 from app.upload_context import UploadContext, build_upload_context
+from cad_backends.openscad_backend import (
+    OpenScadExportError,
+    OpenScadUnavailable,
+    generate_openscad_bushing,
+    run_openscad_export,
+    write_parameters_json,
+)
 
 
 app = FastAPI(title="Resonance AI", version="0.1.0")
@@ -175,6 +182,52 @@ async def export_step(payload: dict) -> FileResponse:
         raise HTTPException(status_code=500, detail="STEP generation did not produce a file.")
 
     return FileResponse(step_path, media_type="application/step", filename=f"{name}.step")
+
+
+@app.post("/export/openscad")
+async def export_openscad(payload: dict) -> FileResponse:
+    """Generate OpenSCAD bushing artifacts from the current parameter JSON."""
+
+    export_format = str(payload.get("format", "scad")).strip().lower().lstrip(".")
+    if export_format not in {"scad", "stl", "png", "json"}:
+        raise HTTPException(status_code=400, detail="OpenSCAD export format must be scad, stl, png, or json.")
+
+    intent = payload.get("intent")
+    if not isinstance(intent, dict):
+        raise HTTPException(status_code=400, detail="OpenSCAD export requires the current bushing parameter JSON.")
+
+    name = _safe_export_name(str(payload.get("name", "bushing")))
+    output_dir = Path(tempfile.mkdtemp(prefix="resonance_openscad_"))
+    scad_path = output_dir / f"{name}.scad"
+    parameters_path = output_dir / "parameters.json"
+
+    try:
+        bushing = generate_openscad_bushing(intent)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    scad_path.write_text(bushing.scad_text, encoding="utf-8")
+    write_parameters_json(parameters_path, bushing.parameters)
+
+    if export_format == "scad":
+        return FileResponse(scad_path, media_type="text/plain", filename=f"{name}.scad")
+    if export_format == "json":
+        return FileResponse(parameters_path, media_type="application/json", filename="parameters.json")
+
+    try:
+        result = run_openscad_export(scad_path, output_dir)
+    except OpenScadUnavailable as exc:
+        raise HTTPException(status_code=501, detail=str(exc)) from exc
+    except OpenScadExportError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    if export_format == "stl" and result.stl_path:
+        return FileResponse(result.stl_path, media_type="model/stl", filename=f"{name}.stl")
+    if export_format == "png" and result.png_path:
+        return FileResponse(result.png_path, media_type="image/png", filename=f"{name}.png")
+
+    warning = result.warnings[-1] if result.warnings else "OpenSCAD did not produce the requested output file."
+    raise HTTPException(status_code=500, detail=warning)
 
 
 @app.post("/generate-mesh")
@@ -1531,6 +1584,28 @@ UI_HTML = """<!doctype html>
       background: #eef3f9;
       color: var(--brand);
     }
+    .cad-engine-row {
+      display: grid;
+      gap: 6px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #f8fbfd;
+    }
+    .cad-engine-row label {
+      color: var(--brand);
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .cad-engine-row select {
+      width: 100%;
+      padding: 7px 9px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: #fff;
+      color: var(--brand);
+      font-size: 13px;
+    }
     .param-row {
       display: grid;
       grid-template-columns: 1fr auto;
@@ -2155,6 +2230,13 @@ UI_HTML = """<!doctype html>
             <button type="button" class="param-toggle" id="paramToggle" aria-expanded="false" aria-controls="paramControls">Open input</button>
           </div>
           <div id="paramControls" class="param-controls">
+            <div class="cad-engine-row">
+              <label for="cadEngineSelect">CAD Engine</label>
+              <select id="cadEngineSelect">
+                <option value="cadquery" selected>CadQuery</option>
+                <option value="openscad">OpenSCAD</option>
+              </select>
+            </div>
             <p class="muted">Adjustable dimensions will appear here once a model is generated. Use the Download menu to export the edited part.</p>
           </div>
           <div id="meshResults"></div>
@@ -2205,20 +2287,21 @@ UI_HTML = """<!doctype html>
               <div id="downloadMenu" class="download-menu" role="menu">
                 <div class="download-group">
                   <div class="download-group-label">CAD model</div>
-                  <button type="button" class="download-item" data-format="step" role="menuitem"><span class="fmt">STEP</span><span class="desc">Engineering CAD exchange (.step)</span></button>
+                  <button type="button" class="download-item" data-format="step" data-engine-scope="cadquery" role="menuitem"><span class="fmt">STEP</span><span class="desc">Engineering CAD exchange (.step)</span></button>
+                  <button type="button" class="download-item" data-format="scad" data-engine-scope="openscad" role="menuitem"><span class="fmt">SCAD</span><span class="desc">OpenSCAD source model (.scad)</span></button>
                   <button type="button" class="download-item" data-format="stl" role="menuitem"><span class="fmt">STL</span><span class="desc">3D printing / mesh (.stl)</span></button>
-                  <button type="button" class="download-item" data-format="glb" role="menuitem"><span class="fmt">GLB</span><span class="desc">Interactive 3D sharing (.glb)</span></button>
-                  <button type="button" class="download-item" data-format="dxf" role="menuitem"><span class="fmt">DXF</span><span class="desc">2D profile / drawing (.dxf)</span></button>
+                  <button type="button" class="download-item" data-format="glb" data-engine-scope="cadquery" role="menuitem"><span class="fmt">GLB</span><span class="desc">Interactive 3D sharing (.glb)</span></button>
+                  <button type="button" class="download-item" data-format="dxf" data-engine-scope="cadquery" role="menuitem"><span class="fmt">DXF</span><span class="desc">2D profile / drawing (.dxf)</span></button>
                 </div>
                 <div class="download-group">
                   <div class="download-group-label">Documentation</div>
                   <button type="button" class="download-item" data-format="png" role="menuitem"><span class="fmt">PNG</span><span class="desc">CAD preview image (.png)</span></button>
-                  <button type="button" class="download-item" data-format="pdf" role="menuitem"><span class="fmt">PDF</span><span class="desc">Technical summary (.pdf)</span></button>
+                  <button type="button" class="download-item" data-format="pdf" data-engine-scope="cadquery" role="menuitem"><span class="fmt">PDF</span><span class="desc">Technical summary (.pdf)</span></button>
                   <button type="button" class="download-item" data-format="json" role="menuitem"><span class="fmt">JSON</span><span class="desc">CAD parameters (.json)</span></button>
                 </div>
                 <div class="download-group">
                   <div class="download-group-label">Convenience</div>
-                  <button type="button" class="download-item" data-format="zip" role="menuitem"><span class="fmt">ZIP</span><span class="desc">Download all files (.zip)</span></button>
+                  <button type="button" class="download-item" data-format="zip" data-engine-scope="cadquery" role="menuitem"><span class="fmt">ZIP</span><span class="desc">Download all files (.zip)</span></button>
                 </div>
               </div>
             </div>
@@ -2318,6 +2401,7 @@ UI_HTML = """<!doctype html>
     let baseGeometry = null;
     let engineeringChatOpen = true;
     let paramEditorOpen = false;
+    let selectedCadEngine = "cadquery";
     let paramRenderQueued = false;
     // When true, ignore the uploaded mesh and render the parametric model instead
     // (set after "Convert to editable bushing").
@@ -2511,6 +2595,7 @@ UI_HTML = """<!doctype html>
     });
 
     renderCategoryFamily(activeFamily);
+    bindCadEngineSelector();
 
     downloadBtn.addEventListener("click", (event) => {
       event.stopPropagation();
@@ -3499,11 +3584,13 @@ UI_HTML = """<!doctype html>
       fillet_mm:           { label: "Fillet",         min: 0,   max: 30,  step: 0.1, fallback: 0 },
       flange_diameter_mm:  { label: "Flange diameter",min: 5,   max: 500, step: 0.5, fallback: 0 },
       flange_thickness_mm: { label: "Flange thickness",min: 0,  max: 60,  step: 0.1, fallback: 0 },
+      metal_sleeve_thickness_mm: { label: "Outer sleeve", min: 0, max: 80, step: 0.1, fallback: 0 },
+      inner_sleeve_thickness_mm: { label: "Inner sleeve", min: 0, max: 80, step: 0.1, fallback: 0 },
       coil_count:          { label: "Coil count",     min: 1,   max: 50,  step: 1,   fallback: 8 },
     };
     const PART_FIELD_SETS = {
-      bushing:      { core: ["outer_diameter_mm", "inner_diameter_mm", "height_mm"], optional: ["chamfer_mm", "fillet_mm", "flange_diameter_mm", "flange_thickness_mm"] },
-      rubber_mount: { core: ["outer_diameter_mm", "inner_diameter_mm", "height_mm"], optional: ["chamfer_mm", "fillet_mm", "flange_diameter_mm", "flange_thickness_mm"] },
+      bushing:      { core: ["outer_diameter_mm", "inner_diameter_mm", "height_mm"], optional: ["chamfer_mm", "fillet_mm", "metal_sleeve_thickness_mm", "inner_sleeve_thickness_mm", "flange_diameter_mm", "flange_thickness_mm"] },
+      rubber_mount: { core: ["outer_diameter_mm", "inner_diameter_mm", "height_mm"], optional: ["chamfer_mm", "fillet_mm", "metal_sleeve_thickness_mm", "inner_sleeve_thickness_mm", "flange_diameter_mm", "flange_thickness_mm"] },
       plate:        { core: ["length_mm", "width_mm", "thickness_mm"], optional: ["chamfer_mm", "fillet_mm"] },
       bracket:      { core: ["length_mm", "width_mm", "thickness_mm"], optional: ["fillet_mm"] },
       spring:       { core: ["outer_diameter_mm", "height_mm", "thickness_mm"], optional: ["coil_count"] },
@@ -4538,6 +4625,46 @@ UI_HTML = """<!doctype html>
       }
     }
 
+    function cadEngineSelectorHtml() {
+      const cadquerySelected = selectedCadEngine === "cadquery" ? " selected" : "";
+      const openscadSelected = selectedCadEngine === "openscad" ? " selected" : "";
+      return `
+        <div class="cad-engine-row">
+          <label for="cadEngineSelect">CAD Engine</label>
+          <select id="cadEngineSelect">
+            <option value="cadquery"${cadquerySelected}>CadQuery</option>
+            <option value="openscad"${openscadSelected}>OpenSCAD</option>
+          </select>
+        </div>`;
+    }
+
+    function bindCadEngineSelector() {
+      const select = document.getElementById("cadEngineSelect");
+      if (!select) {
+        syncDownloadItems();
+        return;
+      }
+      select.value = selectedCadEngine;
+      select.addEventListener("change", () => {
+        selectedCadEngine = select.value === "openscad" ? "openscad" : "cadquery";
+        lastExport.cadEngine = selectedCadEngine;
+        syncDownloadItems();
+      });
+      syncDownloadItems();
+    }
+
+    function syncDownloadItems() {
+      if (!downloadMenu) return;
+      for (const item of downloadMenu.querySelectorAll(".download-item")) {
+        const scope = item.dataset.engineScope || "both";
+        item.hidden = scope !== "both" && scope !== selectedCadEngine;
+      }
+      for (const group of downloadMenu.querySelectorAll(".download-group")) {
+        const hasVisibleItem = Array.from(group.querySelectorAll(".download-item")).some((item) => !item.hidden);
+        group.hidden = !hasVisibleItem;
+      }
+    }
+
     function buildParamControls(intent) {
       if (!paramControls) {
         return;
@@ -4565,7 +4692,8 @@ UI_HTML = """<!doctype html>
       const type = String((intent && intent.part_type) || "unknown").toLowerCase();
       const spec = PART_FIELD_SETS[type];
       if (!intent || !spec) {
-        paramControls.innerHTML = '<p class="muted">Adjustable dimensions will appear here once a model is generated. Use the Download menu to export the edited part.</p>';
+        paramControls.innerHTML = cadEngineSelectorHtml() + '<p class="muted">Adjustable dimensions will appear here once a model is generated. Use the Download menu to export the edited part.</p>';
+        bindCadEngineSelector();
         if (paramHint) paramHint.textContent = "Open after a model is generated.";
         renderMeshPanel();
         renderSimPanel();
@@ -4603,7 +4731,7 @@ UI_HTML = """<!doctype html>
           </div>`;
       }).join("");
 
-      paramControls.innerHTML = rows + '<div class="param-actions"><button type="button" class="param-reset" id="paramReset">Reset</button></div>';
+      paramControls.innerHTML = cadEngineSelectorHtml() + rows + '<div class="param-actions"><button type="button" class="param-reset" id="paramReset">Reset</button></div>';
       bindParamControls();
       if (paramHint) paramHint.textContent = "Drag a slider to resize the model live.";
       renderMeshPanel();
@@ -4611,6 +4739,7 @@ UI_HTML = """<!doctype html>
     }
 
     function bindParamControls() {
+      bindCadEngineSelector();
       const rows = paramControls.querySelectorAll(".param-row");
       for (const row of rows) {
         const key = row.dataset.key;
@@ -5348,6 +5477,9 @@ UI_HTML = """<!doctype html>
 
     async function handleDownload(format) {
       const name = lastExport.name || "model";
+      if (selectedCadEngine === "openscad" && ["scad", "stl", "png", "json"].includes(format)) {
+        return downloadOpenScad(format, name);
+      }
       switch (format) {
         case "png": return downloadBlob(await canvasPngBlob(), name + ".png");
         case "json": return downloadBlob(jsonBlob(), name + ".json");
@@ -5356,6 +5488,7 @@ UI_HTML = """<!doctype html>
         case "dxf": return downloadBlob(dxfBlob(lastExport.intent || {}), name + ".dxf");
         case "pdf": return downloadBlob(await pdfBlob(), name + ".pdf");
         case "step": return downloadStep(name);
+        case "scad": return downloadOpenScad(format, name);
         case "zip": return downloadAll(name);
         default: throw new Error("Unknown format: " + format);
       }
@@ -5733,6 +5866,37 @@ UI_HTML = """<!doctype html>
         completeActivity("STEP ready");
       } catch (error) {
         completeActivity("STEP unavailable");
+        throw error;
+      }
+    }
+
+    async function downloadOpenScad(format, name) {
+      const labels = { scad: "SCAD", stl: "STL", png: "PNG", json: "JSON" };
+      const filenames = { scad: name + ".scad", stl: name + ".stl", png: name + ".png", json: "parameters.json" };
+      const phases = format === "scad" || format === "json"
+        ? ["Preparing bushing JSON", "Writing OpenSCAD source", "Packaging file"]
+        : ["Preparing bushing JSON", "Running OpenSCAD", "Packaging " + labels[format]];
+      startActivity("Generating OpenSCAD " + labels[format], phases);
+      try {
+        const response = await fetch("/export/openscad", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            cad_engine: "openscad",
+            format,
+            name,
+            intent: lastExport.intent || {},
+          })
+        });
+        if (!response.ok) {
+          let detail = "OpenSCAD export is not available on this server.";
+          try { const payload = await response.json(); detail = payload.detail || detail; } catch (err) {}
+          throw new Error(detail);
+        }
+        downloadBlob(await response.blob(), filenames[format] || (name + "." + format));
+        completeActivity("OpenSCAD " + labels[format] + " ready");
+      } catch (error) {
+        completeActivity("OpenSCAD unavailable");
         throw error;
       }
     }
