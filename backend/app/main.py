@@ -2094,8 +2094,8 @@ UI_HTML = """<!doctype html>
 
     <section class="workspace">
       <section class="workbench left-rail">
-        <section class="rail-card engineering-chat-card open" id="engineeringChatPanel">
-          <button type="button" class="rail-card-header" id="engineeringChatToggle" aria-expanded="true" aria-controls="engineeringChatBody">
+        <section class="rail-card engineering-chat-card" id="engineeringChatPanel">
+          <button type="button" class="rail-card-header" id="engineeringChatToggle" aria-expanded="false" aria-controls="engineeringChatBody">
             <span class="rail-card-title">Engineering chat</span>
             <span class="status-pill">Model ready</span>
           </button>
@@ -2338,7 +2338,7 @@ UI_HTML = """<!doctype html>
       engineeringChatToggle.addEventListener("click", () => {
         setEngineeringChatOpen(!engineeringChatOpen);
       });
-      setEngineeringChatOpen(true);
+      setEngineeringChatOpen(false);
     }
 
     if (paramToggle) {
