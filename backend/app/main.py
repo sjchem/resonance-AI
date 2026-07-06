@@ -117,6 +117,44 @@ async def preview_cad(parsed: CADPromptOutput) -> dict:
     }
 
 
+@app.post("/generate-parametric-cad")
+async def generate_parametric_cad(payload: dict) -> dict:
+  """Accept structured parametric CAD JSON and return a preview-ready payload."""
+
+  cad_engine = str(payload.get("cad_engine", "cadquery")).strip().lower()
+  if cad_engine not in {"cadquery", "openscad"}:
+    raise HTTPException(status_code=400, detail="CAD engine must be cadquery or openscad.")
+
+  intent = payload.get("intent")
+  if not isinstance(intent, dict):
+    raise HTTPException(status_code=400, detail="A structured CAD intent JSON object is required.")
+
+  part_type = str(intent.get("part_type", "")).strip().lower()
+  if part_type not in {"bushing", "rubber_mount"}:
+    raise HTTPException(status_code=422, detail="Parametric CAD generation currently supports rubber bushing geometry.")
+
+  geometry = intent.get("geometry") if isinstance(intent.get("geometry"), dict) else {}
+  try:
+    outer = float(geometry.get("outer_diameter_mm") or 0)
+    inner = float(geometry.get("inner_diameter_mm") or 0)
+    height = float(geometry.get("height_mm") or 0)
+  except (TypeError, ValueError) as exc:
+    raise HTTPException(status_code=422, detail="Outer diameter, inner diameter, and height must be numeric.") from exc
+  if outer <= 0 or inner <= 0 or height <= 0:
+    raise HTTPException(status_code=422, detail="Outer diameter, inner diameter, and height must be positive.")
+  if inner >= outer:
+    raise HTTPException(status_code=422, detail="Inner diameter must be smaller than outer diameter.")
+
+  return {
+    "cad_engine": cad_engine,
+    "cad_intent": intent,
+    "preview_ready": True,
+    "download_formats": ["step", "stl", "png", "json"]
+    if cad_engine == "cadquery"
+    else ["scad", "stl", "png", "json"],
+  }
+
+
 @app.post("/upload-context", response_model=UploadContext)
 async def upload_context(file: UploadFile = File(...)) -> UploadContext:
     """Extract prompt context from an uploaded document, image, or CAD file."""
@@ -1606,6 +1644,118 @@ UI_HTML = """<!doctype html>
       color: var(--brand);
       font-size: 13px;
     }
+    .rubber-workflow {
+      display: grid;
+      gap: 12px;
+    }
+    .param-tabs {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 6px;
+    }
+    .param-tab {
+      margin: 0;
+      padding: 8px 6px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: #fff;
+      color: var(--brand);
+      font-size: 12px;
+      font-weight: 750;
+      line-height: 1.2;
+    }
+    .param-tab.active {
+      background: var(--brand);
+      border-color: var(--brand);
+      color: #fff;
+    }
+    .param-section {
+      display: grid;
+      gap: 10px;
+      padding-top: 2px;
+    }
+    .param-section-title {
+      margin: 4px 0 0;
+      color: var(--brand);
+      font-size: 12px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .param-form-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .param-form-field {
+      display: grid;
+      gap: 4px;
+      min-width: 0;
+    }
+    .param-form-field.full {
+      grid-column: 1 / -1;
+    }
+    .param-form-field label {
+      color: var(--brand);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .param-form-field input,
+    .param-form-field select {
+      width: 100%;
+      min-width: 0;
+      padding: 7px 8px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: #fff;
+      color: var(--ink);
+      font-size: 13px;
+    }
+    .param-primary {
+      width: auto;
+      margin: 0;
+      padding: 8px 14px;
+      border-radius: 4px;
+      font-size: 13px;
+      font-weight: 750;
+    }
+    .variant-output {
+      display: grid;
+      gap: 8px;
+    }
+    .variant-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+    .variant-table th,
+    .variant-table td {
+      border-bottom: 1px solid var(--line);
+      padding: 6px 4px;
+      text-align: left;
+      vertical-align: middle;
+    }
+    .variant-table th {
+      color: var(--brand);
+      font-weight: 800;
+    }
+    .variant-table button {
+      width: auto;
+      margin: 0;
+      padding: 5px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+    }
+    .best-geometry {
+      display: grid;
+      gap: 6px;
+      padding: 10px;
+      border: 1px solid #b7d6ca;
+      border-radius: 6px;
+      background: #f4fbf7;
+      font-size: 12px;
+      color: var(--ink);
+    }
     .param-row {
       display: grid;
       grid-template-columns: 1fr auto;
@@ -2402,6 +2552,10 @@ UI_HTML = """<!doctype html>
     let engineeringChatOpen = true;
     let paramEditorOpen = false;
     let selectedCadEngine = "cadquery";
+    let rubberBushingWorkflowActive = false;
+    let rubberBushingTab = "single";
+    let designSpaceCases = [];
+    let targetStiffnessResult = null;
     let paramRenderQueued = false;
     // When true, ignore the uploaded mesh and render the parametric model instead
     // (set after "Convert to editable bushing").
@@ -2590,6 +2744,10 @@ UI_HTML = """<!doctype html>
       }
       chatInput.value = item.prompt;
       autoResizeChatInput();
+      if (key === "rubber-bushing") {
+        activateRubberBushingWorkflow(item);
+        return;
+      }
       chatInput.focus();
       chatInput.setSelectionRange(chatInput.value.length, chatInput.value.length);
     });
@@ -2660,8 +2818,10 @@ UI_HTML = """<!doctype html>
         lastExport.name = exportBaseName(intent);
         downloadBtn.disabled = !intent || Object.keys(intent).length === 0;
         // A fresh chat generation renders the parsed intent, not a prior mesh-warp edit.
+        preferParametric = false;
         meshEditMode = false;
         overrideMeshFaces = null;
+        rubberBushingWorkflowActive = false;
         lastMeshResult = null;
         simShown = false;
         simSelectedMode = "b1";
@@ -4625,6 +4785,537 @@ UI_HTML = """<!doctype html>
       }
     }
 
+    function activateRubberBushingWorkflow(item) {
+      rubberBushingWorkflowActive = true;
+      rubberBushingTab = "single";
+      designSpaceCases = [];
+      targetStiffnessResult = null;
+      preferParametric = true;
+      meshEditMode = false;
+      overrideMeshFaces = null;
+      editableMesh = null;
+      lastMeshResult = null;
+      lastFemContour = null;
+      simShown = false;
+      stopSimAnimation();
+
+      const intent = normalizeRubberBushingIntent(defaultRubberBushingIntent());
+      currentEditIntent = intent;
+      baseGeometry = Object.assign({}, intent.geometry || {});
+      lastExport.intent = intent;
+      lastExport.prompt = item && item.prompt ? item.prompt : "Rubber bushing parametric design";
+      lastExport.name = "rubber_bushing";
+      lastExport.cadEngine = selectedCadEngine;
+      lastExport.mesh = null;
+      lastExport.canvas = null;
+      downloadBtn.disabled = true;
+      jsonOutput.textContent = JSON.stringify(intent, null, 2);
+
+      setParamEditorOpen(true);
+      buildParamControls(intent);
+      updateSummary(intent);
+      cleanupViewer();
+      preview.innerHTML = '<div class="placeholder"><p class="muted">Edit the rubber-bushing parameters, then click Generate CAD.</p></div>';
+      if (paramHint) paramHint.textContent = "Rubber bushing parametric workflow is ready.";
+    }
+
+    function defaultRubberBushingIntent() {
+      return {
+        part_type: "bushing",
+        material: { name: "rubber", shore_a: 55, sleeve_material: "steel" },
+        geometry: {
+          outer_diameter_mm: 76,
+          inner_diameter_mm: 28,
+          height_mm: 40,
+          rubber_thickness_mm: 22.5,
+          chamfer_mm: 2,
+          fillet_mm: 0,
+          inner_sleeve: true,
+          inner_sleeve_diameter_mm: 31,
+          inner_sleeve_length_mm: 40,
+          inner_sleeve_thickness_mm: 1.5,
+          outer_sleeve: false,
+          outer_sleeve_thickness_mm: 0,
+          metal_sleeve_thickness_mm: 0,
+          flange: "none",
+          flange_diameter_mm: 0,
+          flange_thickness_mm: 0,
+          hole_pattern: "none",
+          hole_count: 0,
+          hole_diameter_mm: 0,
+          inner_core_length_mm: 40,
+          outer_core_length_mm: 40,
+          arms: [],
+          holes: [],
+        },
+        simulation_hints: { target_output: "cad" },
+        missing_information: [],
+        ui_workflow: { product_family: "bushing", bushing_type: "rubber-bushing" },
+      };
+    }
+
+    function cloneJson(value) {
+      return JSON.parse(JSON.stringify(value || {}));
+    }
+
+    function normalizeRubberBushingIntent(intent) {
+      const normalized = Object.assign(defaultRubberBushingIntent(), cloneJson(intent));
+      normalized.part_type = "bushing";
+      normalized.material = Object.assign({ name: "rubber", shore_a: 55, sleeve_material: "steel" }, normalized.material || {});
+      normalized.simulation_hints = Object.assign({ target_output: "cad" }, normalized.simulation_hints || {});
+      normalized.missing_information = Array.isArray(normalized.missing_information) ? normalized.missing_information : [];
+      normalized.ui_workflow = Object.assign({ product_family: "bushing", bushing_type: "rubber-bushing" }, normalized.ui_workflow || {});
+      const geom = Object.assign({}, defaultRubberBushingIntent().geometry, normalized.geometry || {});
+      geom.outer_diameter_mm = readPositiveNumber(geom.outer_diameter_mm, 76);
+      geom.inner_diameter_mm = Math.min(readPositiveNumber(geom.inner_diameter_mm, 28), geom.outer_diameter_mm - 1);
+      geom.height_mm = readPositiveNumber(geom.height_mm, 40);
+      geom.chamfer_mm = readNonNegativeNumber(geom.chamfer_mm, 2);
+      geom.fillet_mm = readNonNegativeNumber(geom.fillet_mm, 0);
+      geom.inner_sleeve = boolValue(geom.inner_sleeve, true);
+      geom.outer_sleeve = boolValue(geom.outer_sleeve, false);
+      geom.inner_sleeve_diameter_mm = geom.inner_sleeve
+        ? Math.max(readPositiveNumber(geom.inner_sleeve_diameter_mm, geom.inner_diameter_mm + 3), geom.inner_diameter_mm)
+        : geom.inner_diameter_mm;
+      geom.inner_sleeve_length_mm = geom.inner_sleeve ? readPositiveNumber(geom.inner_sleeve_length_mm, geom.height_mm) : 0;
+      geom.inner_sleeve_thickness_mm = geom.inner_sleeve ? Math.max(0, (geom.inner_sleeve_diameter_mm - geom.inner_diameter_mm) / 2) : 0;
+      geom.outer_sleeve_thickness_mm = geom.outer_sleeve ? readNonNegativeNumber(geom.outer_sleeve_thickness_mm || geom.metal_sleeve_thickness_mm, 0) : 0;
+      geom.metal_sleeve_thickness_mm = geom.outer_sleeve ? geom.outer_sleeve_thickness_mm : 0;
+      geom.flange = ["none", "top", "bottom", "both"].includes(String(geom.flange || "none")) ? String(geom.flange || "none") : "none";
+      geom.flange_diameter_mm = geom.flange === "none" ? 0 : readNonNegativeNumber(geom.flange_diameter_mm, geom.outer_diameter_mm + 16);
+      geom.flange_thickness_mm = geom.flange === "none" ? 0 : readNonNegativeNumber(geom.flange_thickness_mm, 4);
+      geom.hole_pattern = ["none", "axial", "radial"].includes(String(geom.hole_pattern || "none")) ? String(geom.hole_pattern || "none") : "none";
+      geom.hole_count = geom.hole_pattern === "none" ? 0 : clampInt(geom.hole_count, 1, 24, 4);
+      geom.hole_diameter_mm = geom.hole_pattern === "none" ? 0 : readPositiveNumber(geom.hole_diameter_mm, 6);
+      geom.inner_core_length_mm = readPositiveNumber(geom.inner_core_length_mm, geom.height_mm);
+      geom.outer_core_length_mm = readPositiveNumber(geom.outer_core_length_mm, geom.height_mm);
+      geom.rubber_thickness_mm = readNonNegativeNumber(
+        geom.rubber_thickness_mm,
+        Math.max(0, (geom.outer_diameter_mm - geom.inner_sleeve_diameter_mm) / 2 - geom.outer_sleeve_thickness_mm)
+      );
+      geom.arms = Array.isArray(geom.arms) ? geom.arms : [];
+      geom.holes = Array.isArray(geom.holes) ? geom.holes : [];
+      normalized.geometry = geom;
+      return normalized;
+    }
+
+    function boolValue(value, fallback) {
+      if (value === true || value === "true" || value === "yes" || value === "on") return true;
+      if (value === false || value === "false" || value === "no" || value === "off") return false;
+      return Boolean(fallback);
+    }
+
+    function readPositiveNumber(value, fallback) {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+    }
+
+    function readNonNegativeNumber(value, fallback) {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+    }
+
+    function isRubberBushingWorkflow(intent) {
+      const type = String((intent && intent.part_type) || "").toLowerCase();
+      const workflow = intent && intent.ui_workflow;
+      return rubberBushingWorkflowActive && (type === "bushing" || type === "rubber_mount") && (!workflow || workflow.bushing_type === "rubber-bushing");
+    }
+
+    function buildRubberBushingWorkflow(intent) {
+      currentEditIntent = normalizeRubberBushingIntent(intent || currentEditIntent || defaultRubberBushingIntent());
+      baseGeometry = Object.assign({}, currentEditIntent.geometry || {});
+      lastExport.intent = currentEditIntent;
+      lastExport.name = "rubber_bushing";
+      lastExport.cadEngine = selectedCadEngine;
+      jsonOutput.textContent = JSON.stringify(currentEditIntent, null, 2);
+      const tabs = [
+        ["single", "Single Design"],
+        ["space", "Design Space"],
+        ["target", "Target Stiffness"],
+      ].map(([key, label]) => (
+        '<button type="button" class="param-tab' + (rubberBushingTab === key ? ' active' : '') + '" data-rubber-tab="' + key + '">' + label + '</button>'
+      )).join("");
+      const body = rubberBushingTab === "space"
+        ? designSpaceHtml()
+        : rubberBushingTab === "target"
+          ? targetStiffnessHtml()
+          : singleDesignHtml(currentEditIntent);
+      paramControls.innerHTML = cadEngineSelectorHtml() + '<div class="rubber-workflow"><div class="param-tabs">' + tabs + '</div>' + body + '</div>';
+      bindRubberBushingWorkflow();
+      if (paramHint) paramHint.textContent = "Edit values, then generate CAD from structured JSON.";
+      renderMeshPanel();
+      renderSimPanel();
+    }
+
+    function singleDesignHtml(intent) {
+      const geom = (intent && intent.geometry) || {};
+      const material = (intent && intent.material) || {};
+      return '<div class="param-section" data-rubber-section="single">' +
+        '<div class="param-section-title">Geometry</div>' +
+        '<div class="param-form-grid">' +
+        numberField("outer_diameter_mm", "Outer diameter", geom.outer_diameter_mm, 0.5, 5) +
+        numberField("inner_diameter_mm", "Inner diameter", geom.inner_diameter_mm, 0.5, 1) +
+        numberField("height_mm", "Height / length", geom.height_mm, 0.5, 1) +
+        numberField("rubber_thickness_mm", "Rubber thickness", geom.rubber_thickness_mm, 0.1, 0) +
+        numberField("chamfer_mm", "Chamfer", geom.chamfer_mm, 0.1, 0) +
+        numberField("fillet_mm", "Fillet", geom.fillet_mm, 0.1, 0) +
+        '</div>' +
+        '<div class="param-section-title">Core / sleeve</div>' +
+        '<div class="param-form-grid">' +
+        selectField("inner_sleeve", "Inner sleeve", geom.inner_sleeve ? "yes" : "no", [["yes", "Yes"], ["no", "No"]]) +
+        numberField("inner_sleeve_diameter_mm", "Inner sleeve diameter", geom.inner_sleeve_diameter_mm, 0.5, 1) +
+        numberField("inner_sleeve_length_mm", "Inner sleeve length", geom.inner_sleeve_length_mm, 0.5, 0) +
+        selectField("outer_sleeve", "Outer sleeve", geom.outer_sleeve ? "yes" : "no", [["yes", "Yes"], ["no", "No"]]) +
+        numberField("outer_sleeve_thickness_mm", "Outer sleeve thickness", geom.outer_sleeve_thickness_mm, 0.1, 0) +
+        '</div>' +
+        '<div class="param-section-title">Features</div>' +
+        '<div class="param-form-grid">' +
+        selectField("flange", "Flange", geom.flange || "none", [["none", "None"], ["top", "Top"], ["bottom", "Bottom"], ["both", "Both"]]) +
+        numberField("flange_diameter_mm", "Flange diameter", geom.flange_diameter_mm, 0.5, 0) +
+        numberField("flange_thickness_mm", "Flange thickness", geom.flange_thickness_mm, 0.1, 0) +
+        selectField("hole_pattern", "Hole pattern", geom.hole_pattern || "none", [["none", "None"], ["axial", "Axial"], ["radial", "Radial"]]) +
+        numberField("hole_count", "Number of holes", geom.hole_count, 1, 0) +
+        numberField("hole_diameter_mm", "Hole diameter", geom.hole_diameter_mm, 0.5, 0) +
+        '</div>' +
+        '<div class="param-section-title">Material</div>' +
+        '<div class="param-form-grid">' +
+        selectField("rubber_material", "Rubber", material.name || "rubber", [["rubber", "Rubber"], ["epdm", "EPDM"], ["natural rubber", "Natural rubber"]]) +
+        selectField("steel_sleeve_material", "Steel sleeve", material.sleeve_material || "steel", [["steel", "Steel"], ["stainless_steel", "Stainless steel"]]) +
+        '</div>' +
+        '<div class="param-actions"><button type="button" class="param-reset" id="rubberResetBtn">Reset</button><button type="button" class="param-primary" id="generateRubberCadBtn">Generate CAD</button></div>' +
+        '</div>';
+    }
+
+    function numberField(key, label, value, step, min) {
+      const display = Number.isFinite(Number(value)) ? Number(value) : 0;
+      return '<div class="param-form-field"><label for="rubber_' + key + '">' + escapeHtml(label) + '</label>' +
+        '<input id="rubber_' + key + '" data-rubber-key="' + key + '" type="number" value="' + escapeHtml(display) + '" min="' + min + '" step="' + step + '"></div>';
+    }
+
+    function selectField(key, label, value, options) {
+      const selectedValue = String(value == null ? "" : value);
+      const opts = options.map(([val, text]) => '<option value="' + escapeHtml(val) + '"' + (String(val) === selectedValue ? ' selected' : '') + '>' + escapeHtml(text) + '</option>').join("");
+      return '<div class="param-form-field"><label for="rubber_' + key + '">' + escapeHtml(label) + '</label>' +
+        '<select id="rubber_' + key + '" data-rubber-key="' + key + '">' + opts + '</select></div>';
+    }
+
+    function designSpaceHtml() {
+      return '<div class="param-section" data-rubber-section="space">' +
+        '<div class="param-section-title">Design ranges</div>' +
+        '<div class="param-form-grid">' +
+        rangeField("ds_inner_diameter", "Inner diameter", 21, 35) +
+        rangeField("ds_inner_core_length", "Inner core length", 20, 71) +
+        rangeField("ds_outer_core_length", "Outer core length", 20, 55) +
+        '<div class="param-form-field full"><label for="ds_sample_count">Samples</label><select id="ds_sample_count"><option value="50">50</option><option value="100">100</option><option value="200">200</option></select></div>' +
+        '</div>' +
+        '<div class="param-actions"><button type="button" class="param-primary" id="generateVariantsBtn">Generate Variants</button></div>' +
+        '<div class="variant-output" id="variantOutput">' + designSpaceTableHtml() + '</div>' +
+        '</div>';
+    }
+
+    function rangeField(prefix, label, minValue, maxValue) {
+      return '<div class="param-form-field"><label for="' + prefix + '_min">' + escapeHtml(label) + ' min</label><input id="' + prefix + '_min" type="number" value="' + minValue + '" step="0.5" min="0"></div>' +
+        '<div class="param-form-field"><label for="' + prefix + '_max">' + escapeHtml(label) + ' max</label><input id="' + prefix + '_max" type="number" value="' + maxValue + '" step="0.5" min="0"></div>';
+    }
+
+    function designSpaceTableHtml() {
+      if (!designSpaceCases.length) {
+        return '<p class="muted">Generate variants to populate the case table.</p>';
+      }
+      const rows = designSpaceCases.map((item, index) => '<tr>' +
+        '<td>' + escapeHtml(item.case_id) + '</td>' +
+        '<td>' + formatNumber(item.geometry.outer_diameter_mm, 1) + '</td>' +
+        '<td>' + formatNumber(item.geometry.inner_diameter_mm, 1) + '</td>' +
+        '<td>' + formatNumber(item.geometry.inner_core_length_mm, 1) + '</td>' +
+        '<td>' + formatNumber(item.geometry.outer_core_length_mm, 1) + '</td>' +
+        '<td>Ready</td>' +
+        '<td><button type="button" data-load-variant="' + index + '">Load</button> <button type="button" data-download-variant="' + index + '">JSON</button></td>' +
+        '</tr>').join("");
+      return '<table class="variant-table"><thead><tr><th>Case ID</th><th>OD</th><th>ID</th><th>L_inner</th><th>L_outer</th><th>CAD Status</th><th>Download</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    }
+
+    function targetStiffnessHtml() {
+      const resultHtml = targetStiffnessResult ? '<div class="best-geometry">' +
+        '<strong>Best geometry: ' + escapeHtml(targetStiffnessResult.case_id) + '</strong>' +
+        '<span>OD ' + formatNumber(targetStiffnessResult.geometry.outer_diameter_mm, 1) + ' mm, ID ' + formatNumber(targetStiffnessResult.geometry.inner_diameter_mm, 1) + ' mm, inner core ' + formatNumber(targetStiffnessResult.geometry.inner_core_length_mm, 1) + ' mm, outer core ' + formatNumber(targetStiffnessResult.geometry.outer_core_length_mm, 1) + ' mm</span>' +
+        '<span>Kx ' + formatStiffness(targetStiffnessResult.kx) + ', Ky ' + formatStiffness(targetStiffnessResult.ky) + ', Kz ' + formatStiffness(targetStiffnessResult.kz) + '</span>' +
+        '<span>Relative score ' + formatNumber(targetStiffnessResult.score, 4) + '</span>' +
+        '</div>' : '<p class="muted">Enter target stiffness and search the bounded design space.</p>';
+      return '<div class="param-section" data-rubber-section="target">' +
+        '<div class="param-section-title">Targets</div>' +
+        '<div class="param-form-grid">' +
+        '<div class="param-form-field"><label for="target_kx">Target Kx</label><input id="target_kx" type="number" value="1000" min="0" step="10"></div>' +
+        '<div class="param-form-field"><label for="target_ky">Target Ky</label><input id="target_ky" type="number" value="1000" min="0" step="10"></div>' +
+        '<div class="param-form-field"><label for="target_kz">Target Kz</label><input id="target_kz" type="number" value="5000" min="0" step="10"></div>' +
+        '</div>' +
+        '<div class="param-section-title">Design bounds</div>' +
+        '<div class="param-form-grid">' +
+        rangeField("ts_inner_diameter", "Inner diameter", 21, 35) +
+        rangeField("ts_inner_core_length", "Inner core length", 20, 71) +
+        rangeField("ts_outer_core_length", "Outer core length", 20, 55) +
+        '<div class="param-form-field full"><label for="ts_sample_count">Sample count</label><select id="ts_sample_count"><option value="50">50</option><option value="100">100</option><option value="200">200</option></select></div>' +
+        '</div>' +
+        '<div class="param-actions"><button type="button" class="param-primary" id="findBestGeometryBtn">Find Best Geometry</button></div>' +
+        resultHtml +
+        '</div>';
+    }
+
+    function bindRubberBushingWorkflow() {
+      bindCadEngineSelector();
+      for (const tab of paramControls.querySelectorAll("[data-rubber-tab]")) {
+        tab.addEventListener("click", () => {
+          updateRubberIntentFromSingleForm();
+          rubberBushingTab = tab.dataset.rubberTab || "single";
+          buildParamControls(currentEditIntent);
+        });
+      }
+      for (const control of paramControls.querySelectorAll("[data-rubber-key]")) {
+        const eventName = control.tagName === "SELECT" ? "change" : "input";
+        control.addEventListener(eventName, () => {
+          syncRubberForm(control.dataset.rubberKey || "");
+          updateRubberIntentFromSingleForm();
+        });
+      }
+      const reset = document.getElementById("rubberResetBtn");
+      if (reset) {
+        reset.addEventListener("click", () => {
+          currentEditIntent = normalizeRubberBushingIntent(defaultRubberBushingIntent());
+          targetStiffnessResult = null;
+          buildParamControls(currentEditIntent);
+        });
+      }
+      const generate = document.getElementById("generateRubberCadBtn");
+      if (generate) generate.addEventListener("click", () => generateRubberParametricCad(updateRubberIntentFromSingleForm()));
+      const variants = document.getElementById("generateVariantsBtn");
+      if (variants) variants.addEventListener("click", generateDesignSpaceVariants);
+      const best = document.getElementById("findBestGeometryBtn");
+      if (best) best.addEventListener("click", findBestGeometry);
+      for (const button of paramControls.querySelectorAll("[data-download-variant]")) {
+        button.addEventListener("click", () => downloadVariantJson(Number(button.dataset.downloadVariant)));
+      }
+      for (const button of paramControls.querySelectorAll("[data-load-variant]")) {
+        button.addEventListener("click", () => loadVariant(Number(button.dataset.loadVariant)));
+      }
+    }
+
+    function syncRubberForm(changedKey) {
+      const get = (key, fallback) => readFormNumber("rubber_" + key, fallback);
+      const set = (key, value) => {
+        const el = document.getElementById("rubber_" + key);
+        if (el) el.value = roundParam(value, Number(el.step) || 0.1);
+      };
+      const innerSleeve = formValue("rubber_inner_sleeve", "yes") === "yes";
+      const outerSleeve = formValue("rubber_outer_sleeve", "no") === "yes";
+      const innerDiameter = get("inner_diameter_mm", 28);
+      if (!innerSleeve) {
+        set("inner_sleeve_diameter_mm", innerDiameter);
+        set("inner_sleeve_length_mm", 0);
+      }
+      if (!outerSleeve) {
+        set("outer_sleeve_thickness_mm", 0);
+      }
+      if (changedKey === "rubber_thickness_mm") {
+        const rubber = get("rubber_thickness_mm", 0);
+        const innerSleeveDiameter = innerSleeve ? Math.max(get("inner_sleeve_diameter_mm", innerDiameter), innerDiameter) : innerDiameter;
+        const outerSleeveThickness = outerSleeve ? get("outer_sleeve_thickness_mm", 0) : 0;
+        set("outer_diameter_mm", innerSleeveDiameter + 2 * (rubber + outerSleeveThickness));
+      } else if (["outer_diameter_mm", "inner_diameter_mm", "inner_sleeve", "inner_sleeve_diameter_mm", "outer_sleeve", "outer_sleeve_thickness_mm"].includes(changedKey)) {
+        const od = get("outer_diameter_mm", 76);
+        const innerSleeveDiameter = innerSleeve ? Math.max(get("inner_sleeve_diameter_mm", innerDiameter), innerDiameter) : innerDiameter;
+        const outerSleeveThickness = outerSleeve ? get("outer_sleeve_thickness_mm", 0) : 0;
+        set("rubber_thickness_mm", Math.max(0, (od - innerSleeveDiameter) / 2 - outerSleeveThickness));
+      }
+      if (changedKey === "height_mm") {
+        const height = get("height_mm", 40);
+        const sleeveLength = document.getElementById("rubber_inner_sleeve_length_mm");
+        if (sleeveLength && (!Number(sleeveLength.value) || Number(sleeveLength.value) > height)) {
+          set("inner_sleeve_length_mm", height);
+        }
+      }
+    }
+
+    function updateRubberIntentFromSingleForm() {
+      if (!paramControls || !paramControls.querySelector('[data-rubber-section="single"]')) {
+        return currentEditIntent;
+      }
+      const base = normalizeRubberBushingIntent(currentEditIntent || defaultRubberBushingIntent());
+      const geom = base.geometry;
+      geom.outer_diameter_mm = readFormNumber("rubber_outer_diameter_mm", geom.outer_diameter_mm);
+      geom.inner_diameter_mm = readFormNumber("rubber_inner_diameter_mm", geom.inner_diameter_mm);
+      geom.height_mm = readFormNumber("rubber_height_mm", geom.height_mm);
+      geom.rubber_thickness_mm = readFormNumber("rubber_rubber_thickness_mm", geom.rubber_thickness_mm);
+      geom.chamfer_mm = readFormNumber("rubber_chamfer_mm", geom.chamfer_mm);
+      geom.fillet_mm = readFormNumber("rubber_fillet_mm", geom.fillet_mm);
+      geom.inner_sleeve = formValue("rubber_inner_sleeve", geom.inner_sleeve ? "yes" : "no") === "yes";
+      geom.inner_sleeve_diameter_mm = geom.inner_sleeve ? Math.max(readFormNumber("rubber_inner_sleeve_diameter_mm", geom.inner_sleeve_diameter_mm), geom.inner_diameter_mm) : geom.inner_diameter_mm;
+      geom.inner_sleeve_length_mm = geom.inner_sleeve ? readFormNumber("rubber_inner_sleeve_length_mm", geom.height_mm) : 0;
+      geom.inner_sleeve_thickness_mm = geom.inner_sleeve ? Math.max(0, (geom.inner_sleeve_diameter_mm - geom.inner_diameter_mm) / 2) : 0;
+      geom.outer_sleeve = formValue("rubber_outer_sleeve", geom.outer_sleeve ? "yes" : "no") === "yes";
+      geom.outer_sleeve_thickness_mm = geom.outer_sleeve ? readFormNumber("rubber_outer_sleeve_thickness_mm", geom.outer_sleeve_thickness_mm) : 0;
+      geom.metal_sleeve_thickness_mm = geom.outer_sleeve_thickness_mm;
+      geom.flange = formValue("rubber_flange", geom.flange || "none");
+      geom.flange_diameter_mm = geom.flange === "none" ? 0 : readFormNumber("rubber_flange_diameter_mm", geom.flange_diameter_mm || geom.outer_diameter_mm + 16);
+      geom.flange_thickness_mm = geom.flange === "none" ? 0 : readFormNumber("rubber_flange_thickness_mm", geom.flange_thickness_mm || 4);
+      geom.hole_pattern = formValue("rubber_hole_pattern", geom.hole_pattern || "none");
+      geom.hole_count = geom.hole_pattern === "none" ? 0 : clampInt(readFormNumber("rubber_hole_count", geom.hole_count || 4), 1, 24, 4);
+      geom.hole_diameter_mm = geom.hole_pattern === "none" ? 0 : readFormNumber("rubber_hole_diameter_mm", geom.hole_diameter_mm || 6);
+      geom.inner_core_length_mm = geom.inner_sleeve_length_mm || geom.height_mm;
+      geom.outer_core_length_mm = geom.height_mm;
+      base.material.name = formValue("rubber_rubber_material", base.material.name || "rubber");
+      base.material.sleeve_material = formValue("rubber_steel_sleeve_material", base.material.sleeve_material || "steel");
+      currentEditIntent = normalizeRubberBushingIntent(base);
+      lastExport.intent = currentEditIntent;
+      lastExport.cadEngine = selectedCadEngine;
+      jsonOutput.textContent = JSON.stringify(currentEditIntent, null, 2);
+      updateSummary(currentEditIntent);
+      return currentEditIntent;
+    }
+
+    function readFormNumber(id, fallback) {
+      const el = document.getElementById(id);
+      const parsed = Number(el && el.value);
+      return Number.isFinite(parsed) ? parsed : fallback;
+    }
+
+    function formValue(id, fallback) {
+      const el = document.getElementById(id);
+      return el ? String(el.value) : fallback;
+    }
+
+    async function generateRubberParametricCad(intent) {
+      const payloadIntent = normalizeRubberBushingIntent(intent || currentEditIntent || defaultRubberBushingIntent());
+      startActivity("Generating CAD", ["Reading structured JSON", "Calling CAD API", "Rendering preview"]);
+      try {
+        const response = await fetch("/generate-parametric-cad", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cad_engine: selectedCadEngine, intent: payloadIntent }),
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload.detail || "Parametric CAD generation failed.");
+        }
+        currentEditIntent = normalizeRubberBushingIntent(payload.cad_intent || payloadIntent);
+        lastExport.intent = currentEditIntent;
+        lastExport.name = "rubber_bushing";
+        lastExport.cadEngine = payload.cad_engine || selectedCadEngine;
+        lastExport.prompt = "Rubber bushing structured parametric JSON";
+        jsonOutput.textContent = JSON.stringify(currentEditIntent, null, 2);
+        downloadBtn.disabled = false;
+        preferParametric = true;
+        overrideMeshFaces = null;
+        meshEditMode = false;
+        lastMeshResult = null;
+        await render3DPreview(currentEditIntent);
+        updateSummary(currentEditIntent);
+        renderMeshPanel();
+        renderSimPanel();
+        completeActivity("CAD ready");
+      } catch (error) {
+        failActivity("CAD failed");
+        appendMsg("bot", "Parametric CAD failed: " + (error && error.message ? error.message : error));
+      }
+    }
+
+    function generateDesignSpaceVariants() {
+      const samples = clampInt(readFormNumber("ds_sample_count", 50), 1, 200, 50);
+      const idMin = readFormNumber("ds_inner_diameter_min", 21);
+      const idMax = Math.max(idMin, readFormNumber("ds_inner_diameter_max", 35));
+      const liMin = readFormNumber("ds_inner_core_length_min", 20);
+      const liMax = Math.max(liMin, readFormNumber("ds_inner_core_length_max", 71));
+      const loMin = readFormNumber("ds_outer_core_length_min", 20);
+      const loMax = Math.max(loMin, readFormNumber("ds_outer_core_length_max", 55));
+      designSpaceCases = makeRubberCandidates(samples, idMin, idMax, liMin, liMax, loMin, loMax).map((intent, index) => ({
+        case_id: "RB-" + String(index + 1).padStart(3, "0"),
+        geometry: intent.geometry,
+        intent,
+      }));
+      buildParamControls(currentEditIntent);
+    }
+
+    function makeRubberCandidates(samples, idMin, idMax, liMin, liMax, loMin, loMax) {
+      const base = normalizeRubberBushingIntent(currentEditIntent || defaultRubberBushingIntent());
+      const count = Math.max(1, samples);
+      const sleeveDelta = Math.max(0, (base.geometry.inner_sleeve_diameter_mm || base.geometry.inner_diameter_mm) - base.geometry.inner_diameter_mm);
+      return Array.from({ length: count }, (_, index) => {
+        const t = count === 1 ? 0 : index / (count - 1);
+        const wobble = ((index * 37) % count) / Math.max(1, count - 1);
+        const id = lerp(idMin, idMax, t);
+        const innerLength = lerp(liMin, liMax, wobble);
+        const outerLength = lerp(loMin, loMax, (t + wobble) % 1);
+        const intent = normalizeRubberBushingIntent(base);
+        intent.geometry.inner_diameter_mm = roundTo(id, 0.5);
+        intent.geometry.inner_sleeve_diameter_mm = intent.geometry.inner_sleeve ? roundTo(id + sleeveDelta, 0.5) : intent.geometry.inner_diameter_mm;
+        intent.geometry.inner_sleeve_thickness_mm = intent.geometry.inner_sleeve ? Math.max(0, (intent.geometry.inner_sleeve_diameter_mm - intent.geometry.inner_diameter_mm) / 2) : 0;
+        intent.geometry.inner_core_length_mm = roundTo(innerLength, 0.5);
+        intent.geometry.outer_core_length_mm = roundTo(outerLength, 0.5);
+        intent.geometry.inner_sleeve_length_mm = intent.geometry.inner_sleeve ? intent.geometry.inner_core_length_mm : 0;
+        intent.geometry.height_mm = Math.max(intent.geometry.inner_core_length_mm, intent.geometry.outer_core_length_mm, 1);
+        intent.geometry.rubber_thickness_mm = Math.max(0, (intent.geometry.outer_diameter_mm - intent.geometry.inner_sleeve_diameter_mm) / 2 - intent.geometry.outer_sleeve_thickness_mm);
+        return intent;
+      });
+    }
+
+    function lerp(a, b, t) {
+      return a + (b - a) * t;
+    }
+
+    function roundTo(value, step) {
+      return Math.round(value / step) * step;
+    }
+
+    function downloadVariantJson(index) {
+      const item = designSpaceCases[index];
+      if (!item) return;
+      downloadBlob(new Blob([JSON.stringify(item.intent, null, 2)], { type: "application/json" }), item.case_id.toLowerCase() + ".json");
+    }
+
+    function loadVariant(index) {
+      const item = designSpaceCases[index];
+      if (!item) return;
+      currentEditIntent = normalizeRubberBushingIntent(item.intent);
+      rubberBushingTab = "single";
+      buildParamControls(currentEditIntent);
+    }
+
+    async function findBestGeometry() {
+      const targetKx = readFormNumber("target_kx", 1000);
+      const targetKy = readFormNumber("target_ky", 1000);
+      const targetKz = readFormNumber("target_kz", 5000);
+      const samples = clampInt(readFormNumber("ts_sample_count", 50), 1, 200, 50);
+      const idMin = readFormNumber("ts_inner_diameter_min", 21);
+      const idMax = Math.max(idMin, readFormNumber("ts_inner_diameter_max", 35));
+      const liMin = readFormNumber("ts_inner_core_length_min", 20);
+      const liMax = Math.max(liMin, readFormNumber("ts_inner_core_length_max", 71));
+      const loMin = readFormNumber("ts_outer_core_length_min", 20);
+      const loMax = Math.max(loMin, readFormNumber("ts_outer_core_length_max", 55));
+      let best = null;
+      makeRubberCandidates(samples, idMin, idMax, liMin, liMax, loMin, loMax).forEach((intent, index) => {
+        const est = estimateBushingModal(intent.geometry, intent.material && intent.material.name);
+        if (!est) return;
+        const kx = est.kBending;
+        const ky = est.kBending;
+        const kz = est.kAxial;
+        const score = relError(kx, targetKx) + relError(ky, targetKy) + relError(kz, targetKz);
+        if (!best || score < best.score) {
+          best = { case_id: "BEST-" + String(index + 1).padStart(3, "0"), intent, geometry: intent.geometry, kx, ky, kz, score };
+        }
+      });
+      if (!best) {
+        appendMsg("bot", "Target stiffness search could not evaluate the current bounds.");
+        return;
+      }
+      targetStiffnessResult = best;
+      currentEditIntent = normalizeRubberBushingIntent(best.intent);
+      await generateRubberParametricCad(currentEditIntent);
+      rubberBushingTab = "target";
+      buildParamControls(currentEditIntent);
+    }
+
+    function relError(value, target) {
+      const scale = Math.max(Math.abs(target), 1);
+      return Math.pow((value - target) / scale, 2);
+    }
+
     function cadEngineSelectorHtml() {
       const cadquerySelected = selectedCadEngine === "cadquery" ? " selected" : "";
       const openscadSelected = selectedCadEngine === "openscad" ? " selected" : "";
@@ -4697,6 +5388,11 @@ UI_HTML = """<!doctype html>
         if (paramHint) paramHint.textContent = "Open after a model is generated.";
         renderMeshPanel();
         renderSimPanel();
+        return;
+      }
+
+      if (isRubberBushingWorkflow(intent)) {
+        buildRubberBushingWorkflow(intent);
         return;
       }
 
@@ -5033,27 +5729,30 @@ UI_HTML = """<!doctype html>
         addAnnulus(rRubberInner, Math.max(rInner, 0.5), offsetX, offsetX, colorRubber, colorRubberTop, colorRubberBottom);
       }
 
-      // Optional flange (a thin disk sitting on top of the bushing).
-      if (flangeDiameter > outerDiameter && flangeThickness > 0) {
+      // Optional flange.
+      if (flangeDiameter > outerDiameter && flangeThickness > 0 && geometry.flange !== "none") {
         const flangeOuterRadius = flangeDiameter / 2;
-        const flangeTopY = topY + flangeThickness;
-        for (let index = 0; index < segments; index += 1) {
-          const thetaA = (index / segments) * Math.PI * 2;
-          const thetaB = ((index + 1) / segments) * Math.PI * 2;
-          const outerTopA = pointOnRing(flangeOuterRadius, thetaA, flangeTopY);
-          const outerTopB = pointOnRing(flangeOuterRadius, thetaB, flangeTopY);
-          const outerBottomA = pointOnRing(flangeOuterRadius, thetaA, topY);
-          const outerBottomB = pointOnRing(flangeOuterRadius, thetaB, topY);
-          const innerTopA = pointOnRing(rInner, thetaA, flangeTopY, offsetX);
-          const innerTopB = pointOnRing(rInner, thetaB, flangeTopY, offsetX);
-          const innerBottomA = pointOnRing(rOuter, thetaA, topY);
-          const innerBottomB = pointOnRing(rOuter, thetaB, topY);
-          // Outer wall of flange
-          faces.push(makeFace([outerTopA, outerTopB, outerBottomB, outerBottomA], colorMetal));
-          // Top face (annulus around the bore)
-          faces.push(makeFace([outerTopA, innerTopA, innerTopB, outerTopB], colorMetalTop));
-          // Underside ring sitting on the bushing's outer wall
-          faces.push(makeFace([outerBottomB, innerBottomB, innerBottomA, outerBottomA], colorMetalBottom));
+        const flangeMode = String(geometry.flange || "top").toLowerCase();
+        if (flangeMode === "top" || flangeMode === "both") addFlange(topY, 1);
+        if (flangeMode === "bottom" || flangeMode === "both") addFlange(bottomY, -1);
+
+        function addFlange(baseY, direction) {
+          const outerY = baseY + direction * flangeThickness;
+          for (let index = 0; index < segments; index += 1) {
+            const thetaA = (index / segments) * Math.PI * 2;
+            const thetaB = ((index + 1) / segments) * Math.PI * 2;
+            const outerFaceA = pointOnRing(flangeOuterRadius, thetaA, outerY);
+            const outerFaceB = pointOnRing(flangeOuterRadius, thetaB, outerY);
+            const outerBaseA = pointOnRing(flangeOuterRadius, thetaA, baseY);
+            const outerBaseB = pointOnRing(flangeOuterRadius, thetaB, baseY);
+            const innerFaceA = pointOnRing(rInner, thetaA, outerY, offsetX);
+            const innerFaceB = pointOnRing(rInner, thetaB, outerY, offsetX);
+            const innerBaseA = pointOnRing(rOuter, thetaA, baseY);
+            const innerBaseB = pointOnRing(rOuter, thetaB, baseY);
+            faces.push(makeFace([outerFaceA, outerFaceB, outerBaseB, outerBaseA], colorMetal));
+            faces.push(makeFace([outerFaceA, innerFaceA, innerFaceB, outerFaceB], direction > 0 ? colorMetalTop : colorMetalBottom));
+            faces.push(makeFace([outerBaseB, innerBaseB, innerBaseA, outerBaseA], direction > 0 ? colorMetalBottom : colorMetalTop));
+          }
         }
       }
 

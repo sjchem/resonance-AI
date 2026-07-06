@@ -49,8 +49,20 @@ def generate_openscad_bushing(spec: dict[str, Any]) -> OpenScadBushing:
     wall = (outer_diameter - inner_diameter) / 2.0
     max_edge_break = max(0.0, min(height * 0.45, wall * 0.45))
     chamfer = min(max(0.0, _number(geometry.get("chamfer_mm"), 0.0)), max_edge_break)
-    outer_sleeve_thickness = min(max(0.0, _number(geometry.get("metal_sleeve_thickness_mm"), 0.0)), wall * 0.45)
+    outer_sleeve_raw = geometry.get("outer_sleeve_thickness_mm", geometry.get("metal_sleeve_thickness_mm"))
+    outer_sleeve_thickness = min(max(0.0, _number(outer_sleeve_raw, 0.0)), wall * 0.45)
     inner_sleeve_thickness = min(max(0.0, _number(geometry.get("inner_sleeve_thickness_mm"), 0.0)), wall * 0.45)
+    inner_sleeve_length = min(height, max(0.0, _number(geometry.get("inner_sleeve_length_mm"), height)))
+    outer_sleeve_length = min(height, max(0.0, _number(geometry.get("outer_core_length_mm"), height)))
+    flange = str(geometry.get("flange", "none") or "none").lower()
+    if flange not in {"none", "top", "bottom", "both"}:
+        flange = "none"
+    flange_diameter = _number(geometry.get("flange_diameter_mm"), 0.0) if flange != "none" else 0.0
+    flange_thickness = _number(geometry.get("flange_thickness_mm"), 0.0) if flange != "none" else 0.0
+    if flange_diameter <= outer_diameter or flange_thickness <= 0:
+        flange = "none"
+        flange_diameter = 0.0
+        flange_thickness = 0.0
 
     parameters = {
         "cad_engine": "openscad",
@@ -59,8 +71,14 @@ def generate_openscad_bushing(spec: dict[str, Any]) -> OpenScadBushing:
         "inner_diameter_mm": inner_diameter,
         "height_mm": height,
         "chamfer_mm": chamfer,
+        "outer_sleeve_thickness_mm": outer_sleeve_thickness,
         "metal_sleeve_thickness_mm": outer_sleeve_thickness,
         "inner_sleeve_thickness_mm": inner_sleeve_thickness,
+        "inner_sleeve_length_mm": inner_sleeve_length,
+        "outer_sleeve_length_mm": outer_sleeve_length,
+        "flange": flange,
+        "flange_diameter_mm": flange_diameter,
+        "flange_thickness_mm": flange_thickness,
         "source_geometry": geometry,
     }
     return OpenScadBushing(scad_text=_render_bushing_scad(parameters), parameters=parameters)
@@ -200,8 +218,14 @@ def _render_bushing_scad(parameters: dict[str, Any]) -> str:
     chamfer = parameters["chamfer_mm"]
     outer_sleeve = parameters["metal_sleeve_thickness_mm"]
     inner_sleeve = parameters["inner_sleeve_thickness_mm"]
+    outer_sleeve_length = parameters["outer_sleeve_length_mm"]
+    inner_sleeve_length = parameters["inner_sleeve_length_mm"]
+    flange = parameters["flange"]
+    flange_diameter = parameters["flange_diameter_mm"]
+    flange_thickness = parameters["flange_thickness_mm"]
     ro = od / 2.0
     ri = inner_diameter / 2.0
+    flange_radius = flange_diameter / 2.0
     rubber_outer = max(ri + 0.1, ro - outer_sleeve)
     rubber_inner = min(rubber_outer - 0.1, ri + inner_sleeve)
 
@@ -215,6 +239,11 @@ height = {_scad_num(height)};
 chamfer = {_scad_num(chamfer)};
 outer_sleeve_thickness = {_scad_num(outer_sleeve)};
 inner_sleeve_thickness = {_scad_num(inner_sleeve)};
+outer_sleeve_length = {_scad_num(outer_sleeve_length)};
+inner_sleeve_length = {_scad_num(inner_sleeve_length)};
+flange_mode = "{flange}";
+flange_diameter = {_scad_num(flange_diameter)};
+flange_thickness = {_scad_num(flange_thickness)};
 
 module annular_prism(r_outer, r_inner, part_height, edge_break) {{
   safe_edge = min(max(edge_break, 0), min((r_outer - r_inner) * 0.45, part_height * 0.45));
@@ -239,12 +268,20 @@ module annular_prism(r_outer, r_inner, part_height, edge_break) {{
 module bushing() {{
   // Outer metal sleeve, rubber annulus, then inner metal sleeve.
   if (outer_sleeve_thickness > 0)
-    color([0.62, 0.66, 0.70]) annular_prism({_scad_num(ro)}, {_scad_num(rubber_outer)}, height, chamfer);
+        color([0.62, 0.66, 0.70]) annular_prism({_scad_num(ro)}, {_scad_num(rubber_outer)}, outer_sleeve_length, chamfer);
 
   color([0.06, 0.06, 0.06]) annular_prism({_scad_num(rubber_outer)}, {_scad_num(rubber_inner)}, height, chamfer);
 
   if (inner_sleeve_thickness > 0)
-    color([0.68, 0.72, 0.76]) annular_prism({_scad_num(rubber_inner)}, {_scad_num(ri)}, height, chamfer);
+        color([0.68, 0.72, 0.76]) annular_prism({_scad_num(rubber_inner)}, {_scad_num(ri)}, inner_sleeve_length, chamfer);
+
+    if (flange_mode == "top" || flange_mode == "both")
+        translate([0, 0, height / 2 + flange_thickness / 2])
+            color([0.62, 0.66, 0.70]) annular_prism({_scad_num(flange_radius)}, {_scad_num(ri)}, flange_thickness, 0);
+
+    if (flange_mode == "bottom" || flange_mode == "both")
+        translate([0, 0, -height / 2 - flange_thickness / 2])
+            color([0.62, 0.66, 0.70]) annular_prism({_scad_num(flange_radius)}, {_scad_num(ri)}, flange_thickness, 0);
 }}
 
 bushing();
