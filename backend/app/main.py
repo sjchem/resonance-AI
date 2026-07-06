@@ -273,11 +273,11 @@ async def generate_mesh(payload: dict) -> dict:
     """Generate a Gmsh volume mesh and return quality/readiness stats."""
 
     prompt = str(payload.get("prompt", "")).strip()
-    if not prompt:
-        raise HTTPException(status_code=400, detail="A prompt is required to generate a mesh.")
-
     name = _safe_export_name(str(payload.get("name", "model")))
     intent = payload.get("intent") if isinstance(payload.get("intent"), dict) else {}
+    if not prompt and not _is_structured_bushing_intent(intent):
+        raise HTTPException(status_code=400, detail="A prompt is required to generate a mesh.")
+
     element_size = payload.get("element_size_mm")
     try:
         element_size_mm = float(element_size) if element_size not in (None, "") else None
@@ -292,6 +292,7 @@ async def generate_mesh(payload: dict) -> dict:
 
     try:
         from text_to_cad.cad_agent import generate_with_agent  # noqa: WPS433
+        from geometry.bushing_hex_mesh import generate_bushing_hex_mesh  # noqa: WPS433
         from geometry.hex_swept_mesh import (  # noqa: WPS433
             StructuredHexUnavailable,
             step_to_swept_hex_mesh,
@@ -306,50 +307,56 @@ async def generate_mesh(payload: dict) -> dict:
 
     work_dir = Path(tempfile.mkdtemp(prefix="resonance_mesh_"))
     try:
-        cad_code = -1
-        last_exc: Exception | None = None
-        for provider in ("auto", "fallback"):
-            try:
-                cad_code = generate_with_agent(
-                    prompt=prompt,
-                    output_dir=work_dir,
-                    output_name=name,
-                    provider=provider,
-                    execute=True,
-                )
-            except Exception as exc:  # noqa: BLE001
-                last_exc = exc
-                continue
-            step_path_attempt = work_dir / f"{name}.step"
-            if cad_code == 0 and step_path_attempt.exists():
-                break
-
-        step_path = work_dir / f"{name}.step"
-        if cad_code != 0 or not step_path.exists():
-            detail = "STEP generation did not produce a file for meshing."
-            if last_exc is not None:
-                detail += f" Last error: {last_exc}"
-            raise HTTPException(status_code=500, detail=detail)
-
         raw_mesh = work_dir / f"{name}_hex.msh"
-        mesh_format = "Gmsh structured hex/swept volume mesh"
-        mesh_strategy = "structured_hex"
+        step_path: Path | None = None
+        if _is_structured_bushing_intent(intent):
+            mesh_result = generate_bushing_hex_mesh(intent, raw_mesh, target_size_mm=element_size_mm)
+            mesh_format = "Mapped structured hexahedral bushing mesh"
+            mesh_strategy = "mapped_bushing_hex"
+        else:
+            cad_code = -1
+            last_exc: Exception | None = None
+            for provider in ("auto", "fallback"):
+                try:
+                    cad_code = generate_with_agent(
+                        prompt=prompt,
+                        output_dir=work_dir,
+                        output_name=name,
+                        provider=provider,
+                        execute=True,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    last_exc = exc
+                    continue
+                step_path_attempt = work_dir / f"{name}.step"
+                if cad_code == 0 and step_path_attempt.exists():
+                    break
+
+            step_path = work_dir / f"{name}.step"
+            if cad_code != 0 or not step_path.exists():
+                detail = "STEP generation did not produce a file for meshing."
+                if last_exc is not None:
+                    detail += f" Last error: {last_exc}"
+                raise HTTPException(status_code=500, detail=detail)
+
+            mesh_format = "Gmsh structured hex/swept volume mesh"
+            mesh_strategy = "structured_hex"
+            try:
+                mesh_result = step_to_swept_hex_mesh(
+                    step_file=step_path,
+                    output_file=raw_mesh,
+                    target_size_mm=element_size_mm,
+                )
+            except (StructuredHexUnavailable, Exception) as exc:  # noqa: BLE001
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "Hex-only meshing failed. Gmsh could not create hexahedral cells for this CAD topology. "
+                        "Use a sweepable/block-decomposed shape, simplify small fillets/branches, or split the part into mappable volumes. "
+                        f"Gmsh detail: {exc}"
+                    ),
+                ) from exc
         fallback_reason = None
-        try:
-          mesh_result = step_to_swept_hex_mesh(
-                step_file=step_path,
-                output_file=raw_mesh,
-                target_size_mm=element_size_mm,
-            )
-        except (StructuredHexUnavailable, Exception) as exc:  # noqa: BLE001
-          raise HTTPException(
-            status_code=422,
-            detail=(
-              "Hex-only meshing failed. Gmsh could not create hexahedral cells for this CAD topology. "
-              "Use a sweepable/block-decomposed shape, simplify small fillets/branches, or split the part into mappable volumes. "
-              f"Gmsh detail: {exc}"
-            ),
-          ) from exc
 
         clean_mesh_path = work_dir / f"{name}_clean.vtk"
         clean_result = clean_mesh(raw_mesh, clean_mesh_path)
@@ -365,7 +372,7 @@ async def generate_mesh(payload: dict) -> dict:
             "mesh_format": mesh_format,
             "mesh_strategy": mesh_strategy,
             "fallback_reason": fallback_reason,
-            "step_file": step_path.name,
+            "step_file": step_path.name if step_path else "structured_bushing_parameters",
             "mesh_file": raw_mesh.name,
             "clean_mesh_file": clean_mesh_path.name,
             "nodes": mesh_result.node_count,
@@ -414,6 +421,22 @@ def _should_try_structured_hex(prompt: str, intent: dict) -> bool:
         "axisymmetric",
     )
     return any(token in text for token in axisymmetric_tokens)
+
+
+def _is_structured_bushing_intent(intent: dict) -> bool:
+    """True when the frontend sent editable rubber-bushing parameter JSON."""
+
+    if not isinstance(intent, dict):
+        return False
+    part_type = str(intent.get("part_type") or "").lower()
+    geometry = intent.get("geometry") if isinstance(intent.get("geometry"), dict) else {}
+    try:
+        outer_diameter = float(geometry.get("outer_diameter_mm") or 0)
+        inner_diameter = float(geometry.get("inner_diameter_mm") or 0)
+        height = float(geometry.get("height_mm") or 0)
+    except (TypeError, ValueError):
+        return False
+    return part_type in {"bushing", "rubber_mount"} and outer_diameter > 0 and inner_diameter > 0 and height > 0
 
 
 def _mesh_cell_counts(mesh_path: Path) -> dict[str, int]:
@@ -601,10 +624,11 @@ async def run_fem(payload: dict) -> dict:
     """
 
     prompt = str(payload.get("prompt", "")).strip()
-    if not prompt:
-        raise HTTPException(status_code=400, detail="A prompt is required to run the FEM pipeline.")
-
     name = _safe_export_name(str(payload.get("name", "model")))
+    intent = payload.get("intent") if isinstance(payload.get("intent"), dict) else {}
+    if not prompt and not _is_structured_bushing_intent(intent):
+      raise HTTPException(status_code=400, detail="A prompt is required to run the FEM pipeline.")
+
     try:
         num_modes = int(payload.get("num_modes", 6) or 6)
     except (TypeError, ValueError):
@@ -633,8 +657,12 @@ async def run_fem(payload: dict) -> dict:
         ) from exc
 
     try:
+        from geometry.bushing_hex_mesh import generate_bushing_hex_mesh  # noqa: WPS433
+        from geometry.mesh_cleaner import clean_mesh  # noqa: WPS433
         from simulate.pipeline import PipelineConfig, run_pipeline  # noqa: WPS433
         from simulate.materials import resolve_material  # noqa: WPS433
+        from simulate.modal_solver import ModalSetup, run_modal  # noqa: WPS433
+        from simulate.results import parse_dat, write_report  # noqa: WPS433
     except ModuleNotFoundError as exc:
         raise HTTPException(
             status_code=501,
@@ -655,6 +683,28 @@ async def run_fem(payload: dict) -> dict:
 
     work_dir = Path(tempfile.mkdtemp(prefix="resonance_fem_"))
     try:
+        if _is_structured_bushing_intent(intent):
+            sim_dir = work_dir / "sim"
+            sim_dir.mkdir(parents=True, exist_ok=True)
+            raw_mesh = sim_dir / f"{name}.msh"
+            clean_mesh_path = sim_dir / f"{name}_clean.vtk"
+            generate_bushing_hex_mesh(intent, raw_mesh)
+            clean_mesh(raw_mesh, clean_mesh_path)
+            setup = ModalSetup(
+                mesh_file=clean_mesh_path,
+                material=resolve_material(material),
+                num_modes=num_modes,
+                boundary="fixed_bottom",
+            )
+            run = run_modal(setup, sim_dir, job_name=name)
+            if not run.ok:
+                detail = run.stderr or run.stdout or "CalculiX solve failed."
+                raise HTTPException(status_code=500, detail=f"FEM solve failed: {detail}")
+            results = parse_dat(run.dat_file)
+            write_report(results, sim_dir / f"{name}_modal.json")
+            _try_modal_pca(run.frd_file, sim_dir / f"{name}_pca.json", num_modes)
+            return _structured_fem_response_payload(run.frd_file, sim_dir, name, mode, num_modes, material)
+
         # Try the configured provider ("auto" prefers Azure when available),
         # but fall back to the deterministic parser if the LLM path errors out.
         # FEM only needs valid geometry; we never want a transient LLM error to
@@ -702,56 +752,201 @@ async def run_fem(payload: dict) -> dict:
         if rc != 0:
             raise HTTPException(status_code=500, detail="FEM pipeline returned a non-zero status.")
 
-        contour_path = sim_dir / f"{name}_mode{mode}_mises.png"
-        if not contour_path.exists():
-            raise HTTPException(status_code=500, detail="FEM finished but no contour image was produced.")
-
-        fem_mesh = None
-        try:
-            from simulate.visualize import export_contour_surface_mesh  # noqa: WPS433
-
-            fem_mesh = export_contour_surface_mesh(
-                sim_dir / f"{name}.frd",
-                field_name="mises",
-                mode=mode,
-                warp=True,
-            )
-        except Exception:
-            # The PNG remains the fallback; the interactive mesh is a richer UI layer.
-            fem_mesh = None
-
-        modal_path = sim_dir / f"{name}_modal.json"
-        pca_path = sim_dir / f"{name}_pca.json"
-        modes_payload: list[dict] = []
-        pca_payload: dict | None = None
-        fundamental_hz = None
-        if modal_path.exists():
-            try:
-                modal = json.loads(modal_path.read_text(encoding="utf-8"))
-                fundamental_hz = modal.get("fundamental_hz")
-                modes_payload = modal.get("modes", [])
-            except (OSError, json.JSONDecodeError):
-                pass
-        if pca_path.exists():
-            try:
-                pca_payload = json.loads(pca_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                pca_payload = None
-
-        image_b64 = base64.b64encode(contour_path.read_bytes()).decode("ascii")
-        return {
-            "contour_png_base64": image_b64,
-            "mode": mode,
-            "num_modes": num_modes,
-            "material": material or "generic",
-            "fundamental_hz": fundamental_hz,
-            "modes": modes_payload,
-            "pca": pca_payload,
-            "field": "mises",
-            "fem_mesh": fem_mesh,
-        }
+        return _fem_response_payload(sim_dir, name, mode, num_modes, material)
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def _try_modal_pca(frd_file: Path, output_file: Path, num_modes: int) -> None:
+    try:
+        from simulate.pca import analyze_modal_pca, write_pca_report
+
+        result = analyze_modal_pca(frd_file, max_components=min(6, num_modes))
+        write_pca_report(result, output_file)
+    except Exception:
+        pass
+
+
+def _render_modal_contour(frd_file: Path, output_file: Path, mode: int) -> None:
+    try:
+        from simulate.visualize import render_contour
+
+        render_contour(frd_file, output_file, field_name="mises", mode=mode, warp=True)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"FEM finished but contour rendering failed: {exc}") from exc
+
+
+def _fem_response_payload(sim_dir: Path, name: str, mode: int, num_modes: int, material: str | None) -> dict:
+    contour_path = sim_dir / f"{name}_mode{mode}_mises.png"
+    if not contour_path.exists():
+        raise HTTPException(status_code=500, detail="FEM finished but no contour image was produced.")
+
+    fem_mesh = None
+    try:
+        from simulate.visualize import export_contour_surface_mesh  # noqa: WPS433
+
+        fem_mesh = export_contour_surface_mesh(
+            sim_dir / f"{name}.frd",
+            field_name="mises",
+            mode=mode,
+            warp=True,
+        )
+    except Exception:
+        fem_mesh = None
+
+    modal_path = sim_dir / f"{name}_modal.json"
+    pca_path = sim_dir / f"{name}_pca.json"
+    modes_payload: list[dict] = []
+    pca_payload: dict | None = None
+    fundamental_hz = None
+    if modal_path.exists():
+        try:
+            modal = json.loads(modal_path.read_text(encoding="utf-8"))
+            fundamental_hz = modal.get("fundamental_hz")
+            modes_payload = modal.get("modes", [])
+        except (OSError, json.JSONDecodeError):
+            pass
+    if pca_path.exists():
+        try:
+            pca_payload = json.loads(pca_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            pca_payload = None
+
+    image_b64 = base64.b64encode(contour_path.read_bytes()).decode("ascii")
+    return {
+        "contour_png_base64": image_b64,
+        "mode": mode,
+        "num_modes": num_modes,
+        "material": material or "generic",
+        "fundamental_hz": fundamental_hz,
+        "modes": modes_payload,
+        "pca": pca_payload,
+        "field": "mises",
+        "fem_mesh": fem_mesh,
+    }
+
+def _structured_fem_response_payload(
+    frd_file: Path,
+    sim_dir: Path,
+    name: str,
+    mode: int,
+    num_modes: int,
+    material: str | None,
+) -> dict:
+    modal = _read_json_file(sim_dir / f"{name}_modal.json") or {}
+    pca_payload = _read_json_file(sim_dir / f"{name}_pca.json")
+    fem_mesh = _export_frd_hex_surface_mesh(frd_file, mode=mode, warp=True)
+    return {
+        "contour_png_base64": _transparent_png_base64(),
+        "mode": mode,
+        "num_modes": num_modes,
+        "material": material or "generic",
+        "fundamental_hz": modal.get("fundamental_hz"),
+        "modes": modal.get("modes", []),
+        "pca": pca_payload,
+        "field": "mises",
+        "fem_mesh": fem_mesh,
+    }
+
+
+def _read_json_file(path: Path) -> dict | None:
+    try:
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _export_frd_hex_surface_mesh(frd_file: Path, *, mode: int, warp: bool, max_faces: int = 12000) -> dict:
+    import numpy as np
+    from simulate.visualize import _select_field, parse_frd, von_mises
+
+    mesh, fields = parse_frd(frd_file)
+    disp = _select_field(fields, "DISP", mode)
+    stress = _select_field(fields, "STRESS", mode)
+    if stress is None:
+        raise HTTPException(status_code=500, detail=f"No STRESS field found for mode {mode} in FEM results.")
+
+    points = np.asarray(mesh.points, dtype=float).copy()
+    values = von_mises(stress.data)
+    freq = stress.frequency_hz
+    if warp and disp is not None:
+        points = points + disp.data * _frd_warp_scale(points, disp.data)
+
+    face_defs = (
+        (0, 1, 2, 3),
+        (4, 7, 6, 5),
+        (0, 4, 5, 1),
+        (1, 5, 6, 2),
+        (2, 6, 7, 3),
+        (3, 7, 4, 0),
+    )
+    face_map: dict[tuple[int, ...], dict] = {}
+    for vtk_type, rows in mesh.cells:
+        if vtk_type != 12 or len(rows) < 8:
+            continue
+        corners = rows[:8]
+        for face_def in face_defs:
+            face = tuple(int(corners[index]) for index in face_def)
+            key = tuple(sorted(face))
+            if key in face_map:
+                face_map[key]["count"] += 1
+            else:
+                face_map[key] = {"count": 1, "face": face}
+
+    exterior = [item["face"] for item in face_map.values() if item["count"] == 1]
+    if max_faces > 0 and len(exterior) * 2 > max_faces:
+        stride = max(1, (len(exterior) * 2) // max_faces)
+        exterior = exterior[::stride]
+
+    vmin = float(np.nanmin(values)) if values.size else 0.0
+    vmax = float(np.nanmax(values)) if values.size else 1.0
+    if not np.isfinite(vmin):
+        vmin = 0.0
+    if not np.isfinite(vmax) or vmax <= vmin:
+        vmax = vmin + 1.0
+
+    faces = []
+    for face in exterior:
+        avg = float(np.mean(values[list(face)])) if values.size else vmin
+        color = _contour_hex(avg, vmin, vmax)
+        for tri in ((face[0], face[1], face[2]), (face[0], face[2], face[3])):
+            faces.append(
+                {
+                    "color": color,
+                    "points": [
+                        {
+                            "x": float(points[node_id][0]),
+                            "y": float(points[node_id][1]),
+                            "z": float(points[node_id][2]),
+                        }
+                        for node_id in tri
+                    ],
+                }
+            )
+
+    return {
+        "faces": faces,
+        "field": "S, Mises",
+        "mode": mode,
+        "frequency_hz": freq,
+        "scalar_min": vmin,
+        "scalar_max": vmax,
+        "face_count": len(faces),
+    }
+
+
+def _frd_warp_scale(points, disp) -> float:
+    import numpy as np
+
+    max_disp = float(np.linalg.norm(disp, axis=1).max()) if disp.size else 0.0
+    if max_disp <= 0.0:
+        return 0.0
+    diagonal = float(np.linalg.norm(np.ptp(points, axis=0)))
+    return 0.1 * diagonal / max_disp
+
+
+def _transparent_png_base64() -> str:
+    return "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lQn9WQAAAABJRU5ErkJggg=="
 
 
 UI_HTML = """<!doctype html>

@@ -75,7 +75,7 @@ def step_to_swept_hex_mesh(
         gmsh.option.setNumber("Mesh.RecombineAll", 1)
         gmsh.option.setNumber("Mesh.RecombinationAlgorithm", 1)
         gmsh.option.setNumber("Mesh.Algorithm", 8)  # Frontal-Delaunay for quads.
-        gmsh.option.setNumber("Mesh.Algorithm3D", 4)  # Frontal 3D, better for structured attempts.
+        gmsh.option.setNumber("Mesh.Algorithm3D", 1)  # Delaunay works with recombined quadrangle boundaries.
 
         # Let Gmsh infer transfinite curves/surfaces/volumes where the imported
         # topology allows it, then ask each surface to recombine into quads.
