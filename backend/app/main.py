@@ -836,6 +836,62 @@ UI_HTML = """<!doctype html>
     .workbench {
       padding: 18px;
     }
+    .left-rail {
+      display: grid;
+      gap: 14px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      box-shadow: none;
+    }
+    .rail-card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      padding: 18px;
+      box-shadow: 0 12px 30px rgba(15, 23, 42, 0.05);
+    }
+    .rail-card-header {
+      width: 100%;
+      margin: 0;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: var(--brand);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      text-align: left;
+      cursor: pointer;
+    }
+    .rail-card-title {
+      min-width: 0;
+      color: var(--brand);
+      font-size: 16px;
+      font-weight: 800;
+    }
+    .rail-card-header::after {
+      content: "";
+      width: 9px;
+      height: 9px;
+      flex: 0 0 auto;
+      border-right: 2px solid currentColor;
+      border-bottom: 2px solid currentColor;
+      transform: rotate(45deg);
+      transition: transform 160ms ease;
+    }
+    .rail-card.open .rail-card-header::after {
+      transform: rotate(-135deg);
+    }
+    .rail-card-body {
+      display: grid;
+      gap: 14px;
+      margin-top: 16px;
+    }
+    .rail-card:not(.open) .rail-card-body {
+      display: none;
+    }
     .section-title {
       margin: 0 0 18px;
       display: flex;
@@ -981,6 +1037,10 @@ UI_HTML = """<!doctype html>
     }
     button:hover { background: var(--brand-2); }
     button:disabled { opacity: 0.62; cursor: wait; }
+    .rail-card-header:hover {
+      background: transparent;
+      color: var(--brand-2);
+    }
     .primary-action {
       background: var(--accent);
     }
@@ -2033,54 +2093,74 @@ UI_HTML = """<!doctype html>
     </section>
 
     <section class="workspace">
-      <section class="workbench chat">
-        <div class="section-title">
-          <strong>Engineering Chat</strong>
-          <span class="status-pill">Model ready</span>
-        </div>
-        <div class="attachment-tools">
-          <label for="contextFile" class="label-with-info">
-            Add document, image, or old CAD model
-            <span
-              class="info-dot"
-              tabindex="0"
-              aria-label="Supported file types: PDF, image jpg, JSON, STEP/STP/IGES/STL/OBJ/DXF/SCAD/FCStd"
-              data-tooltip="Supported file types: PDF, image (jpg), JSON, STEP/STP/IGES/STL/OBJ/DXF/SCAD/FCStd"
-            >i</span>
-          </label>
-          <div class="attachment-row">
-            <input
-              id="contextFile"
-              type="file"
-              accept=".pdf,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff,.step,.stp,.iges,.igs,.stl,.obj,.dxf,.scad,.fcstd,.txt,.md,.json,.xml,.csv"
-            >
-            <button id="uploadContextButton" type="button">Attach File</button>
-          </div>
-          <div id="attachmentList" class="attachment-list"></div>
-        </div>
-        <div id="chatShell" class="chat-shell idle">
-          <div id="chatLog" class="chat-log">
-            <div class="msg bot intro">Start by adding a PDF, image, JSON status file, or old CAD model. I will extract context and draft a short prompt for approval. Images are reference-only in this POC, so please type the key dimensions in chat.</div>
-          </div>
-          <form id="chatForm" class="chat-composer">
-            <textarea id="chatInput" placeholder="Describe the part, main dimensions, material, and anything important for the CAD model..." autocomplete="off"></textarea>
-            <div class="chat-actions">
-              <button type="submit" id="chatSend" class="primary-action">Send</button>
+      <section class="workbench left-rail">
+        <section class="rail-card engineering-chat-card open" id="engineeringChatPanel">
+          <button type="button" class="rail-card-header" id="engineeringChatToggle" aria-expanded="true" aria-controls="engineeringChatBody">
+            <span class="rail-card-title">Engineering chat</span>
+            <span class="status-pill">Model ready</span>
+          </button>
+          <div class="rail-card-body" id="engineeringChatBody">
+            <div class="attachment-tools">
+              <label for="contextFile" class="label-with-info">
+                Add document, image, or old CAD model
+                <span
+                  class="info-dot"
+                  tabindex="0"
+                  aria-label="Supported file types: PDF, image jpg, JSON, STEP/STP/IGES/STL/OBJ/DXF/SCAD/FCStd"
+                  data-tooltip="Supported file types: PDF, image (jpg), JSON, STEP/STP/IGES/STL/OBJ/DXF/SCAD/FCStd"
+                >i</span>
+              </label>
+              <div class="attachment-row">
+                <input
+                  id="contextFile"
+                  type="file"
+                  accept=".pdf,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff,.step,.stp,.iges,.igs,.stl,.obj,.dxf,.scad,.fcstd,.txt,.md,.json,.xml,.csv"
+                >
+                <button id="uploadContextButton" type="button">Attach File</button>
+              </div>
+              <div id="attachmentList" class="attachment-list"></div>
             </div>
-          </form>
-        </div>
-        <div id="activityPanel" class="activity-panel" aria-live="polite">
-          <div class="activity-status">
-            <span id="activityLabel">Ready</span>
-            <span id="activityPhase" class="activity-phase">Waiting</span>
+            <div id="chatShell" class="chat-shell idle">
+              <div id="chatLog" class="chat-log">
+                <div class="msg bot intro">Start by adding a PDF, image, JSON status file, or old CAD model. I will extract context and draft a short prompt for approval. Images are reference-only in this POC, so please type the key dimensions in chat.</div>
+              </div>
+              <form id="chatForm" class="chat-composer">
+                <textarea id="chatInput" placeholder="Describe the part, main dimensions, material, and anything important for the CAD model..." autocomplete="off"></textarea>
+                <div class="chat-actions">
+                  <button type="submit" id="chatSend" class="primary-action">Send</button>
+                </div>
+              </form>
+            </div>
+            <div id="activityPanel" class="activity-panel" aria-live="polite">
+              <div class="activity-status">
+                <span id="activityLabel">Ready</span>
+                <span id="activityPhase" class="activity-phase">Waiting</span>
+              </div>
+              <div class="activity-track" aria-hidden="true">
+                <div id="activityFill" class="activity-fill"></div>
+              </div>
+            </div>
+            <div class="summary-box" id="summaryBox">
+              <p>Upload a file or write a request. I will summarize the proposed CAD intent before generating the model.</p>
+            </div>
           </div>
-          <div class="activity-track" aria-hidden="true">
-            <div id="activityFill" class="activity-fill"></div>
+        </section>
+
+        <section class="rail-card param-panel collapsed" id="paramPanel">
+          <div class="section-title param-title">
+            <div class="title-head">
+              <strong>Parametric input</strong>
+              <span id="paramHint" class="muted">Open after a model is generated.</span>
+            </div>
+            <button type="button" class="param-toggle" id="paramToggle" aria-expanded="false" aria-controls="paramControls">Open input</button>
           </div>
-        </div>
-        <div class="summary-box" id="summaryBox">
-          <p>Upload a file or write a request. I will summarize the proposed CAD intent before generating the model.</p>
-        </div>
+          <div id="paramControls" class="param-controls">
+            <p class="muted">Adjustable dimensions will appear here once a model is generated. Use the Download menu to export the edited part.</p>
+          </div>
+          <div id="meshResults"></div>
+          <div id="simResults"></div>
+          <pre id="jsonOutput" hidden>{}</pre>
+        </section>
       </section>
 
       <section class="stack">
@@ -2158,21 +2238,6 @@ UI_HTML = """<!doctype html>
             </div>
           </div>
         </div>
-        <div class="panel param-panel collapsed" id="paramPanel">
-          <div class="section-title param-title">
-            <div class="title-head">
-              <strong>Parametric Editor</strong>
-              <span id="paramHint" class="muted">Open after a model is generated.</span>
-            </div>
-            <button type="button" class="param-toggle" id="paramToggle" aria-expanded="false" aria-controls="paramControls">Open editor</button>
-          </div>
-          <div id="paramControls" class="param-controls">
-            <p class="muted">Adjustable dimensions will appear here once a model is generated. Use the Download menu to export the edited part.</p>
-          </div>
-          <div id="meshResults"></div>
-          <div id="simResults"></div>
-          <pre id="jsonOutput" hidden>{}</pre>
-        </div>
       </section>
     </section>
   </main>
@@ -2209,6 +2274,8 @@ UI_HTML = """<!doctype html>
     const meshResults = document.getElementById("meshResults");
     const simResults = document.getElementById("simResults");
     const summaryBox = document.getElementById("summaryBox");
+    const engineeringChatPanel = document.getElementById("engineeringChatPanel");
+    const engineeringChatToggle = document.getElementById("engineeringChatToggle");
     const chatShell = document.getElementById("chatShell");
     const chatForm = document.getElementById("chatForm");
     const chatInput = document.getElementById("chatInput");
@@ -2249,6 +2316,7 @@ UI_HTML = """<!doctype html>
     // Parametric editor state.
     let currentEditIntent = null;
     let baseGeometry = null;
+    let engineeringChatOpen = true;
     let paramEditorOpen = false;
     let paramRenderQueued = false;
     // When true, ignore the uploaded mesh and render the parametric model instead
@@ -2266,11 +2334,31 @@ UI_HTML = """<!doctype html>
     let femBatchCount = 6;
     let femContourMode = 1;
 
+    if (engineeringChatToggle) {
+      engineeringChatToggle.addEventListener("click", () => {
+        setEngineeringChatOpen(!engineeringChatOpen);
+      });
+      setEngineeringChatOpen(true);
+    }
+
     if (paramToggle) {
       paramToggle.addEventListener("click", () => {
         setParamEditorOpen(!paramEditorOpen);
       });
       setParamEditorOpen(false);
+    }
+
+    function setEngineeringChatOpen(open) {
+      engineeringChatOpen = Boolean(open);
+      if (engineeringChatPanel) {
+        engineeringChatPanel.classList.toggle("open", engineeringChatOpen);
+      }
+      if (engineeringChatToggle) {
+        engineeringChatToggle.setAttribute("aria-expanded", engineeringChatOpen ? "true" : "false");
+      }
+      if (engineeringChatOpen) {
+        autoResizeChatInput();
+      }
     }
 
     function setParamEditorOpen(open) {
@@ -2279,7 +2367,7 @@ UI_HTML = """<!doctype html>
         paramPanel.classList.toggle("collapsed", !paramEditorOpen);
       }
       if (paramToggle) {
-        paramToggle.textContent = paramEditorOpen ? "Hide editor" : "Open editor";
+        paramToggle.textContent = paramEditorOpen ? "Hide input" : "Open input";
         paramToggle.setAttribute("aria-expanded", paramEditorOpen ? "true" : "false");
       }
     }
