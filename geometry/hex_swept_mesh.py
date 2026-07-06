@@ -1,8 +1,9 @@
-"""Best-effort structured hex/swept meshing for suitable STEP solids.
+"""Structured hex/swept meshing for suitable STEP solids.
 
 This is intentionally conservative. Imported CAD can only be hex-meshed
 automatically when Gmsh can discover a transfinite/recombined structure. If it
-cannot produce hexahedral cells, callers should fall back to the tetra mesher.
+cannot produce a pure hexahedral volume mesh, callers should report that the CAD
+needs sweepable/block decomposition.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from pathlib import Path
 
 
 class StructuredHexUnavailable(RuntimeError):
-    """Raised when Gmsh cannot create a usable hex-dominant mesh."""
+    """Raised when Gmsh cannot create a pure hexahedral mesh."""
 
 
 @dataclass(frozen=True)
@@ -30,6 +31,14 @@ class HexMeshResult:
     def hex_count(self) -> int:
         return sum(count for name, count in self.element_counts.items() if name.startswith("hexahedron"))
 
+    @property
+    def non_hex_volume_count(self) -> int:
+        return sum(
+            count
+            for name, count in self.element_counts.items()
+            if name.startswith(("tetra", "wedge", "pyramid"))
+        )
+
 
 def step_to_swept_hex_mesh(
     step_file: Path,
@@ -39,7 +48,7 @@ def step_to_swept_hex_mesh(
     min_size_mm: float | None = None,
     verbose: bool = False,
 ) -> HexMeshResult:
-    """Try to mesh a STEP solid with recombined/transfinite hexahedra."""
+    """Mesh a STEP solid with pure recombined/transfinite hexahedra."""
 
     import gmsh
 
@@ -94,6 +103,11 @@ def step_to_swept_hex_mesh(
         )
         if result.hex_count <= 0:
             raise StructuredHexUnavailable("Gmsh did not produce hexahedral cells for this topology.")
+        if result.non_hex_volume_count > 0:
+            raise StructuredHexUnavailable(
+                "Gmsh produced a mixed volume mesh instead of pure hex cells: "
+                + ", ".join(f"{name}={count}" for name, count in result.element_counts.items())
+            )
     finally:
         gmsh.finalize()
 
@@ -159,6 +173,7 @@ _HEX_EDGES = (
     (3, 7),
 )
 _WEDGE_EDGES = ((0, 1), (1, 2), (2, 0), (3, 4), (4, 5), (5, 3), (0, 3), (1, 4), (2, 5))
+_PYRAMID_EDGES = ((0, 1), (1, 2), (2, 3), (3, 0), (0, 4), (1, 4), (2, 4), (3, 4))
 
 # Gmsh type id, meshio-like name, number of corner nodes, edge pairs.
 _ELEMENTS = (
@@ -169,4 +184,6 @@ _ELEMENTS = (
     (17, "hexahedron20", 8, _HEX_EDGES),
     (6, "wedge", 6, _WEDGE_EDGES),
     (13, "wedge18", 6, _WEDGE_EDGES),
+    (7, "pyramid", 5, _PYRAMID_EDGES),
+    (14, "pyramid14", 5, _PYRAMID_EDGES),
 )

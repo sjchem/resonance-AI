@@ -201,7 +201,6 @@ async def generate_mesh(payload: dict) -> dict:
 
     try:
         from text_to_cad.cad_agent import generate_with_agent  # noqa: WPS433
-        from geometry.step_to_mesh import step_to_mesh  # noqa: WPS433
         from geometry.hex_swept_mesh import (  # noqa: WPS433
             StructuredHexUnavailable,
             step_to_swept_hex_mesh,
@@ -241,35 +240,25 @@ async def generate_mesh(payload: dict) -> dict:
                 detail += f" Last error: {last_exc}"
             raise HTTPException(status_code=500, detail=detail)
 
-        raw_mesh = work_dir / f"{name}.msh"
-        mesh_format = "Gmsh tetrahedral volume mesh"
-        mesh_strategy = "tetra"
+        raw_mesh = work_dir / f"{name}_hex.msh"
+        mesh_format = "Gmsh structured hex/swept volume mesh"
+        mesh_strategy = "structured_hex"
         fallback_reason = None
-        if _should_try_structured_hex(prompt, intent):
-            try:
-                raw_mesh = work_dir / f"{name}_hex.msh"
-                mesh_result = step_to_swept_hex_mesh(
-                    step_file=step_path,
-                    output_file=raw_mesh,
-                    target_size_mm=element_size_mm,
-                )
-                mesh_format = "Gmsh structured hex/swept volume mesh"
-                mesh_strategy = "structured_hex"
-            except (StructuredHexUnavailable, Exception) as exc:  # noqa: BLE001
-                fallback_reason = str(exc)
-                raw_mesh = work_dir / f"{name}.msh"
-                mesh_result = step_to_mesh(
-                    step_file=step_path,
-                    output_file=raw_mesh,
-                    target_size_mm=element_size_mm,
-                )
-                mesh_strategy = "tetra_fallback"
-        else:
-            mesh_result = step_to_mesh(
+        try:
+          mesh_result = step_to_swept_hex_mesh(
                 step_file=step_path,
                 output_file=raw_mesh,
                 target_size_mm=element_size_mm,
             )
+        except (StructuredHexUnavailable, Exception) as exc:  # noqa: BLE001
+          raise HTTPException(
+            status_code=422,
+            detail=(
+              "Hex-only meshing failed. Gmsh could not create hexahedral cells for this CAD topology. "
+              "Use a sweepable/block-decomposed shape, simplify small fillets/branches, or split the part into mappable volumes. "
+              f"Gmsh detail: {exc}"
+            ),
+          ) from exc
 
         clean_mesh_path = work_dir / f"{name}_clean.vtk"
         clean_result = clean_mesh(raw_mesh, clean_mesh_path)
@@ -611,6 +600,7 @@ async def run_fem(payload: dict) -> dict:
                 output_dir=sim_dir,
                 material=resolve_material(material),
                 num_modes=num_modes,
+                mesh_strategy="hex",
                 name=name,
                 contour_image=True,
                 contour_mode=mode,
@@ -3705,7 +3695,7 @@ UI_HTML = """<!doctype html>
       }
       const body = lastMeshResult
         ? meshResultHtml(lastMeshResult)
-        : '<div class="mesh-output">Generate a Gmsh mesh before running full FEM. Axisymmetric parts try structured hex/swept meshing first; other parts use tetra meshing.</div>';
+        : '<div class="mesh-output">Generate a Gmsh hex mesh before running full FEM. Geometry must be sweepable/block-decomposed enough for pure hexahedral cells.</div>';
       meshResults.innerHTML =
         '<div class="mesh-block">' +
         '<div class="sim-head"><strong>Gmsh mesh</strong>' +
@@ -3724,7 +3714,7 @@ UI_HTML = """<!doctype html>
     function meshResultHtml(result) {
       if (!result) return "";
       if (result.status === "loading") {
-        return '<div class="mesh-output">Generating STEP, trying structured hex/swept meshing when suitable, then checking mesh quality...</div>';
+        return '<div class="mesh-output">Generating STEP, creating pure structured hex/swept mesh, then checking mesh quality...</div>';
       }
       if (result.status === "error") {
         return '<div class="mesh-output err">Mesh generation failed: ' + escapeHtml(result.message) + '</div>';
@@ -3756,12 +3746,9 @@ UI_HTML = """<!doctype html>
     function meshStrategyNote(result) {
       if (!result || !result.mesh_strategy) return "";
       if (result.mesh_strategy === "structured_hex") {
-        return '<div class="muted" style="margin-top:6px">Structured hex/swept mesh succeeded for this geometry.</div>';
+        return '<div class="muted" style="margin-top:6px">Pure structured hex/swept mesh succeeded for this geometry.</div>';
       }
-      if (result.mesh_strategy === "tetra_fallback") {
-        return '<div class="muted" style="margin-top:6px">Structured hex was attempted, but this topology needed tetra fallback.</div>';
-      }
-      return '<div class="muted" style="margin-top:6px">Tetra mesh used for this geometry.</div>';
+      return '<div class="muted" style="margin-top:6px">Hex-only meshing is required for this workflow.</div>';
     }
 
     function meshViewerHtml(mesh) {
