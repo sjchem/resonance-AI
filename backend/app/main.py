@@ -2017,6 +2017,21 @@ UI_HTML = """<!doctype html>
       font-size: 13px;
       color: var(--brand);
     }
+    .analysis-results {
+      margin-top: 14px;
+      display: grid;
+      gap: 14px;
+    }
+    .analysis-results[hidden] {
+      display: none;
+    }
+    .analysis-result-block {
+      margin-top: 0;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfdff;
+    }
     .sim-head {
       display: flex;
       align-items: center;
@@ -2665,6 +2680,10 @@ UI_HTML = """<!doctype html>
               <p class="muted">Interactive 3D preview will appear here after the CAD intent is parsed.</p>
             </div>
           </div>
+          <div class="analysis-results" id="analysisResults" hidden>
+            <div id="meshOutputPanel"></div>
+            <div id="simOutputPanel"></div>
+          </div>
         </div>
       </section>
     </section>
@@ -2701,6 +2720,9 @@ UI_HTML = """<!doctype html>
     const paramHint = document.getElementById("paramHint");
     const meshResults = document.getElementById("meshResults");
     const simResults = document.getElementById("simResults");
+    const analysisResults = document.getElementById("analysisResults");
+    const meshOutputPanel = document.getElementById("meshOutputPanel");
+    const simOutputPanel = document.getElementById("simOutputPanel");
     const summaryBox = document.getElementById("summaryBox");
     const engineeringChatPanel = document.getElementById("engineeringChatPanel");
     const engineeringChatToggle = document.getElementById("engineeringChatToggle");
@@ -4044,8 +4066,38 @@ UI_HTML = """<!doctype html>
       return null;
     }
 
+    function updateAnalysisResultsVisibility() {
+      if (!analysisResults) return;
+      const hasMesh = meshOutputPanel && meshOutputPanel.innerHTML.trim();
+      const hasSim = simOutputPanel && simOutputPanel.innerHTML.trim();
+      analysisResults.hidden = !(hasMesh || hasSim);
+    }
+
+    function ensureSimOutputPanel() {
+      if (!simOutputPanel) return null;
+      if (!simOutputPanel.querySelector("#simOutput")) {
+        simOutputPanel.innerHTML =
+          '<div class="sim-block analysis-result-block">' +
+          '<div class="sim-head"><strong>Simulation result</strong><span class="muted">Below CAD preview</span></div>' +
+          '<div class="sim-compare">' +
+          '<div id="simOutput"></div>' +
+          '<div id="simFemContainer"></div>' +
+          '</div>' +
+          '</div>';
+      }
+      updateAnalysisResultsVisibility();
+      return document.getElementById("simOutput");
+    }
+
+    function clearSimOutputPanel() {
+      stopSimAnimation();
+      cleanupFemViewer();
+      if (simOutputPanel) simOutputPanel.innerHTML = "";
+      updateAnalysisResultsVisibility();
+    }
+
     function renderSimOutput() {
-      const out = document.getElementById("simOutput");
+      const out = ensureSimOutputPanel();
       if (!out) return;
       stopSimAnimation();
       const src = simSourceDims();
@@ -4125,7 +4177,7 @@ UI_HTML = """<!doctype html>
       if (!simResults) return;
       const src = simSourceDims();
       if (!src) {
-        stopSimAnimation();
+        clearSimOutputPanel();
         simResults.innerHTML = "";
         return;
       }
@@ -4137,12 +4189,7 @@ UI_HTML = """<!doctype html>
         '<button type="button" class="sim-btn secondary" id="simFemBtn" title="Run one multi-mode FEM batch and render the selected contour">FEM batch</button>' +
         '</span></div>' +
         simBatchControlsHtml() +
-        '<div class="sim-compare">' +
-        '<div id="simOutput">' +
-        (simShown ? "" : '<p class="muted">Estimate natural frequencies and stiffness for this bushing.</p>') +
-        '</div>' +
-        '<div id="simFemContainer"></div>' +
-        '</div>' +
+        '<p class="muted" style="margin:10px 0 0">Results appear below the CAD model preview.</p>' +
         '</div>';
       const btn = document.getElementById("simRunBtn");
       if (btn) {
@@ -4217,25 +4264,41 @@ UI_HTML = """<!doctype html>
 
     function renderMeshPanel() {
       if (!meshResults) return;
-      cleanupMeshViewer();
       const src = simSourceDims();
       if (!src) {
+        cleanupMeshViewer();
         meshResults.innerHTML = "";
+        if (meshOutputPanel) meshOutputPanel.innerHTML = "";
+        updateAnalysisResultsVisibility();
         return;
       }
-      const body = lastMeshResult
-        ? meshResultHtml(lastMeshResult)
-        : '<div class="mesh-output">Generate a Gmsh hex mesh before running full FEM. Geometry must be sweepable/block-decomposed enough for pure hexahedral cells.</div>';
       meshResults.innerHTML =
         '<div class="mesh-block">' +
         '<div class="sim-head"><strong>Gmsh mesh</strong>' +
         '<span class="sim-head-actions">' +
         '<button type="button" class="sim-btn" id="meshGenerateBtn">Generate mesh</button>' +
         '</span></div>' +
-        '<div id="meshOutput">' + body + '</div>' +
+        '<p class="muted" style="margin:10px 0 0">Mesh result appears below the CAD model preview.</p>' +
         '</div>';
       const btn = document.getElementById("meshGenerateBtn");
       if (btn) btn.addEventListener("click", runGmshMesh);
+      renderMeshOutputPanel();
+    }
+
+    function renderMeshOutputPanel() {
+      if (!meshOutputPanel) return;
+      cleanupMeshViewer();
+      if (!lastMeshResult) {
+        meshOutputPanel.innerHTML = "";
+        updateAnalysisResultsVisibility();
+        return;
+      }
+      meshOutputPanel.innerHTML =
+        '<div class="mesh-block analysis-result-block">' +
+        '<div class="sim-head"><strong>Mesh result</strong><span class="muted">Below CAD preview</span></div>' +
+        '<div id="meshOutput">' + meshResultHtml(lastMeshResult) + '</div>' +
+        '</div>';
+      updateAnalysisResultsVisibility();
       if (lastMeshResult && lastMeshResult.surface_mesh) {
         renderGmshMeshCanvas(document.getElementById("meshViewer"), lastMeshResult.surface_mesh);
       }
@@ -4541,6 +4604,7 @@ UI_HTML = """<!doctype html>
     }
 
     function renderFemContour(state) {
+      ensureSimOutputPanel();
       const container = document.getElementById("simFemContainer");
       if (!container) return;
       cleanupFemViewer();
@@ -4953,6 +5017,7 @@ UI_HTML = """<!doctype html>
             mode: femContourMode,
             num_modes: femBatchCount,
             name: (lastExport && lastExport.name) || "model",
+            intent: (lastExport && lastExport.intent) || {},
           }),
         });
         if (!response.ok) {
