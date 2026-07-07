@@ -2067,10 +2067,30 @@ UI_HTML = """<!doctype html>
       display: flex;
       gap: 8px;
       align-items: center;
+      flex-wrap: wrap;
+    }
+    .sim-info-btn {
+      width: 26px;
+      height: 26px;
+      margin: 0;
+      padding: 0;
+      border-radius: 50%;
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--brand);
+      font-size: 13px;
+      font-weight: 800;
+      line-height: 1;
+      cursor: help;
+    }
+    .sim-info-btn:hover,
+    .sim-info-btn:focus {
+      background: #eef3f9;
+      outline: none;
     }
     .sim-batch-controls {
       display: grid;
-      grid-template-columns: repeat(2, minmax(120px, 180px)) minmax(0, 1fr);
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 10px;
       align-items: end;
       padding: 10px;
@@ -2085,11 +2105,6 @@ UI_HTML = """<!doctype html>
     .sim-batch-field input {
       padding: 7px 9px;
       font-size: 13px;
-    }
-    .sim-batch-note {
-      color: var(--muted);
-      font-size: 12px;
-      line-height: 1.4;
     }
     .sim-pca-layout {
       display: grid;
@@ -4187,6 +4202,7 @@ UI_HTML = """<!doctype html>
         '<span class="sim-head-actions">' +
         '<button type="button" class="sim-btn" id="simRunBtn">Simulate</button>' +
         '<button type="button" class="sim-btn secondary" id="simFemBtn" title="Run one multi-mode FEM batch and render the selected contour">FEM batch</button>' +
+        '<button type="button" class="sim-info-btn" aria-label="Simulation batch information" title="One CAD mesh is generated, then CalculiX solves up to 100 modal results. Larger batches can take several minutes on Azure.">i</button>' +
         '</span></div>' +
         simBatchControlsHtml() +
         '<p class="muted" style="margin:10px 0 0">Results appear below the CAD model preview.</p>' +
@@ -4224,8 +4240,6 @@ UI_HTML = """<!doctype html>
         '<div class="sim-batch-field">' +
         '<label for="simContourMode">Contour mode</label>' +
         '<input id="simContourMode" type="number" min="1" max="' + count + '" step="1" value="' + contour + '">' +
-        '</div>' +
-        '<div class="sim-batch-note">One CAD mesh is generated, then CalculiX solves up to 100 modal results. Larger batches can take several minutes on Azure.</div>' +
         '</div>'
       );
     }
