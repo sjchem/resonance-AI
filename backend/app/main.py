@@ -310,9 +310,10 @@ async def generate_mesh(payload: dict) -> dict:
         raw_mesh = work_dir / f"{name}_hex.msh"
         step_path: Path | None = None
         if _is_structured_bushing_intent(intent):
+            raw_mesh = work_dir / f"{name}_hex.vtk"
             mesh_result = generate_bushing_hex_mesh(intent, raw_mesh, target_size_mm=element_size_mm)
-            mesh_format = "Mapped structured hexahedral bushing mesh"
-            mesh_strategy = "mapped_bushing_hex"
+            mesh_format = "Mapped structured hexahedral slotted-bushing mesh" if mesh_result.mesh_kind == "mapped_slotted_bushing_hex" else "Mapped structured hexahedral bushing mesh"
+            mesh_strategy = mesh_result.mesh_kind
         else:
             cad_code = -1
             last_exc: Exception | None = None
@@ -686,7 +687,7 @@ async def run_fem(payload: dict) -> dict:
         if _is_structured_bushing_intent(intent):
             sim_dir = work_dir / "sim"
             sim_dir.mkdir(parents=True, exist_ok=True)
-            raw_mesh = sim_dir / f"{name}.msh"
+            raw_mesh = sim_dir / f"{name}.vtk"
             clean_mesh_path = sim_dir / f"{name}_clean.vtk"
             generate_bushing_hex_mesh(intent, raw_mesh)
             clean_mesh(raw_mesh, clean_mesh_path)
@@ -5117,6 +5118,13 @@ UI_HTML = """<!doctype html>
           hole_pattern: "none",
           hole_count: 0,
           hole_diameter_mm: 0,
+          slot_count: 0,
+          slot_width_deg: 18,
+          slot_depth_mm: 10,
+          slot_start_angle_deg: 0,
+          slot_radial_mode: "outer",
+          slot_axial_mode: "through",
+          slot_axial_height_mm: 30,
           inner_core_length_mm: 40,
           outer_core_length_mm: 40,
           arms: [],
@@ -5160,6 +5168,13 @@ UI_HTML = """<!doctype html>
       geom.hole_pattern = ["none", "axial", "radial"].includes(String(geom.hole_pattern || "none")) ? String(geom.hole_pattern || "none") : "none";
       geom.hole_count = geom.hole_pattern === "none" ? 0 : clampInt(geom.hole_count, 1, 24, 4);
       geom.hole_diameter_mm = geom.hole_pattern === "none" ? 0 : readPositiveNumber(geom.hole_diameter_mm, 6);
+      geom.slot_count = clampInt(geom.slot_count, 0, 24, 0);
+      geom.slot_width_deg = geom.slot_count > 0 ? readPositiveNumber(geom.slot_width_deg, 18) : 0;
+      geom.slot_depth_mm = geom.slot_count > 0 ? readPositiveNumber(geom.slot_depth_mm, Math.max(1, geom.rubber_thickness_mm * 0.45)) : 0;
+      geom.slot_start_angle_deg = Number.isFinite(Number(geom.slot_start_angle_deg)) ? Number(geom.slot_start_angle_deg) : 0;
+      geom.slot_radial_mode = ["outer", "through_wall"].includes(String(geom.slot_radial_mode || "outer")) ? String(geom.slot_radial_mode || "outer") : "outer";
+      geom.slot_axial_mode = ["through", "centered"].includes(String(geom.slot_axial_mode || "through")) ? String(geom.slot_axial_mode || "through") : "through";
+      geom.slot_axial_height_mm = geom.slot_axial_mode === "centered" ? Math.min(readPositiveNumber(geom.slot_axial_height_mm, geom.height_mm * 0.5), geom.height_mm) : geom.height_mm;
       geom.inner_core_length_mm = readPositiveNumber(geom.inner_core_length_mm, geom.height_mm);
       geom.outer_core_length_mm = readPositiveNumber(geom.outer_core_length_mm, geom.height_mm);
       geom.rubber_thickness_mm = readNonNegativeNumber(
@@ -5249,6 +5264,13 @@ UI_HTML = """<!doctype html>
         selectField("hole_pattern", "Hole pattern", geom.hole_pattern || "none", [["none", "None"], ["axial", "Axial"], ["radial", "Radial"]]) +
         numberField("hole_count", "Number of holes", geom.hole_count, 1, 0) +
         numberField("hole_diameter_mm", "Hole diameter", geom.hole_diameter_mm, 0.5, 0) +
+        numberField("slot_count", "Number of slots", geom.slot_count, 1, 0) +
+        numberField("slot_width_deg", "Slot width angle", geom.slot_width_deg, 1, 0) +
+        numberField("slot_depth_mm", "Slot radial depth", geom.slot_depth_mm, 0.5, 0) +
+        numberField("slot_start_angle_deg", "Slot start angle", geom.slot_start_angle_deg, 1, -360) +
+        selectField("slot_radial_mode", "Slot radial mode", geom.slot_radial_mode || "outer", [["outer", "Outer only"], ["through_wall", "Through wall"]]) +
+        selectField("slot_axial_mode", "Slot axial mode", geom.slot_axial_mode || "through", [["through", "Full height"], ["centered", "Centered window"]]) +
+        numberField("slot_axial_height_mm", "Slot axial height", geom.slot_axial_height_mm, 0.5, 0) +
         '</div>' +
         '<div class="param-section-title">Material</div>' +
         '<div class="param-form-grid">' +
@@ -5432,6 +5454,13 @@ UI_HTML = """<!doctype html>
       geom.hole_pattern = formValue("rubber_hole_pattern", geom.hole_pattern || "none");
       geom.hole_count = geom.hole_pattern === "none" ? 0 : clampInt(readFormNumber("rubber_hole_count", geom.hole_count || 4), 1, 24, 4);
       geom.hole_diameter_mm = geom.hole_pattern === "none" ? 0 : readFormNumber("rubber_hole_diameter_mm", geom.hole_diameter_mm || 6);
+      geom.slot_count = clampInt(readFormNumber("rubber_slot_count", geom.slot_count || 0), 0, 24, 0);
+      geom.slot_width_deg = geom.slot_count === 0 ? 0 : readFormNumber("rubber_slot_width_deg", geom.slot_width_deg || 18);
+      geom.slot_depth_mm = geom.slot_count === 0 ? 0 : readFormNumber("rubber_slot_depth_mm", geom.slot_depth_mm || Math.max(1, geom.rubber_thickness_mm * 0.45));
+      geom.slot_start_angle_deg = readFormNumber("rubber_slot_start_angle_deg", geom.slot_start_angle_deg || 0);
+      geom.slot_radial_mode = formValue("rubber_slot_radial_mode", geom.slot_radial_mode || "outer");
+      geom.slot_axial_mode = formValue("rubber_slot_axial_mode", geom.slot_axial_mode || "through");
+      geom.slot_axial_height_mm = geom.slot_axial_mode === "centered" ? readFormNumber("rubber_slot_axial_height_mm", geom.slot_axial_height_mm || geom.height_mm * 0.5) : geom.height_mm;
       geom.inner_core_length_mm = geom.inner_sleeve_length_mm || geom.height_mm;
       geom.outer_core_length_mm = geom.height_mm;
       base.material.name = formValue("rubber_rubber_material", base.material.name || "rubber");

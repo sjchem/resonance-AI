@@ -56,17 +56,21 @@ def clean_mesh(
     remap, unique_points, merged_nodes = _merge_nodes(points, merge_tolerance)
 
     new_cells = []
+    new_cell_data: dict[str, list[np.ndarray]] = {name: [] for name in mesh.cell_data}
     removed_cells = 0
-    for block in mesh.cells:
+    for block_index, block in enumerate(mesh.cells):
         data = remap[np.asarray(block.data, dtype=int)]
         keep_mask = _non_degenerate_mask(data)
         removed_cells += int(np.count_nonzero(~keep_mask))
         kept = data[keep_mask]
         if kept.size:
             new_cells.append((block.type, kept))
+            for name, values_by_block in mesh.cell_data.items():
+                if block_index < len(values_by_block):
+                    new_cell_data[name].append(np.asarray(values_by_block[block_index])[keep_mask])
 
     output_file.parent.mkdir(parents=True, exist_ok=True)
-    cleaned = meshio.Mesh(points=unique_points, cells=new_cells)
+    cleaned = meshio.Mesh(points=unique_points, cells=new_cells, cell_data={name: values for name, values in new_cell_data.items() if values})
     cleaned.write(str(output_file))
 
     final_cells = int(sum(len(cells) for _, cells in new_cells))
