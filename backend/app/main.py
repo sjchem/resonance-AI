@@ -3119,6 +3119,7 @@ UI_HTML = """<!doctype html>
     let designSpaceCases = [];
     let targetStiffnessResult = null;
     let paramRenderQueued = false;
+    let uploadNeedsParametricConfirmation = false;
     // When true, ignore the uploaded mesh and render the parametric model instead
     // (set after "Convert to editable bushing").
     let preferParametric = false;
@@ -3464,6 +3465,16 @@ UI_HTML = """<!doctype html>
       meshEditMode = false;
       overrideMeshFaces = null;
       editableMesh = null;
+      currentEditIntent = null;
+      baseGeometry = null;
+      lastExport.intent = null;
+      lastExport.prompt = "";
+      lastExport.name = "model";
+      lastMeshResult = null;
+      lastShapePcaResult = null;
+      designSpaceCases = [];
+      targetStiffnessResult = null;
+      uploadNeedsParametricConfirmation = false;
       simShown = false;
       simSelectedMode = "b1";
       stopSimAnimation();
@@ -3510,6 +3521,9 @@ UI_HTML = """<!doctype html>
           meshNote = "STEP file received. I can read its dimensions, but an exact surface preview needs the geometry kernel, so I will show a sized model for now.";
         }
 
+        if (rubberBushingWorkflowActive) {
+          attachmentContexts = [];
+        }
         attachmentContexts.push(payload);
         renderAttachmentList();
         pendingDraftPrompt = draftPromptFromAttachments();
@@ -3535,18 +3549,38 @@ UI_HTML = """<!doctype html>
         if (rubberBushingWorkflowActive) {
           selectedCadEngine = "openscad";
           meshMode = "global";
-          lastExport.prompt = pendingDraftPrompt || lastExport.prompt || "Rubber bushing structured parametric JSON";
-          lastExport.intent = applyUploadedBushingPocTopology(currentEditIntent || defaultRubberBushingIntent());
+          const baseIntent = defaultRubberBushingIntent();
+          if (payload.clientMesh) {
+            const measuredDims = measureBushingFromMesh(payload.clientMesh);
+            if (measuredDims) {
+              baseIntent.geometry.outer_diameter_mm = measuredDims.outer_diameter_mm;
+              baseIntent.geometry.inner_diameter_mm = measuredDims.inner_diameter_mm;
+              baseIntent.geometry.height_mm = measuredDims.height_mm;
+            }
+          }
+          uploadNeedsParametricConfirmation = !payload.clientMesh;
+          lastExport.prompt = pendingDraftPrompt || "Rubber bushing structured parametric JSON";
+          lastExport.intent = applyUploadedBushingPocTopology(baseIntent);
           currentEditIntent = lastExport.intent;
           lastExport.cadEngine = selectedCadEngine;
           jsonOutput.textContent = JSON.stringify(lastExport.intent, null, 2);
           syncDownloadItems();
           buildParamControls(lastExport.intent);
-          await generateRubberParametricCad(lastExport.intent);
-          await runGmshMesh();
-          summaryBox.innerHTML = `
-            <p><strong>Upload context meshed.</strong> OpenSCAD CAD and global mesh now use the same rounded-square / windowed bushing schema for this POC. Edit parameters to refine the shape, or use Design Space and Target Stiffness.</p>
-          `;
+          if (payload.clientMesh) {
+            await generateRubberParametricCad(lastExport.intent);
+            await runGmshMesh();
+            summaryBox.innerHTML = `
+              <p><strong>Upload context meshed.</strong> OpenSCAD CAD and global mesh now use the same rounded-square / windowed bushing schema for this POC. Edit parameters to refine the shape, or use Design Space and Target Stiffness.</p>
+            `;
+          } else {
+            cleanupViewer();
+            preview.innerHTML = '<div class="placeholder"><p class="muted">Image/document upload is loaded as reference context. Confirm or edit OD / ID / height in Parametric input, then Generate CAD or Generate mesh.</p></div>';
+            renderMeshPanel();
+            renderSimPanel();
+            summaryBox.innerHTML = `
+              <p><strong>Upload context loaded.</strong> Image and document uploads do not contain mesh geometry. Confirm the Parametric input values before generating mesh so an earlier bushing is not reused.</p>
+            `;
+          }
         } else {
           messageParts.push('Type "proceed" to apply the dimensions and lock in the model, or type corrections/additional dimensions.');
           chatInput.value = "proceed";
@@ -4283,6 +4317,7 @@ UI_HTML = """<!doctype html>
 
       meshEditMode = true;
       preferParametric = false;
+      uploadNeedsParametricConfirmation = false;
       rubberBushingWorkflowActive = true;
       rubberBushingTab = "single";
       targetStiffnessResult = null;
@@ -4985,6 +5020,11 @@ UI_HTML = """<!doctype html>
 
     async function runGmshMesh() {
       const btn = document.getElementById("meshGenerateBtn");
+      if (uploadNeedsParametricConfirmation) {
+        lastMeshResult = { status: "error", message: "This image/document upload is reference-only. Confirm or edit the Parametric input values, then generate the mesh; upload STL for exact geometry." };
+        renderMeshPanel();
+        return;
+      }
       const intent = meshIntentForRequest();
       const prompt = (lastExport && lastExport.prompt) || pendingDraftPrompt || (intent ? "Rubber bushing structured parametric JSON" : "");
       if (!prompt.trim() && !isStructuredBushingIntentClient(intent)) {
@@ -6031,6 +6071,7 @@ UI_HTML = """<!doctype html>
       for (const control of paramControls.querySelectorAll("[data-rubber-key]")) {
         const eventName = control.tagName === "SELECT" ? "change" : "input";
         control.addEventListener(eventName, () => {
+          uploadNeedsParametricConfirmation = false;
           syncRubberForm(control.dataset.rubberKey || "");
           updateRubberIntentFromSingleForm();
         });
@@ -6040,6 +6081,7 @@ UI_HTML = """<!doctype html>
         reset.addEventListener("click", () => {
           currentEditIntent = normalizeRubberBushingIntent(defaultRubberBushingIntent());
           targetStiffnessResult = null;
+          uploadNeedsParametricConfirmation = false;
           buildParamControls(currentEditIntent);
         });
       }
@@ -6167,6 +6209,7 @@ UI_HTML = """<!doctype html>
 
     async function generateRubberParametricCad(intent) {
       const payloadIntent = normalizeRubberBushingIntent(intent || currentEditIntent || defaultRubberBushingIntent());
+      uploadNeedsParametricConfirmation = false;
       startActivity("Generating CAD", ["Reading structured JSON", "Calling CAD API", "Rendering preview"]);
       try {
         const response = await fetch("/generate-parametric-cad", {
@@ -6263,6 +6306,7 @@ UI_HTML = """<!doctype html>
 
     function applyRubberDesignIntent(intent) {
       currentEditIntent = normalizeRubberBushingIntent(intent);
+      uploadNeedsParametricConfirmation = false;
       lastExport.intent = currentEditIntent;
       lastExport.name = exportBaseName(currentEditIntent);
       jsonOutput.textContent = JSON.stringify(currentEditIntent, null, 2);
