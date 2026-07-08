@@ -285,6 +285,8 @@ async def generate_mesh(payload: dict) -> dict:
         element_size_mm = None
     if element_size_mm is not None and element_size_mm <= 0:
         element_size_mm = None
+    mesh_mode = _mesh_mode_from_payload(payload)
+    global_template = payload.get("global_template") if isinstance(payload.get("global_template"), dict) else {}
 
     repo_root = Path(__file__).resolve().parents[2]
     if str(repo_root) not in sys.path:
@@ -311,9 +313,18 @@ async def generate_mesh(payload: dict) -> dict:
         step_path: Path | None = None
         if _is_structured_bushing_intent(intent):
             raw_mesh = work_dir / f"{name}_hex.vtk"
-            mesh_result = generate_bushing_hex_mesh(intent, raw_mesh, target_size_mm=element_size_mm)
-            mesh_format = "Mapped structured hexahedral slotted-bushing mesh" if mesh_result.mesh_kind == "mapped_slotted_bushing_hex" else "Mapped structured hexahedral bushing mesh"
+            mesh_result = generate_bushing_hex_mesh(
+                intent,
+                raw_mesh,
+                target_size_mm=element_size_mm,
+                mesh_mode=mesh_mode,
+                template=global_template,
+            )
             mesh_strategy = mesh_result.mesh_kind
+            if mesh_result.global_compatible:
+                mesh_format = "Global dataset-compatible hexahedral bushing mesh"
+            else:
+                mesh_format = "Mapped structured hexahedral slotted-bushing mesh" if mesh_result.mesh_kind == "mapped_slotted_bushing_hex" else "Mapped structured hexahedral bushing mesh"
         else:
             cad_code = -1
             last_exc: Exception | None = None
@@ -380,6 +391,7 @@ async def generate_mesh(payload: dict) -> dict:
             "tetrahedra": tetrahedra,
             "hexahedra": hexahedra,
             "cell_counts": cell_counts,
+            "global_mesh": _global_mesh_payload(mesh_result),
             "min_edge_mm": mesh_result.min_edge_mm,
             "max_edge_mm": mesh_result.max_edge_mm,
             "cleaning": {
@@ -438,6 +450,22 @@ def _is_structured_bushing_intent(intent: dict) -> bool:
     except (TypeError, ValueError):
         return False
     return part_type in {"bushing", "rubber_mount"} and outer_diameter > 0 and inner_diameter > 0 and height > 0
+
+
+def _mesh_mode_from_payload(payload: dict) -> str:
+    mode = str(payload.get("mesh_mode") or "structured").strip().lower()
+    return "global" if mode in {"global", "global_template", "dataset"} else "structured"
+
+
+def _global_mesh_payload(mesh_result) -> dict:
+    return {
+        "enabled": bool(getattr(mesh_result, "global_compatible", False)),
+        "template_id": getattr(mesh_result, "template_id", "") or None,
+        "circumferential_divisions": getattr(mesh_result, "circumferential_divisions", 0),
+        "radial_divisions": getattr(mesh_result, "radial_divisions", 0),
+        "axial_divisions": getattr(mesh_result, "axial_divisions", 0),
+        "shared_connectivity": bool(getattr(mesh_result, "global_compatible", False)),
+    }
 
 
 def _mesh_cell_counts(mesh_path: Path) -> dict[str, int]:
@@ -641,6 +669,8 @@ async def run_fem(payload: dict) -> dict:
         mode = 1
     mode = max(1, min(mode, num_modes))
     material = str(payload.get("material", "")).strip() or None
+    mesh_mode = _mesh_mode_from_payload(payload)
+    global_template = payload.get("global_template") if isinstance(payload.get("global_template"), dict) else {}
 
     repo_root = Path(__file__).resolve().parents[2]
     if str(repo_root) not in sys.path:
@@ -689,7 +719,7 @@ async def run_fem(payload: dict) -> dict:
             sim_dir.mkdir(parents=True, exist_ok=True)
             raw_mesh = sim_dir / f"{name}.vtk"
             clean_mesh_path = sim_dir / f"{name}_clean.vtk"
-            generate_bushing_hex_mesh(intent, raw_mesh)
+            generate_bushing_hex_mesh(intent, raw_mesh, mesh_mode=mesh_mode, template=global_template)
             clean_mesh(raw_mesh, clean_mesh_path)
             setup = ModalSetup(
                 mesh_file=clean_mesh_path,
@@ -2182,6 +2212,42 @@ UI_HTML = """<!doctype html>
       flex-direction: column;
       gap: 8px;
     }
+    .mesh-controls {
+      display: grid;
+      gap: 10px;
+      padding: 10px;
+      background: #f8fbff;
+      border: 1px solid var(--line);
+      border-radius: 3px;
+    }
+    .mesh-template-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .mesh-control-field label {
+      margin-bottom: 4px;
+      font-size: 12px;
+    }
+    .mesh-control-field input,
+    .mesh-control-field select {
+      padding: 7px 9px;
+      font-size: 13px;
+    }
+    .mesh-global-summary {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .mesh-global-summary span {
+      padding: 5px 8px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: #fff;
+      font-size: 12px;
+      color: var(--muted);
+    }
     .mesh-output {
       padding: 10px;
       background: #f8fbff;
@@ -2775,6 +2841,8 @@ UI_HTML = """<!doctype html>
     let chatHistory = [];
     let lastExport = { mesh: null, canvas: null, intent: null, prompt: "", name: "model" };
     let lastMeshResult = null;
+    let meshMode = "structured";
+    let globalMeshTemplate = { circumferential_divisions: 96, radial_divisions: 8, axial_divisions: 16 };
     // Persistent camera so live parametric edits keep the same view angle.
     let viewerCamera = { rotationX: -0.55, rotationY: 0.78, zoom: 1 };
     let meshCamera = { rotationX: -0.55, rotationY: 0.78, zoom: 1 };
@@ -4293,11 +4361,60 @@ UI_HTML = """<!doctype html>
         '<span class="sim-head-actions">' +
         '<button type="button" class="sim-btn" id="meshGenerateBtn">Generate mesh</button>' +
         '</span></div>' +
+        meshControlsHtml() +
         '<p class="muted" style="margin:10px 0 0">Mesh result appears below the CAD model preview.</p>' +
         '</div>';
       const btn = document.getElementById("meshGenerateBtn");
       if (btn) btn.addEventListener("click", runGmshMesh);
+      bindMeshControls();
       renderMeshOutputPanel();
+    }
+
+    function meshControlsHtml() {
+      return (
+        '<div class="mesh-controls">' +
+        '<div class="mesh-control-field full"><label for="meshModeSelect">Mesh mode</label>' +
+        '<select id="meshModeSelect"><option value="structured"' + (meshMode === "structured" ? " selected" : "") + '>Structured hex</option><option value="global"' + (meshMode === "global" ? " selected" : "") + '>Global dataset mesh</option></select></div>' +
+        '<div class="mesh-template-grid">' +
+        '<div class="mesh-control-field"><label for="globalCircumDivisions">Circum.</label><input id="globalCircumDivisions" type="number" min="24" max="192" step="4" value="' + globalMeshTemplate.circumferential_divisions + '"></div>' +
+        '<div class="mesh-control-field"><label for="globalRadialDivisions">Radial</label><input id="globalRadialDivisions" type="number" min="2" max="32" step="1" value="' + globalMeshTemplate.radial_divisions + '"></div>' +
+        '<div class="mesh-control-field"><label for="globalAxialDivisions">Axial</label><input id="globalAxialDivisions" type="number" min="3" max="64" step="1" value="' + globalMeshTemplate.axial_divisions + '"></div>' +
+        '</div>' +
+        '<p class="muted" style="margin:0">Global mode keeps node IDs and element connectivity shared across the dataset.</p>' +
+        '</div>'
+      );
+    }
+
+    function bindMeshControls() {
+      const modeSelect = document.getElementById("meshModeSelect");
+      if (modeSelect) {
+        modeSelect.addEventListener("change", () => {
+          meshMode = modeSelect.value === "global" ? "global" : "structured";
+          lastMeshResult = null;
+          renderMeshPanel();
+        });
+      }
+      const fields = [
+        ["globalCircumDivisions", "circumferential_divisions", 24, 192, 96],
+        ["globalRadialDivisions", "radial_divisions", 2, 32, 8],
+        ["globalAxialDivisions", "axial_divisions", 3, 64, 16],
+      ];
+      fields.forEach(([id, key, min, max, fallback]) => {
+        const input = document.getElementById(id);
+        if (!input) return;
+        input.addEventListener("input", () => {
+          globalMeshTemplate[key] = readClampedInput(input, min, max, fallback);
+          lastMeshResult = null;
+          renderMeshOutputPanel();
+        });
+      });
+    }
+
+    function meshRequestOptions() {
+      return {
+        mesh_mode: meshMode,
+        global_template: Object.assign({}, globalMeshTemplate),
+      };
     }
 
     function renderMeshOutputPanel() {
@@ -4331,10 +4448,12 @@ UI_HTML = """<!doctype html>
       const cleaning = result.cleaning || {};
       const ready = q.ready_for_fem ? "Ready for FEM" : "Needs attention";
       const strategyNote = meshStrategyNote(result);
+      const globalHtml = globalMeshHtml(result.global_mesh);
       return (
         '<div class="mesh-output">' +
         '<strong>' + ready + '</strong> · ' + escapeHtml(result.mesh_format || "Gmsh mesh") +
         strategyNote +
+        globalHtml +
         '<div class="mesh-stats">' +
         '<span>Nodes: <strong>' + formatInt(result.nodes) + '</strong></span>' +
         '<span>Hexahedra: <strong>' + formatInt(result.hexahedra) + '</strong></span>' +
@@ -4353,10 +4472,24 @@ UI_HTML = """<!doctype html>
 
     function meshStrategyNote(result) {
       if (!result || !result.mesh_strategy) return "";
+      if (result.mesh_strategy === "global_bushing_hex" || result.mesh_strategy === "global_slotted_bushing_hex") {
+        return '<div class="muted" style="margin-top:6px">Global dataset mesh: node count and hex connectivity are fixed by the selected template.</div>';
+      }
       if (result.mesh_strategy === "structured_hex") {
         return '<div class="muted" style="margin-top:6px">Pure structured hex/swept mesh succeeded for this geometry.</div>';
       }
       return '<div class="muted" style="margin-top:6px">Hex-only meshing is required for this workflow.</div>';
+    }
+
+    function globalMeshHtml(globalMesh) {
+      if (!globalMesh || !globalMesh.enabled) return "";
+      return (
+        '<div class="mesh-global-summary">' +
+        '<span>Template: <strong>' + escapeHtml(globalMesh.template_id || "global") + '</strong></span>' +
+        '<span>Connectivity: <strong>' + (globalMesh.shared_connectivity ? "shared" : "unique") + '</strong></span>' +
+        '<span>Divisions: <strong>C' + formatInt(globalMesh.circumferential_divisions) + ' / R' + formatInt(globalMesh.radial_divisions) + ' / A' + formatInt(globalMesh.axial_divisions) + '</strong></span>' +
+        '</div>'
+      );
     }
 
     function meshViewerHtml(mesh) {
@@ -4422,6 +4555,7 @@ UI_HTML = """<!doctype html>
             prompt: prompt,
             name: lastExport.name || "model",
             intent: lastExport.intent || {},
+            ...meshRequestOptions(),
           }),
         });
         const payload = await response.json().catch(() => ({}));
@@ -5033,6 +5167,7 @@ UI_HTML = """<!doctype html>
             num_modes: femBatchCount,
             name: (lastExport && lastExport.name) || "model",
             intent: (lastExport && lastExport.intent) || {},
+            ...meshRequestOptions(),
           }),
         });
         if (!response.ok) {

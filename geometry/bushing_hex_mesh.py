@@ -16,6 +16,11 @@ class BushingHexMeshResult:
     min_edge_mm: float
     max_edge_mm: float
     mesh_kind: str = "mapped_bushing_hex"
+    global_compatible: bool = False
+    template_id: str = ""
+    circumferential_divisions: int = 0
+    radial_divisions: int = 0
+    axial_divisions: int = 0
 
     @property
     def hex_count(self) -> int:
@@ -31,6 +36,8 @@ def generate_bushing_hex_mesh(
     output_file: Path | str,
     *,
     target_size_mm: float | None = None,
+    mesh_mode: str = "structured",
+    template: dict[str, Any] | None = None,
 ) -> BushingHexMeshResult:
     """Write a pure C3D8-compatible bushing mesh from structured JSON.
 
@@ -61,23 +68,40 @@ def generate_bushing_hex_mesh(
     inner_sleeve_thickness = _inner_sleeve_thickness(geometry, inner_diameter)
     outer_sleeve_thickness = _outer_sleeve_thickness(geometry)
     slot_spec = _slot_spec(geometry, wall, height)
-    size = target_size_mm if target_size_mm and target_size_mm > 0 else max(min(wall / 3.0, height / 8.0), 1.0)
-    radial_count = max(2, min(12, int(ceil(wall / size))))
-    axial_count = max(3, min(40, int(ceil(height / size))))
-    circum_count = max(16, min(96, int(ceil((2.0 * pi * outer_radius) / size))))
-    if circum_count % 4:
-        circum_count += 4 - (circum_count % 4)
-    if slot_spec["count"]:
-        circum_count = _align_circumferential_count(circum_count, slot_spec["count"])
+    mode = str(mesh_mode or "structured").strip().lower()
+    global_mode = mode in {"global", "global_template", "dataset"}
+    if global_mode:
+        template_config = _global_template_config(template or geometry, slot_spec)
+        radial_count = template_config["radial"]
+        axial_count = template_config["axial"]
+        circum_count = template_config["circumferential"]
+    else:
+        size = target_size_mm if target_size_mm and target_size_mm > 0 else max(min(wall / 3.0, height / 8.0), 1.0)
+        radial_count = max(2, min(12, int(ceil(wall / size))))
+        axial_count = max(3, min(40, int(ceil(height / size))))
+        circum_count = max(16, min(96, int(ceil((2.0 * pi * outer_radius) / size))))
+        if circum_count % 4:
+            circum_count += 4 - (circum_count % 4)
+        if slot_spec["count"]:
+            circum_count = _align_circumferential_count(circum_count, slot_spec["count"])
 
     points: list[tuple[float, float, float]] = []
     node_index: dict[tuple[int, int, int], int] = {}
     for axial in range(axial_count + 1):
         z = -height / 2.0 + height * axial / axial_count
         for radial in range(radial_count + 1):
-            radius = inner_radius + wall * radial / radial_count
             for circum in range(circum_count):
                 angle = 2.0 * pi * circum / circum_count
+                radius = _node_radius(
+                    inner_radius=inner_radius,
+                    outer_radius=outer_radius,
+                    wall=wall,
+                    radial_fraction=radial / radial_count,
+                    angle_rad=angle,
+                    z=z,
+                    slot=slot_spec,
+                    global_mode=global_mode,
+                )
                 node_index[(axial, radial, circum)] = len(points)
                 points.append((radius * cos(angle), radius * sin(angle), z))
 
@@ -86,7 +110,7 @@ def generate_bushing_hex_mesh(
     for axial in range(axial_count):
         for radial in range(radial_count):
             for circum in range(circum_count):
-                if _is_slot_cell(
+                if not global_mode and _is_slot_cell(
                     axial=axial,
                     radial=radial,
                     circum=circum,
@@ -135,8 +159,106 @@ def generate_bushing_hex_mesh(
         element_counts={"hexahedron": len(cells)},
         min_edge_mm=min_edge,
         max_edge_mm=max_edge,
-        mesh_kind="mapped_slotted_bushing_hex" if slot_spec["count"] else "mapped_bushing_hex",
+        mesh_kind=_mesh_kind(global_mode, slot_spec),
+        global_compatible=global_mode,
+        template_id=_template_id(circum_count, radial_count, axial_count, slot_spec) if global_mode else "",
+        circumferential_divisions=circum_count,
+        radial_divisions=radial_count,
+        axial_divisions=axial_count,
     )
+
+
+def _global_template_config(template: dict[str, Any], slot: dict[str, Any]) -> dict[str, int]:
+    circum = _bounded_int(
+        template.get("circumferential_divisions", template.get("global_circumferential_divisions")),
+        fallback=96,
+        minimum=24,
+        maximum=192,
+    )
+    radial = _bounded_int(
+        template.get("radial_divisions", template.get("global_radial_divisions")),
+        fallback=8,
+        minimum=2,
+        maximum=32,
+    )
+    axial = _bounded_int(
+        template.get("axial_divisions", template.get("global_axial_divisions")),
+        fallback=16,
+        minimum=3,
+        maximum=64,
+    )
+    if circum % 4:
+        circum += 4 - (circum % 4)
+    slot_count = int(slot.get("count") or 0)
+    if slot_count > 0 and circum < slot_count * 6:
+        circum = slot_count * 6
+        if circum % 4:
+            circum += 4 - (circum % 4)
+    return {"circumferential": circum, "radial": radial, "axial": axial}
+
+
+def _bounded_int(value: Any, *, fallback: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(round(float(value)))
+    except (TypeError, ValueError):
+        parsed = fallback
+    return max(minimum, min(maximum, parsed))
+
+
+def _node_radius(
+    *,
+    inner_radius: float,
+    outer_radius: float,
+    wall: float,
+    radial_fraction: float,
+    angle_rad: float,
+    z: float,
+    slot: dict[str, Any],
+    global_mode: bool,
+) -> float:
+    if not global_mode or int(slot.get("count") or 0) <= 0:
+        return inner_radius + wall * radial_fraction
+    influence = _slot_node_influence(angle_rad * 180.0 / pi, z, slot)
+    max_depth = max(0.0, min(float(slot["depth_mm"]), wall * 0.94))
+    local_outer = max(inner_radius + max(wall * 0.06, 0.5), outer_radius - max_depth * influence)
+    return inner_radius + (local_outer - inner_radius) * radial_fraction
+
+
+def _slot_node_influence(angle_deg: float, z: float, slot: dict[str, Any]) -> float:
+    count = int(slot.get("count") or 0)
+    if count <= 0:
+        return 0.0
+    half_width = max(float(slot["width_deg"]) / 2.0, 0.5)
+    pitch = 360.0 / count
+    angular = 0.0
+    for index in range(count):
+        center = float(slot["start_angle_deg"]) + pitch * index
+        distance = _angle_distance_deg(angle_deg, center)
+        if distance <= half_width:
+            t = distance / half_width
+            angular = max(angular, 0.5 * (1.0 + cos(pi * t)))
+    if angular <= 0.0:
+        return 0.0
+    if slot.get("axial_mode") != "centered":
+        return angular
+    half_height = max(float(slot["axial_height_mm"]) / 2.0, 1e-6)
+    distance_z = abs(z)
+    if distance_z >= half_height:
+        return 0.0
+    axial = 0.5 * (1.0 + cos(pi * distance_z / half_height))
+    return angular * axial
+
+
+def _mesh_kind(global_mode: bool, slot: dict[str, Any]) -> str:
+    if global_mode:
+        return "global_slotted_bushing_hex" if slot.get("count") else "global_bushing_hex"
+    return "mapped_slotted_bushing_hex" if slot.get("count") else "mapped_bushing_hex"
+
+
+def _template_id(circum_count: int, radial_count: int, axial_count: int, slot: dict[str, Any]) -> str:
+    slot_count = int(slot.get("count") or 0)
+    family = f"{slot_count}-slot" if slot_count else "plain"
+    return f"{family}-c{circum_count}-r{radial_count}-a{axial_count}"
 
 
 def _slot_spec(geometry: dict[str, Any], wall: float, height: float) -> dict[str, Any]:
