@@ -4816,15 +4816,21 @@ UI_HTML = """<!doctype html>
         updateAnalysisResultsVisibility();
         return;
       }
+      const displayMesh = meshSurfaceForDisplay(lastMeshResult);
       meshOutputPanel.innerHTML =
         '<div class="mesh-block analysis-result-block">' +
         '<div class="sim-head"><strong>Mesh result</strong><span class="muted">Below CAD preview</span></div>' +
-        '<div id="meshOutput">' + meshResultHtml(lastMeshResult) + '</div>' +
+        '<div id="meshOutput">' + meshResultHtml(lastMeshResult, displayMesh) + '</div>' +
         '</div>';
       updateAnalysisResultsVisibility();
-      if (lastMeshResult && lastMeshResult.surface_mesh) {
-        renderGmshMeshCanvas(document.getElementById("meshViewer"), lastMeshResult.surface_mesh);
+      if (displayMesh) {
+        renderGmshMeshCanvas(document.getElementById("meshViewer"), displayMesh);
       }
+    }
+
+    function meshSurfaceForDisplay(result) {
+      const uploadedSurface = uploadedMeshSurfaceForMeshResult();
+      return uploadedSurface || (result && result.surface_mesh) || null;
     }
 
     function renderShapePcaOutputPanel() {
@@ -4877,7 +4883,7 @@ UI_HTML = """<!doctype html>
       );
     }
 
-    function meshResultHtml(result) {
+    function meshResultHtml(result, displayMesh) {
       if (!result) return "";
       if (result.status === "loading") {
         return '<div class="mesh-output">Generating STEP, creating pure structured hex/swept mesh, then checking mesh quality...</div>';
@@ -4890,11 +4896,15 @@ UI_HTML = """<!doctype html>
       const ready = q.ready_for_fem ? "Ready for FEM" : "Needs attention";
       const strategyNote = meshStrategyNote(result);
       const globalHtml = globalMeshHtml(result.global_mesh);
+      const uploadPreviewNote = displayMesh && displayMesh.source === "uploaded_stl"
+        ? '<div class="muted" style="margin-top:6px">Preview surface follows the uploaded STL geometry; mesh statistics/FEM readiness use the generated structured hex mesh.</div>'
+        : "";
       return (
         '<div class="mesh-output">' +
         '<strong>' + ready + '</strong> · ' + escapeHtml(result.mesh_format || "Gmsh mesh") +
         strategyNote +
         globalHtml +
+        uploadPreviewNote +
         '<div class="mesh-stats">' +
         '<span>Nodes: <strong>' + formatInt(result.nodes) + '</strong></span>' +
         '<span>Hexahedra: <strong>' + formatInt(result.hexahedra) + '</strong></span>' +
@@ -4906,9 +4916,33 @@ UI_HTML = """<!doctype html>
         '<span>Merged nodes: <strong>' + formatInt(cleaning.merged_nodes) + '</strong></span>' +
         '<span>Removed cells: <strong>' + formatInt(cleaning.removed_cells) + '</strong></span>' +
         '</div>' +
-        meshViewerHtml(result.surface_mesh) +
+        meshViewerHtml(displayMesh || result.surface_mesh) +
         '</div>'
       );
+    }
+
+    function uploadedMeshSurfaceForMeshResult() {
+      if (!rubberBushingWorkflowActive) return null;
+      const faces = meshEditMode && editableMesh
+        ? (overrideMeshFaces || warpEditableMeshFaces((currentEditIntent && currentEditIntent.geometry) || {}))
+        : (pickUploadedMesh() ? pickUploadedMesh().faces : null);
+      if (!Array.isArray(faces) || !faces.length) return null;
+      const limitedFaces = faces.length > 12000
+        ? faces.filter((face, index) => index % Math.ceil(faces.length / 12000) === 0)
+        : faces;
+      return {
+        faces: limitedFaces.map((face) => ({
+          color: face.color || UPLOAD_MESH_COLOR,
+          value: 1,
+          points: face.points,
+        })),
+        field: "Uploaded STL surface",
+        unit: "",
+        scalar_min: 0,
+        scalar_max: 1,
+        face_count: limitedFaces.length,
+        source: "uploaded_stl",
+      };
     }
 
     function meshStrategyNote(result) {
