@@ -418,6 +418,96 @@ async def generate_mesh(payload: dict) -> dict:
         shutil.rmtree(work_dir, ignore_errors=True)
 
 
+@app.post("/shape-pca")
+async def run_shape_pca(payload: dict) -> dict:
+    """Fit/encode/reconstruct geometry PCA from global bushing mesh nodes."""
+
+    name = _safe_export_name(str(payload.get("name", "bushing_shape")))
+    intent = payload.get("intent") if isinstance(payload.get("intent"), dict) else {}
+    if not _is_structured_bushing_intent(intent):
+        raise HTTPException(status_code=400, detail="Shape PCA requires structured Rubber bushing geometry.")
+
+    try:
+        sample_count = max(4, min(40, int(payload.get("samples", 12) or 12)))
+    except (TypeError, ValueError):
+        sample_count = 12
+    try:
+        component_count = max(1, min(10, int(payload.get("components", 10) or 10)))
+    except (TypeError, ValueError):
+        component_count = 10
+    global_template = payload.get("global_template") if isinstance(payload.get("global_template"), dict) else {}
+
+    repo_root = Path(__file__).resolve().parents[2]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+
+    try:
+        from geometry.bushing_hex_mesh import generate_bushing_hex_mesh  # noqa: WPS433
+        from simulate.shape_pca import (  # noqa: WPS433
+            encode_shape,
+            fit_shape_pca,
+            reconstruction_metrics,
+            reconstruct_shape,
+            shape_pca_summary,
+            write_reconstructed_mesh,
+            write_shape_pca_model,
+        )
+    except ModuleNotFoundError as exc:
+        raise HTTPException(status_code=501, detail="Shape PCA requires meshio and NumPy dependencies.") from exc
+
+    work_dir = Path(tempfile.mkdtemp(prefix="resonance_shape_pca_"))
+    try:
+        variants = _shape_pca_variants(intent, sample_count)
+        mesh_files: list[Path] = []
+        base_mesh = work_dir / "shape_base.vtk"
+        base_result = generate_bushing_hex_mesh(
+            intent,
+            base_mesh,
+            mesh_mode="global",
+            template=global_template,
+        )
+        template_id = base_result.template_id
+
+        for index, variant in enumerate(variants):
+            mesh_path = work_dir / f"shape_sample_{index:03d}.vtk"
+            result = generate_bushing_hex_mesh(
+                variant,
+                mesh_path,
+                mesh_mode="global",
+                template=global_template,
+            )
+            if result.template_id != template_id:
+                raise HTTPException(status_code=422, detail="Generated shape PCA samples did not share one global mesh template.")
+            mesh_files.append(mesh_path)
+
+        model = fit_shape_pca(mesh_files, components=component_count, template_id=template_id)
+        alpha = encode_shape(base_mesh, model)
+        reconstructed = reconstruct_shape(alpha, model)
+        metrics = reconstruction_metrics(base_mesh, reconstructed)
+
+        artifact_dir = repo_root / "outputs" / "shape_pca" / name
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        model_path = write_shape_pca_model(model, artifact_dir / f"{name}_shape_pca.npz")
+        reconstructed_path = write_reconstructed_mesh(reconstructed, model, artifact_dir / f"{name}_reconstructed.vtk")
+        summary = shape_pca_summary(model, alpha)
+        summary.update(
+            {
+                "reconstruction": metrics,
+                "model_file": str(model_path.relative_to(repo_root)),
+                "reconstructed_mesh_file": str(reconstructed_path.relative_to(repo_root)),
+                "global_mesh": _global_mesh_payload(base_result),
+            }
+        )
+        (artifact_dir / f"{name}_shape_pca.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+        return summary
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Shape PCA failed: {exc}") from exc
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
 def _should_try_structured_hex(prompt: str, intent: dict) -> bool:
     """Use hex-first only for shapes that are likely sweepable/axisymmetric."""
 
@@ -466,6 +556,47 @@ def _global_mesh_payload(mesh_result) -> dict:
         "axial_divisions": getattr(mesh_result, "axial_divisions", 0),
         "shared_connectivity": bool(getattr(mesh_result, "global_compatible", False)),
     }
+
+
+def _shape_pca_variants(intent: dict, sample_count: int) -> list[dict]:
+    """Create topology-compatible design variants for global-mesh Shape PCA."""
+
+    base = json.loads(json.dumps(intent))
+    geometry = base.get("geometry") if isinstance(base.get("geometry"), dict) else {}
+    outer = _float_value(geometry.get("outer_diameter_mm"), 76.0)
+    inner = min(_float_value(geometry.get("inner_diameter_mm"), 28.0), outer - 1.0)
+    height = _float_value(geometry.get("height_mm"), 40.0)
+    slot_depth = _float_value(geometry.get("slot_depth_mm"), max(1.0, (outer - inner) * 0.25))
+    slot_width = _float_value(geometry.get("slot_width_deg"), 18.0)
+    corner = _float_value(geometry.get("bore_corner_radius_mm"), 4.0)
+
+    variants: list[dict] = []
+    count = max(4, sample_count)
+    for index in range(count):
+        phase = index / max(count - 1, 1)
+        wave = ((index * 37) % count) / max(count - 1, 1)
+        variant = json.loads(json.dumps(base))
+        geom = variant.setdefault("geometry", {})
+        geom["outer_diameter_mm"] = round(outer * (0.92 + 0.16 * phase), 4)
+        geom["inner_diameter_mm"] = round(max(1.0, inner * (0.94 + 0.12 * wave)), 4)
+        geom["height_mm"] = round(height * (0.88 + 0.24 * ((phase + wave) % 1.0)), 4)
+        if int(geom.get("slot_count") or 0) > 0:
+            geom["slot_depth_mm"] = round(max(0.1, slot_depth * (0.70 + 0.60 * wave)), 4)
+            geom["slot_width_deg"] = round(max(1.0, slot_width * (0.75 + 0.50 * phase)), 4)
+        if str(geom.get("bore_shape") or "round") == "rounded_square":
+            geom["bore_corner_radius_mm"] = round(max(0.0, corner * (0.75 + 0.50 * ((phase * 0.6 + wave * 0.4) % 1.0))), 4)
+        if geom["inner_diameter_mm"] >= geom["outer_diameter_mm"]:
+            geom["inner_diameter_mm"] = max(1.0, geom["outer_diameter_mm"] - 1.0)
+        variants.append(variant)
+    return variants
+
+
+def _float_value(value, fallback: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    return parsed if parsed == parsed else fallback
 
 
 def _mesh_cell_counts(mesh_path: Path) -> dict[str, int]:
@@ -656,7 +787,7 @@ async def run_fem(payload: dict) -> dict:
     name = _safe_export_name(str(payload.get("name", "model")))
     intent = payload.get("intent") if isinstance(payload.get("intent"), dict) else {}
     if not prompt and not _is_structured_bushing_intent(intent):
-      raise HTTPException(status_code=400, detail="A prompt is required to run the FEM pipeline.")
+        raise HTTPException(status_code=400, detail="A prompt is required to run the FEM pipeline.")
 
     try:
         num_modes = int(payload.get("num_modes", 6) or 6)
@@ -2262,6 +2393,21 @@ UI_HTML = """<!doctype html>
       font-size: 12px;
       color: var(--muted);
     }
+    .shape-pca-formula {
+      display: grid;
+      gap: 4px;
+      margin-bottom: 10px;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--brand);
+      font-size: 13px;
+    }
+    .shape-pca-formula span {
+      color: var(--muted);
+      font-size: 12px;
+    }
     .mesh-output {
       padding: 10px;
       background: #f8fbff;
@@ -2873,6 +3019,7 @@ UI_HTML = """<!doctype html>
           </div>
           <div class="analysis-results" id="analysisResults" hidden>
             <div id="meshOutputPanel"></div>
+            <div id="shapePcaOutputPanel"></div>
             <div id="simOutputPanel"></div>
           </div>
         </div>
@@ -2913,6 +3060,7 @@ UI_HTML = """<!doctype html>
     const simResults = document.getElementById("simResults");
     const analysisResults = document.getElementById("analysisResults");
     const meshOutputPanel = document.getElementById("meshOutputPanel");
+    const shapePcaOutputPanel = document.getElementById("shapePcaOutputPanel");
     const simOutputPanel = document.getElementById("simOutputPanel");
     const summaryBox = document.getElementById("summaryBox");
     const engineeringChatPanel = document.getElementById("engineeringChatPanel");
@@ -2952,6 +3100,7 @@ UI_HTML = """<!doctype html>
     let chatHistory = [];
     let lastExport = { mesh: null, canvas: null, intent: null, prompt: "", name: "model" };
     let lastMeshResult = null;
+    let lastShapePcaResult = null;
     let meshMode = "structured";
     let globalMeshTemplate = { circumferential_divisions: 96, radial_divisions: 8, axial_divisions: 16 };
     // Persistent camera so live parametric edits keep the same view angle.
@@ -4309,8 +4458,9 @@ UI_HTML = """<!doctype html>
     function updateAnalysisResultsVisibility() {
       if (!analysisResults) return;
       const hasMesh = meshOutputPanel && meshOutputPanel.innerHTML.trim();
+      const hasShapePca = shapePcaOutputPanel && shapePcaOutputPanel.innerHTML.trim();
       const hasSim = simOutputPanel && simOutputPanel.innerHTML.trim();
-      analysisResults.hidden = !(hasMesh || hasSim);
+      analysisResults.hidden = !(hasMesh || hasShapePca || hasSim);
     }
 
     function ensureSimOutputPanel() {
@@ -4540,6 +4690,7 @@ UI_HTML = """<!doctype html>
         cleanupMeshViewer();
         meshResults.innerHTML = "";
         if (meshOutputPanel) meshOutputPanel.innerHTML = "";
+        if (shapePcaOutputPanel) shapePcaOutputPanel.innerHTML = "";
         updateAnalysisResultsVisibility();
         return;
       }
@@ -4548,14 +4699,18 @@ UI_HTML = """<!doctype html>
         '<div class="sim-head"><strong>Gmsh mesh</strong>' +
         '<span class="sim-head-actions">' +
         '<button type="button" class="sim-btn" id="meshGenerateBtn">Generate mesh</button>' +
+        '<button type="button" class="sim-btn secondary" id="shapePcaBtn">Shape PCA</button>' +
         '</span></div>' +
         meshControlsHtml() +
         '<p class="muted" style="margin:10px 0 0">Mesh result appears below the CAD model preview.</p>' +
         '</div>';
       const btn = document.getElementById("meshGenerateBtn");
       if (btn) btn.addEventListener("click", runGmshMesh);
+      const shapeBtn = document.getElementById("shapePcaBtn");
+      if (shapeBtn) shapeBtn.addEventListener("click", runShapePca);
       bindMeshControls();
       renderMeshOutputPanel();
+      renderShapePcaOutputPanel();
     }
 
     function meshControlsHtml() {
@@ -4579,6 +4734,7 @@ UI_HTML = """<!doctype html>
         modeSelect.addEventListener("change", () => {
           meshMode = modeSelect.value === "global" ? "global" : "structured";
           lastMeshResult = null;
+          lastShapePcaResult = null;
           renderMeshPanel();
         });
       }
@@ -4593,7 +4749,9 @@ UI_HTML = """<!doctype html>
         input.addEventListener("input", () => {
           globalMeshTemplate[key] = readClampedInput(input, min, max, fallback);
           lastMeshResult = null;
+          lastShapePcaResult = null;
           renderMeshOutputPanel();
+          renderShapePcaOutputPanel();
         });
       });
     }
@@ -4622,6 +4780,56 @@ UI_HTML = """<!doctype html>
       if (lastMeshResult && lastMeshResult.surface_mesh) {
         renderGmshMeshCanvas(document.getElementById("meshViewer"), lastMeshResult.surface_mesh);
       }
+    }
+
+    function renderShapePcaOutputPanel() {
+      if (!shapePcaOutputPanel) return;
+      if (!lastShapePcaResult) {
+        shapePcaOutputPanel.innerHTML = "";
+        updateAnalysisResultsVisibility();
+        return;
+      }
+      shapePcaOutputPanel.innerHTML =
+        '<div class="mesh-block analysis-result-block shape-pca-block">' +
+        '<div class="sim-head"><strong>Shape PCA encoding</strong><span class="muted">Global mesh geometry</span></div>' +
+        shapePcaHtml(lastShapePcaResult) +
+        '</div>';
+      updateAnalysisResultsVisibility();
+    }
+
+    function shapePcaHtml(result) {
+      if (result.status === "loading") {
+        return '<div class="mesh-output">Fitting global mesh Shape PCA, encoding alpha parameters, and reconstructing the current bushing...</div>';
+      }
+      if (result.status === "error") {
+        return '<div class="mesh-output err">Shape PCA failed: ' + escapeHtml(result.message) + '</div>';
+      }
+      const reconstruction = result.reconstruction || {};
+      const components = Array.isArray(result.components) ? result.components : [];
+      const rows = components.map((pc) => (
+        '<tr>' +
+        '<td>PC' + pc.component + '</td>' +
+        '<td class="sim-value">' + formatNumber(Number(pc.alpha), 4) + '</td>' +
+        '<td class="sim-value">' + formatNumber(Number(pc.eigenvalue), 4) + '</td>' +
+        '<td class="sim-value">' + percent(pc.explained_variance_ratio) + '</td>' +
+        '<td class="sim-value">' + percent(pc.cumulative_variance_ratio) + '</td>' +
+        '</tr>'
+      )).join("");
+      return (
+        '<div class="mesh-output">' +
+        '<div class="shape-pca-formula"><strong>X ~= X_mean + sum(alpha_m * sqrt(lambda_m) * W_m)</strong><span>alpha_m = W_m^T (X - X_mean) / sqrt(lambda_m)</span></div>' +
+        '<div class="mesh-stats">' +
+        '<span>Template: <strong>' + escapeHtml(result.template_id || "global") + '</strong></span>' +
+        '<span>Samples: <strong>' + formatInt(result.sample_count) + '</strong></span>' +
+        '<span>Nodes: <strong>' + formatInt(result.node_count) + '</strong></span>' +
+        '<span>Components: <strong>' + formatInt(result.component_count) + '</strong></span>' +
+        '<span>Precision: <strong>' + formatNumber(reconstruction.precision_percent, 2) + '%</strong></span>' +
+        '<span>RMS error: <strong>' + formatNumber(reconstruction.rms_error_mm, 4) + ' mm</strong></span>' +
+        '</div>' +
+        '<table class="sim-table sim-table-rows" style="margin-top:10px"><tr><th>Component</th><th style="text-align:right">alpha</th><th style="text-align:right">lambda</th><th style="text-align:right">Variance</th><th style="text-align:right">Cumulative</th></tr>' + rows + '</table>' +
+        '<p class="muted" style="margin:8px 0 0">Model artifact: ' + escapeHtml(result.model_file || "") + ' · Reconstruction: ' + escapeHtml(result.reconstructed_mesh_file || "") + '</p>' +
+        '</div>'
+      );
     }
 
     function meshResultHtml(result) {
@@ -4757,6 +4965,50 @@ UI_HTML = """<!doctype html>
         renderMeshPanel();
       } finally {
         const nextBtn = document.getElementById("meshGenerateBtn");
+        if (nextBtn) nextBtn.disabled = false;
+      }
+    }
+
+    async function runShapePca() {
+      const btn = document.getElementById("shapePcaBtn");
+      const prompt = (lastExport && lastExport.prompt) || "Rubber bushing structured parametric JSON";
+      const intent = (lastExport && lastExport.intent) || currentEditIntent || null;
+      if (!intent || !intent.geometry) {
+        lastShapePcaResult = { status: "error", message: "Generate or upload a Rubber bushing first." };
+        renderShapePcaOutputPanel();
+        return;
+      }
+      if (btn) btn.disabled = true;
+      const priorMode = meshMode;
+      meshMode = "global";
+      lastShapePcaResult = { status: "loading" };
+      renderShapePcaOutputPanel();
+      try {
+        const response = await fetch("/shape-pca", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            prompt: prompt,
+            name: (lastExport && lastExport.name) || "bushing_shape",
+            intent: intent,
+            samples: 12,
+            components: 10,
+            ...meshRequestOptions(),
+          }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(payload.detail || "Shape PCA failed (HTTP " + response.status + ").");
+        }
+        lastShapePcaResult = Object.assign({ status: "ok" }, payload);
+        renderShapePcaOutputPanel();
+      } catch (error) {
+        lastShapePcaResult = { status: "error", message: error.message || String(error) };
+        renderShapePcaOutputPanel();
+      } finally {
+        meshMode = "global";
+        if (priorMode !== "global") renderMeshPanel();
+        const nextBtn = document.getElementById("shapePcaBtn");
         if (nextBtn) nextBtn.disabled = false;
       }
     }
