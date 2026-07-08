@@ -6256,9 +6256,27 @@ UI_HTML = """<!doctype html>
     function loadVariant(index) {
       const item = designSpaceCases[index];
       if (!item) return;
-      currentEditIntent = normalizeRubberBushingIntent(item.intent);
+      applyRubberDesignIntent(item.intent);
       rubberBushingTab = "single";
       buildParamControls(currentEditIntent);
+    }
+
+    function applyRubberDesignIntent(intent) {
+      currentEditIntent = normalizeRubberBushingIntent(intent);
+      lastExport.intent = currentEditIntent;
+      lastExport.name = exportBaseName(currentEditIntent);
+      jsonOutput.textContent = JSON.stringify(currentEditIntent, null, 2);
+      updateSummary(currentEditIntent);
+      lastMeshResult = null;
+      lastShapePcaResult = null;
+      if (meshEditMode && editableMesh) {
+        preferParametric = false;
+        overrideMeshFaces = warpEditableMeshFaces(currentEditIntent.geometry);
+        render3DPreview(currentEditIntent).catch(() => {});
+        updateSimEstimate();
+        return true;
+      }
+      return false;
     }
 
     async function findBestGeometry() {
@@ -6289,8 +6307,10 @@ UI_HTML = """<!doctype html>
         return;
       }
       targetStiffnessResult = best;
-      currentEditIntent = normalizeRubberBushingIntent(best.intent);
-      await generateRubberParametricCad(currentEditIntent);
+      const keptUploadedMesh = applyRubberDesignIntent(best.intent);
+      if (!keptUploadedMesh) {
+        await generateRubberParametricCad(currentEditIntent);
+      }
       rubberBushingTab = "target";
       buildParamControls(currentEditIntent);
     }
