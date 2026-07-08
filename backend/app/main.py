@@ -4932,11 +4932,53 @@ UI_HTML = """<!doctype html>
       return unit ? text + " " + unit : text;
     }
 
+    function isStructuredBushingIntentClient(intent) {
+      const type = String((intent && intent.part_type) || "").toLowerCase();
+      const geom = intent && intent.geometry ? intent.geometry : null;
+      if (!(type === "bushing" || type === "rubber_mount") || !geom) return false;
+      const outer = Number(geom.outer_diameter_mm);
+      const inner = Number(geom.inner_diameter_mm);
+      const height = Number(geom.height_mm);
+      return Number.isFinite(outer) && outer > 0 && Number.isFinite(inner) && inner > 0 && Number.isFinite(height) && height > 0;
+    }
+
+    function meshIntentForRequest() {
+      const candidates = [lastExport && lastExport.intent, currentEditIntent];
+      for (const candidate of candidates) {
+        if (isStructuredBushingIntentClient(candidate)) {
+          const normalized = normalizeRubberBushingIntent(candidate);
+          currentEditIntent = normalized;
+          lastExport.intent = normalized;
+          return normalized;
+        }
+      }
+
+      const uploaded = pickUploadedMesh();
+      const dims = measureBushingFromMesh(uploaded);
+      if (!dims) return null;
+
+      const measuredIntent = defaultRubberBushingIntent();
+      measuredIntent.geometry.outer_diameter_mm = dims.outer_diameter_mm;
+      measuredIntent.geometry.inner_diameter_mm = dims.inner_diameter_mm;
+      measuredIntent.geometry.height_mm = dims.height_mm;
+      const connectedIntent = applyUploadedBushingPocTopology(measuredIntent);
+      currentEditIntent = connectedIntent;
+      lastExport.intent = connectedIntent;
+      lastExport.name = exportBaseName(connectedIntent);
+      lastExport.prompt = lastExport.prompt || pendingDraftPrompt || "Rubber bushing structured parametric JSON";
+      jsonOutput.textContent = JSON.stringify(connectedIntent, null, 2);
+      downloadBtn.disabled = false;
+      buildParamControls(connectedIntent);
+      updateSummary(connectedIntent);
+      return connectedIntent;
+    }
+
     async function runGmshMesh() {
       const btn = document.getElementById("meshGenerateBtn");
-      const prompt = (lastExport && lastExport.prompt) || "";
-      if (!prompt.trim()) {
-        lastMeshResult = { status: "error", message: "Send a chat message first so Gmsh has a generated CAD model to mesh." };
+      const intent = meshIntentForRequest();
+      const prompt = (lastExport && lastExport.prompt) || pendingDraftPrompt || (intent ? "Rubber bushing structured parametric JSON" : "");
+      if (!prompt.trim() && !isStructuredBushingIntentClient(intent)) {
+        lastMeshResult = { status: "error", message: "Generate or upload a Rubber bushing first, or send a chat prompt for a general CAD model." };
         renderMeshPanel();
         return;
       }
@@ -4949,8 +4991,8 @@ UI_HTML = """<!doctype html>
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             prompt: prompt,
-            name: lastExport.name || "model",
-            intent: lastExport.intent || {},
+            name: (lastExport && lastExport.name) || exportBaseName(intent || {}) || "model",
+            intent: intent || {},
             ...meshRequestOptions(),
           }),
         });
