@@ -4261,25 +4261,35 @@ UI_HTML = """<!doctype html>
         h0: dims.height_mm,
       };
 
-      const intent = {
+      const intent = normalizeRubberBushingIntent({
         part_type: "bushing",
         material: { name: "rubber" },
         geometry: {
           outer_diameter_mm: dims.outer_diameter_mm,
           inner_diameter_mm: dims.inner_diameter_mm,
           height_mm: dims.height_mm,
+          inner_core_length_mm: Math.max(20, Math.min(71, dims.height_mm)),
+          outer_core_length_mm: Math.max(20, Math.min(55, dims.height_mm)),
+          swaging_value_mm: 3.0,
+          decking_value_mm: 0.0,
+          internal_teeth: false,
           arms: [],
           holes: [],
         },
         simulation_hints: { target_output: "cad" },
         missing_information: [],
-      };
+        ui_workflow: { product_family: "bushing", bushing_type: "rubber-bushing" },
+      });
 
       meshEditMode = true;
       preferParametric = false;
+      rubberBushingWorkflowActive = true;
+      rubberBushingTab = "single";
+      targetStiffnessResult = null;
       currentEditIntent = intent;
       lastExport.intent = intent;
       lastExport.name = exportBaseName(intent);
+      lastExport.prompt = lastExport.prompt || pendingDraftPrompt || "Rubber bushing structured parametric JSON";
       jsonOutput.textContent = JSON.stringify(intent, null, 2);
       downloadBtn.disabled = false;
 
@@ -4291,7 +4301,7 @@ UI_HTML = """<!doctype html>
         "bot",
         "This bushing is now editable while keeping its real shape: outer diameter " +
         dims.outer_diameter_mm + " mm, inner diameter " + dims.inner_diameter_mm +
-        " mm, height " + dims.height_mm + " mm. Drag the sliders to stretch it, then use Download to export."
+        " mm, height " + dims.height_mm + " mm. Design Space and Target Stiffness are now available in the Parametric input tabs."
       );
     }
 
@@ -5933,13 +5943,31 @@ UI_HTML = """<!doctype html>
       return '<div class="param-section" data-rubber-section="space">' +
         '<div class="param-section-title">Design ranges</div>' +
         '<div class="param-form-grid">' +
-        rangeField("ds_inner_diameter", "Inner diameter", 21, 35) +
-        rangeField("ds_inner_core_length", "Inner core length", 20, 71) +
-        rangeField("ds_outer_core_length", "Outer core length", 20, 55) +
+        rangeField("ds_inner_diameter", "Inner-core diameter (mm)", 21, 35) +
+        rangeField("ds_inner_core_length", "Inner-core length (mm)", 20, 71) +
+        rangeField("ds_outer_core_length", "Outer-core length (mm)", 20, 55) +
         '<div class="param-form-field full"><label for="ds_sample_count">Samples</label><select id="ds_sample_count"><option value="50">50</option><option value="100">100</option><option value="200">200</option></select></div>' +
         '</div>' +
+        bushingConditionsHtml() +
         '<div class="param-actions"><button type="button" class="param-primary" id="generateVariantsBtn">Generate Variants</button></div>' +
         '<div class="variant-output" id="variantOutput">' + designSpaceTableHtml() + '</div>' +
+        '</div>';
+    }
+
+    function bushingConditionsHtml() {
+      const geom = currentEditIntent && currentEditIntent.geometry ? currentEditIntent.geometry : {};
+      const outer = Number.isFinite(Number(geom.outer_diameter_mm)) ? Number(geom.outer_diameter_mm) : 76;
+      const swaging = Number.isFinite(Number(geom.swaging_value_mm)) ? Number(geom.swaging_value_mm) : 3.0;
+      const decking = Number.isFinite(Number(geom.decking_value_mm)) ? Number(geom.decking_value_mm) : 0.0;
+      return '<div class="best-geometry">' +
+        '<strong>Conditions</strong>' +
+        '<span>Diameter inner core: 21 to 35 mm</span>' +
+        '<span>Length inner core: 20 to 71 mm</span>' +
+        '<span>Length outer core: 20 to 55 mm</span>' +
+        '<span>Outer diameter: ' + formatNumber(outer, 1) + ' mm</span>' +
+        '<span>Swaging value: ' + formatNumber(swaging, 1) + ' mm</span>' +
+        '<span>Decking value: ' + formatNumber(decking, 1) + ' mm</span>' +
+        '<span>Internal teeth: no</span>' +
         '</div>';
     }
 
@@ -5974,17 +6002,18 @@ UI_HTML = """<!doctype html>
       return '<div class="param-section" data-rubber-section="target">' +
         '<div class="param-section-title">Targets</div>' +
         '<div class="param-form-grid">' +
-        '<div class="param-form-field"><label for="target_kx">Target Kx</label><input id="target_kx" type="number" value="1000" min="0" step="10"></div>' +
-        '<div class="param-form-field"><label for="target_ky">Target Ky</label><input id="target_ky" type="number" value="1000" min="0" step="10"></div>' +
-        '<div class="param-form-field"><label for="target_kz">Target Kz</label><input id="target_kz" type="number" value="5000" min="0" step="10"></div>' +
+        '<div class="param-form-field"><label for="target_kx">Target Kx (N/mm)</label><input id="target_kx" type="number" value="88.4" min="0" step="0.1"></div>' +
+        '<div class="param-form-field"><label for="target_ky">Target Ky (N/mm)</label><input id="target_ky" type="number" value="294.5" min="0" step="0.1"></div>' +
+        '<div class="param-form-field"><label for="target_kz">Target Kz (N/mm)</label><input id="target_kz" type="number" value="294.5" min="0" step="0.1"></div>' +
         '</div>' +
         '<div class="param-section-title">Design bounds</div>' +
         '<div class="param-form-grid">' +
-        rangeField("ts_inner_diameter", "Inner diameter", 21, 35) +
-        rangeField("ts_inner_core_length", "Inner core length", 20, 71) +
-        rangeField("ts_outer_core_length", "Outer core length", 20, 55) +
+        rangeField("ts_inner_diameter", "Inner-core diameter (mm)", 21, 35) +
+        rangeField("ts_inner_core_length", "Inner-core length (mm)", 20, 71) +
+        rangeField("ts_outer_core_length", "Outer-core length (mm)", 20, 55) +
         '<div class="param-form-field full"><label for="ts_sample_count">Sample count</label><select id="ts_sample_count"><option value="50">50</option><option value="100">100</option><option value="200">200</option></select></div>' +
         '</div>' +
+        bushingConditionsHtml() +
         '<div class="param-actions"><button type="button" class="param-primary" id="findBestGeometryBtn">Find Best Geometry</button></div>' +
         resultHtml +
         '</div>';
@@ -6233,9 +6262,9 @@ UI_HTML = """<!doctype html>
     }
 
     async function findBestGeometry() {
-      const targetKx = readFormNumber("target_kx", 1000);
-      const targetKy = readFormNumber("target_ky", 1000);
-      const targetKz = readFormNumber("target_kz", 5000);
+      const targetKx = readFormNumber("target_kx", 88.4);
+      const targetKy = readFormNumber("target_ky", 294.5);
+      const targetKz = readFormNumber("target_kz", 294.5);
       const samples = clampInt(readFormNumber("ts_sample_count", 50), 1, 200, 50);
       const idMin = readFormNumber("ts_inner_diameter_min", 21);
       const idMax = Math.max(idMin, readFormNumber("ts_inner_diameter_max", 35));
