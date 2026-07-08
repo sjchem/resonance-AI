@@ -2333,6 +2333,91 @@ UI_HTML = """<!doctype html>
     .sim-compare > div {
       min-width: 0;
     }
+    .sim-estimate-card {
+      width: 100%;
+      margin: 0 0 12px;
+      padding: 10px 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #ffffff;
+      color: var(--ink);
+      text-align: left;
+      cursor: pointer;
+    }
+    .sim-estimate-card:hover,
+    .sim-estimate-card:focus {
+      border-color: #b8c7d9;
+      background: #f8fbff;
+      outline: none;
+    }
+    .sim-estimate-card small {
+      display: block;
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 500;
+    }
+    .sim-estimate-kpis {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .sim-estimate-kpis span {
+      padding: 5px 8px;
+      border-radius: 4px;
+      background: #eef3f9;
+    }
+    .sim-modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 9998;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: rgba(7, 31, 63, 0.42);
+    }
+    .sim-modal {
+      width: min(980px, 96vw);
+      max-height: 88vh;
+      display: flex;
+      flex-direction: column;
+      border-radius: 8px;
+      background: #fff;
+      box-shadow: 0 22px 70px rgba(7, 31, 63, 0.28);
+      overflow: hidden;
+    }
+    .sim-modal-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--line);
+      background: #f8fbff;
+    }
+    .sim-modal-close {
+      width: 32px;
+      height: 32px;
+      margin: 0;
+      padding: 0;
+      border: 1px solid var(--line);
+      border-radius: 50%;
+      background: #fff;
+      color: var(--brand);
+      font-size: 22px;
+      line-height: 1;
+    }
+    .sim-modal-body {
+      padding: 16px;
+      overflow: auto;
+    }
     .sim-contour {
       min-height: 100%;
       padding: 10px;
@@ -4163,10 +4248,8 @@ UI_HTML = """<!doctype html>
         simOutputPanel.innerHTML =
           '<div class="sim-block analysis-result-block">' +
           '<div class="sim-head"><strong>Simulation result</strong><span class="muted">Below CAD preview</span></div>' +
-          '<div class="sim-compare">' +
           '<div id="simOutput"></div>' +
           '<div id="simFemContainer"></div>' +
-          '</div>' +
           '</div>';
       }
       updateAnalysisResultsVisibility();
@@ -4214,7 +4297,7 @@ UI_HTML = """<!doctype html>
           '</div>'
         );
       }).join("");
-      out.innerHTML =
+      const dashboardHtml =
         '<p class="muted">First-pass analytical estimate \u00b7 fixed-bottom \u00b7 linear-elastic ' +
         est.material.replace("_", " ") + '. Dashboard view. Run full FEM for validated results.</p>' +
         '<div class="sim-dashboard">' +
@@ -4238,13 +4321,47 @@ UI_HTML = """<!doctype html>
         '<tr><th>Mode</th><th style="text-align:right">Frequency</th></tr>' +
         rows +
         '</table>';
-      out.querySelectorAll("[data-mode]").forEach((el) => {
+      out.innerHTML =
+        '<button type="button" class="sim-estimate-card" id="openSimEstimateBtn">' +
+        '<span><strong>Analytical estimate</strong><small>Open stiffness and modal dashboard</small></span>' +
+        '<span class="sim-estimate-kpis">' +
+        '<span>Mode <strong>' + escapeHtml(selected.label) + '</strong></span>' +
+        '<span>Frequency <strong>' + formatHz(selected.hz) + '</strong></span>' +
+        '<span>Axial <strong>' + formatStiffness(est.kAxial) + '</strong></span>' +
+        '</span>' +
+        '</button>';
+      const openBtn = document.getElementById("openSimEstimateBtn");
+      if (openBtn) {
+        openBtn.addEventListener("click", () => openSimulationEstimateWindow(dashboardHtml));
+      }
+    }
+
+    function openSimulationEstimateWindow(contentHtml) {
+      const existing = document.getElementById("simEstimateModal");
+      if (existing) existing.remove();
+      const overlay = document.createElement("div");
+      overlay.id = "simEstimateModal";
+      overlay.className = "sim-modal-backdrop";
+      overlay.innerHTML =
+        '<div class="sim-modal" role="dialog" aria-modal="true" aria-label="Analytical simulation estimate">' +
+        '<div class="sim-modal-head"><strong>Analytical simulation estimate</strong><button type="button" class="sim-modal-close" aria-label="Close">×</button></div>' +
+        '<div class="sim-modal-body">' + contentHtml + '</div>' +
+        '</div>';
+      document.body.appendChild(overlay);
+      const close = () => overlay.remove();
+      overlay.addEventListener("click", (event) => {
+        if (event.target === overlay) close();
+      });
+      const closeBtn = overlay.querySelector(".sim-modal-close");
+      if (closeBtn) closeBtn.addEventListener("click", close);
+      overlay.querySelectorAll("[data-mode]").forEach((el) => {
         el.addEventListener("click", () => {
           simSelectedMode = el.getAttribute("data-mode");
           femContourMode = clampInt(selectedFemMode(), 1, femBatchCount || 6, 1);
           const contourInput = document.getElementById("simContourMode");
           if (contourInput) contourInput.value = String(femContourMode);
           renderSimOutput();
+          close();
         });
       });
     }
