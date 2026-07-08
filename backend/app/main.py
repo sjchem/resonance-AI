@@ -3385,16 +3385,18 @@ UI_HTML = """<!doctype html>
         messageParts.push(`Proposed short CAD prompt:\\n${pendingDraftPrompt}`);
         if (rubberBushingWorkflowActive) {
           selectedCadEngine = "openscad";
+          meshMode = "global";
           lastExport.prompt = pendingDraftPrompt || lastExport.prompt || "Rubber bushing structured parametric JSON";
-          lastExport.intent = currentEditIntent || normalizeRubberBushingIntent(defaultRubberBushingIntent());
+          lastExport.intent = applyUploadedBushingPocTopology(currentEditIntent || defaultRubberBushingIntent());
+          currentEditIntent = lastExport.intent;
           lastExport.cadEngine = selectedCadEngine;
           jsonOutput.textContent = JSON.stringify(lastExport.intent, null, 2);
           syncDownloadItems();
           buildParamControls(lastExport.intent);
-          renderMeshPanel();
-          renderSimPanel();
+          await generateRubberParametricCad(lastExport.intent);
+          await runGmshMesh();
           summaryBox.innerHTML = `
-            <p><strong>Upload context ready.</strong> Review or edit the Rubber bushing parameters, then Generate CAD with OpenSCAD. Design Space and Target Stiffness can use the same uploaded context.</p>
+            <p><strong>Upload context meshed.</strong> OpenSCAD CAD and global mesh now use the same rounded-square / windowed bushing schema for this POC. Edit parameters to refine the shape, or use Design Space and Target Stiffness.</p>
           `;
         } else {
           messageParts.push('Type "proceed" to apply the dimensions and lock in the model, or type corrections/additional dimensions.');
@@ -5451,6 +5453,8 @@ UI_HTML = """<!doctype html>
           hole_pattern: "none",
           hole_count: 0,
           hole_diameter_mm: 0,
+          bore_shape: "round",
+          bore_corner_radius_mm: 4,
           slot_count: 0,
           slot_width_deg: 18,
           slot_depth_mm: 10,
@@ -5501,6 +5505,8 @@ UI_HTML = """<!doctype html>
       geom.hole_pattern = ["none", "axial", "radial"].includes(String(geom.hole_pattern || "none")) ? String(geom.hole_pattern || "none") : "none";
       geom.hole_count = geom.hole_pattern === "none" ? 0 : clampInt(geom.hole_count, 1, 24, 4);
       geom.hole_diameter_mm = geom.hole_pattern === "none" ? 0 : readPositiveNumber(geom.hole_diameter_mm, 6);
+      geom.bore_shape = ["round", "rounded_square"].includes(String(geom.bore_shape || "round")) ? String(geom.bore_shape || "round") : "round";
+      geom.bore_corner_radius_mm = geom.bore_shape === "rounded_square" ? readNonNegativeNumber(geom.bore_corner_radius_mm, 4) : 0;
       geom.slot_count = clampInt(geom.slot_count, 0, 24, 0);
       geom.slot_width_deg = geom.slot_count > 0 ? readPositiveNumber(geom.slot_width_deg, 18) : 0;
       geom.slot_depth_mm = geom.slot_count > 0 ? readPositiveNumber(geom.slot_depth_mm, Math.max(1, geom.rubber_thickness_mm * 0.45)) : 0;
@@ -5597,6 +5603,8 @@ UI_HTML = """<!doctype html>
         selectField("hole_pattern", "Hole pattern", geom.hole_pattern || "none", [["none", "None"], ["axial", "Axial"], ["radial", "Radial"]]) +
         numberField("hole_count", "Number of holes", geom.hole_count, 1, 0) +
         numberField("hole_diameter_mm", "Hole diameter", geom.hole_diameter_mm, 0.5, 0) +
+        selectField("bore_shape", "Bore shape", geom.bore_shape || "round", [["round", "Round"], ["rounded_square", "Rounded square"]]) +
+        numberField("bore_corner_radius_mm", "Bore corner radius", geom.bore_corner_radius_mm, 0.5, 0) +
         numberField("slot_count", "Number of slots", geom.slot_count, 1, 0) +
         numberField("slot_width_deg", "Slot width angle", geom.slot_width_deg, 1, 0) +
         numberField("slot_depth_mm", "Slot radial depth", geom.slot_depth_mm, 0.5, 0) +
@@ -5787,6 +5795,8 @@ UI_HTML = """<!doctype html>
       geom.hole_pattern = formValue("rubber_hole_pattern", geom.hole_pattern || "none");
       geom.hole_count = geom.hole_pattern === "none" ? 0 : clampInt(readFormNumber("rubber_hole_count", geom.hole_count || 4), 1, 24, 4);
       geom.hole_diameter_mm = geom.hole_pattern === "none" ? 0 : readFormNumber("rubber_hole_diameter_mm", geom.hole_diameter_mm || 6);
+      geom.bore_shape = formValue("rubber_bore_shape", geom.bore_shape || "round");
+      geom.bore_corner_radius_mm = geom.bore_shape === "rounded_square" ? readFormNumber("rubber_bore_corner_radius_mm", geom.bore_corner_radius_mm || 4) : 0;
       geom.slot_count = clampInt(readFormNumber("rubber_slot_count", geom.slot_count || 0), 0, 24, 0);
       geom.slot_width_deg = geom.slot_count === 0 ? 0 : readFormNumber("rubber_slot_width_deg", geom.slot_width_deg || 18);
       geom.slot_depth_mm = geom.slot_count === 0 ? 0 : readFormNumber("rubber_slot_depth_mm", geom.slot_depth_mm || Math.max(1, geom.rubber_thickness_mm * 0.45));
@@ -5804,6 +5814,21 @@ UI_HTML = """<!doctype html>
       jsonOutput.textContent = JSON.stringify(currentEditIntent, null, 2);
       updateSummary(currentEditIntent);
       return currentEditIntent;
+    }
+
+    function applyUploadedBushingPocTopology(intent) {
+      const normalized = normalizeRubberBushingIntent(intent || currentEditIntent || defaultRubberBushingIntent());
+      const geom = normalized.geometry;
+      geom.bore_shape = "rounded_square";
+      geom.bore_corner_radius_mm = Math.max(2, Number(geom.bore_corner_radius_mm) || 4);
+      geom.slot_count = Number(geom.slot_count) > 0 ? geom.slot_count : 4;
+      geom.slot_width_deg = Number(geom.slot_width_deg) > 0 ? geom.slot_width_deg : 34;
+      geom.slot_depth_mm = Math.max(Number(geom.slot_depth_mm) || 0, (geom.outer_diameter_mm - geom.inner_diameter_mm) * 0.48);
+      geom.slot_start_angle_deg = Number.isFinite(Number(geom.slot_start_angle_deg)) ? Number(geom.slot_start_angle_deg) : 0;
+      geom.slot_radial_mode = "through_wall";
+      geom.slot_axial_mode = "through";
+      geom.slot_axial_height_mm = geom.height_mm;
+      return normalizeRubberBushingIntent(normalized);
     }
 
     function readFormNumber(id, fallback) {
@@ -6179,6 +6204,9 @@ UI_HTML = """<!doctype html>
       const boreOffset = Number(geometry.bore_offset_mm) || 0;
       const chamferSize = Math.max(0, Number(geometry.chamfer_mm) || 0);
       const filletSize = Math.max(0, Number(geometry.fillet_mm) || 0);
+      const previewSlotCount = Math.max(0, Math.round(Number(geometry.slot_count) || 0));
+      const previewSlotWidth = Math.max(0, Number(geometry.slot_width_deg) || 0);
+      const previewSlotStart = Number(geometry.slot_start_angle_deg) || 0;
 
       // Clamp shells so they never overlap.
       const safeSleeveOuter = Math.min(sleeveOuter, (outerRadius - innerRadius) * 0.45);
@@ -6211,9 +6239,22 @@ UI_HTML = """<!doctype html>
 
       const faces = [];
 
+      function isVisualSlotSector(index) {
+        if (!(previewSlotCount > 0) || !(previewSlotWidth > 0)) return false;
+        const angleDeg = ((index + 0.5) / segments) * 360;
+        const pitch = 360 / previewSlotCount;
+        for (let slotIndex = 0; slotIndex < previewSlotCount; slotIndex += 1) {
+          const center = previewSlotStart + slotIndex * pitch;
+          const delta = Math.abs(((angleDeg - center + 180) % 360) - 180);
+          if (delta <= previewSlotWidth / 2) return true;
+        }
+        return false;
+      }
+
       // Add a coaxial annulus shell: side walls + top/bottom rings.
       function addAnnulus(rOut, rIn, centerOutX, centerInX, color, topColor, bottomColor) {
         for (let index = 0; index < segments; index += 1) {
+          if (isVisualSlotSector(index)) continue;
           const thetaA = (index / segments) * Math.PI * 2;
           const thetaB = ((index + 1) / segments) * Math.PI * 2;
           const outerTopA = pointOnRing(rOut, thetaA, topY, centerOutX);
@@ -6310,6 +6351,7 @@ UI_HTML = """<!doctype html>
             const ringA = rings[level];
             const ringB = rings[level + 1];
             for (let index = 0; index < segments; index += 1) {
+              if (isVisualSlotSector(index)) continue;
               const thetaA = (index / segments) * Math.PI * 2;
               const thetaB = ((index + 1) / segments) * Math.PI * 2;
               const a1 = pointOnRing(ringA.radius, thetaA, ringA.y, centerX);
@@ -6334,6 +6376,7 @@ UI_HTML = """<!doctype html>
         const bottomOuter = outerRings[outerRings.length - 1];
         const bottomInner = innerRings[innerRings.length - 1];
         for (let index = 0; index < segments; index += 1) {
+          if (isVisualSlotSector(index)) continue;
           const thetaA = (index / segments) * Math.PI * 2;
           const thetaB = ((index + 1) / segments) * Math.PI * 2;
           const tOA = pointOnRing(topOuter.radius, thetaA, topOuter.y, centerOutX);

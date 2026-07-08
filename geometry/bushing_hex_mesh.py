@@ -68,6 +68,7 @@ def generate_bushing_hex_mesh(
     inner_sleeve_thickness = _inner_sleeve_thickness(geometry, inner_diameter)
     outer_sleeve_thickness = _outer_sleeve_thickness(geometry)
     slot_spec = _slot_spec(geometry, wall, height)
+    bore_spec = _bore_spec(geometry)
     mode = str(mesh_mode or "structured").strip().lower()
     global_mode = mode in {"global", "global_template", "dataset"}
     if global_mode:
@@ -100,6 +101,7 @@ def generate_bushing_hex_mesh(
                     angle_rad=angle,
                     z=z,
                     slot=slot_spec,
+                    bore=bore_spec,
                     global_mode=global_mode,
                 )
                 node_index[(axial, radial, circum)] = len(points)
@@ -214,14 +216,37 @@ def _node_radius(
     angle_rad: float,
     z: float,
     slot: dict[str, Any],
+    bore: dict[str, Any],
     global_mode: bool,
 ) -> float:
+    local_inner = _bore_radius(inner_radius, angle_rad, bore)
     if not global_mode or int(slot.get("count") or 0) <= 0:
-        return inner_radius + wall * radial_fraction
+        return local_inner + max(0.1, outer_radius - local_inner) * radial_fraction
     influence = _slot_node_influence(angle_rad * 180.0 / pi, z, slot)
     max_depth = max(0.0, min(float(slot["depth_mm"]), wall * 0.94))
-    local_outer = max(inner_radius + max(wall * 0.06, 0.5), outer_radius - max_depth * influence)
-    return inner_radius + (local_outer - inner_radius) * radial_fraction
+    local_outer = max(local_inner + max(wall * 0.06, 0.5), outer_radius - max_depth * influence)
+    return local_inner + (local_outer - local_inner) * radial_fraction
+
+
+def _bore_spec(geometry: dict[str, Any]) -> dict[str, Any]:
+    shape = str(geometry.get("bore_shape") or "round").strip().lower()
+    if shape not in {"round", "rounded_square"}:
+        shape = "round"
+    return {
+        "shape": shape,
+        "corner_radius_mm": max(0.0, _number(geometry.get("bore_corner_radius_mm"), 0.0)),
+    }
+
+
+def _bore_radius(inner_radius: float, angle_rad: float, bore: dict[str, Any]) -> float:
+    if bore.get("shape") != "rounded_square":
+        return inner_radius
+    corner = max(0.0, float(bore.get("corner_radius_mm") or 0.0))
+    exponent = 5.0 if corner <= 0 else max(3.2, min(8.0, inner_radius / max(corner, 1e-6)))
+    denom = (abs(cos(angle_rad)) ** exponent + abs(sin(angle_rad)) ** exponent) ** (1.0 / exponent)
+    if denom <= 1e-9:
+        return inner_radius
+    return inner_radius / denom
 
 
 def _slot_node_influence(angle_deg: float, z: float, slot: dict[str, Any]) -> float:

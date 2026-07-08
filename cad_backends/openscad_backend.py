@@ -63,6 +63,21 @@ def generate_openscad_bushing(spec: dict[str, Any]) -> OpenScadBushing:
         flange = "none"
         flange_diameter = 0.0
         flange_thickness = 0.0
+    bore_shape = str(geometry.get("bore_shape", "round") or "round").lower()
+    if bore_shape not in {"round", "rounded_square"}:
+        bore_shape = "round"
+    bore_corner_radius = max(0.0, _number(geometry.get("bore_corner_radius_mm"), 0.0)) if bore_shape == "rounded_square" else 0.0
+    slot_count = max(0, min(24, int(round(_number(geometry.get("slot_count"), 0.0)))))
+    slot_width_deg = max(0.0, _number(geometry.get("slot_width_deg"), 0.0)) if slot_count else 0.0
+    slot_depth = max(0.0, _number(geometry.get("slot_depth_mm"), 0.0)) if slot_count else 0.0
+    slot_start_angle = _number(geometry.get("slot_start_angle_deg"), 0.0)
+    slot_radial_mode = str(geometry.get("slot_radial_mode", "outer") or "outer").lower()
+    if slot_radial_mode not in {"outer", "through_wall"}:
+        slot_radial_mode = "outer"
+    slot_axial_mode = str(geometry.get("slot_axial_mode", "through") or "through").lower()
+    if slot_axial_mode not in {"through", "centered"}:
+        slot_axial_mode = "through"
+    slot_axial_height = height if slot_axial_mode == "through" else min(height, max(0.1, _number(geometry.get("slot_axial_height_mm"), height * 0.5)))
 
     parameters = {
         "cad_engine": "openscad",
@@ -79,6 +94,15 @@ def generate_openscad_bushing(spec: dict[str, Any]) -> OpenScadBushing:
         "flange": flange,
         "flange_diameter_mm": flange_diameter,
         "flange_thickness_mm": flange_thickness,
+        "bore_shape": bore_shape,
+        "bore_corner_radius_mm": bore_corner_radius,
+        "slot_count": slot_count,
+        "slot_width_deg": slot_width_deg,
+        "slot_depth_mm": slot_depth,
+        "slot_start_angle_deg": slot_start_angle,
+        "slot_radial_mode": slot_radial_mode,
+        "slot_axial_mode": slot_axial_mode,
+        "slot_axial_height_mm": slot_axial_height,
         "source_geometry": geometry,
     }
     return OpenScadBushing(scad_text=_render_bushing_scad(parameters), parameters=parameters)
@@ -223,6 +247,14 @@ def _render_bushing_scad(parameters: dict[str, Any]) -> str:
     flange = parameters["flange"]
     flange_diameter = parameters["flange_diameter_mm"]
     flange_thickness = parameters["flange_thickness_mm"]
+    bore_shape = parameters["bore_shape"]
+    bore_corner_radius = parameters["bore_corner_radius_mm"]
+    slot_count = parameters["slot_count"]
+    slot_width_deg = parameters["slot_width_deg"]
+    slot_depth = parameters["slot_depth_mm"]
+    slot_start_angle = parameters["slot_start_angle_deg"]
+    slot_radial_mode = parameters["slot_radial_mode"]
+    slot_axial_height = parameters["slot_axial_height_mm"]
     ro = od / 2.0
     ri = inner_diameter / 2.0
     flange_radius = flange_diameter / 2.0
@@ -244,6 +276,14 @@ inner_sleeve_length = {_scad_num(inner_sleeve_length)};
 flange_mode = "{flange}";
 flange_diameter = {_scad_num(flange_diameter)};
 flange_thickness = {_scad_num(flange_thickness)};
+bore_shape = "{bore_shape}";
+bore_corner_radius = {_scad_num(bore_corner_radius)};
+slot_count = {int(slot_count)};
+slot_width_deg = {_scad_num(slot_width_deg)};
+slot_depth = {_scad_num(slot_depth)};
+slot_start_angle = {_scad_num(slot_start_angle)};
+slot_radial_mode = "{slot_radial_mode}";
+slot_axial_height = {_scad_num(slot_axial_height)};
 
 module annular_prism(r_outer, r_inner, part_height, edge_break) {{
   safe_edge = min(max(edge_break, 0), min((r_outer - r_inner) * 0.45, part_height * 0.45));
@@ -265,23 +305,49 @@ module annular_prism(r_outer, r_inner, part_height, edge_break) {{
     ]);
 }}
 
+module rounded_square_bore_cut(size, corner_radius, cut_height) {{
+    linear_extrude(height = cut_height, center = true, convexity = 8)
+        offset(r = max(corner_radius, 0))
+            square([max(size - 2 * corner_radius, 0.1), max(size - 2 * corner_radius, 0.1)], center = true);
+}}
+
+module slot_cutouts() {{
+    if (slot_count > 0 && slot_width_deg > 0 && slot_depth > 0) {{
+        slot_pitch = 360 / slot_count;
+        tangential_width = 2 * {_scad_num(ro)} * sin(slot_width_deg / 2);
+        radial_length = slot_radial_mode == "through_wall" ? {_scad_num(ro * 2.2)} : slot_depth;
+        radial_center = slot_radial_mode == "through_wall" ? {_scad_num(ro * 0.22)} : {_scad_num(ro)} - radial_length / 2;
+        for (i = [0 : slot_count - 1])
+            rotate([0, 0, slot_start_angle + i * slot_pitch])
+                translate([radial_center, 0, 0])
+                    cube([radial_length, max(tangential_width, 0.2), slot_axial_height + 2], center = true);
+    }}
+}}
+
 module bushing() {{
-  // Outer metal sleeve, rubber annulus, then inner metal sleeve.
-  if (outer_sleeve_thickness > 0)
+    difference() {{
+        union() {{
+            // Outer metal sleeve, rubber annulus, then inner metal sleeve.
+            if (outer_sleeve_thickness > 0)
         color([0.62, 0.66, 0.70]) annular_prism({_scad_num(ro)}, {_scad_num(rubber_outer)}, outer_sleeve_length, chamfer);
 
-  color([0.06, 0.06, 0.06]) annular_prism({_scad_num(rubber_outer)}, {_scad_num(rubber_inner)}, height, chamfer);
+            color([0.06, 0.06, 0.06]) annular_prism({_scad_num(rubber_outer)}, {_scad_num(rubber_inner)}, height, chamfer);
 
-  if (inner_sleeve_thickness > 0)
+            if (inner_sleeve_thickness > 0)
         color([0.68, 0.72, 0.76]) annular_prism({_scad_num(rubber_inner)}, {_scad_num(ri)}, inner_sleeve_length, chamfer);
 
-    if (flange_mode == "top" || flange_mode == "both")
+            if (flange_mode == "top" || flange_mode == "both")
         translate([0, 0, height / 2 + flange_thickness / 2])
             color([0.62, 0.66, 0.70]) annular_prism({_scad_num(flange_radius)}, {_scad_num(ri)}, flange_thickness, 0);
 
-    if (flange_mode == "bottom" || flange_mode == "both")
+            if (flange_mode == "bottom" || flange_mode == "both")
         translate([0, 0, -height / 2 - flange_thickness / 2])
             color([0.62, 0.66, 0.70]) annular_prism({_scad_num(flange_radius)}, {_scad_num(ri)}, flange_thickness, 0);
+        }}
+        if (bore_shape == "rounded_square")
+            rounded_square_bore_cut(inner_diameter, bore_corner_radius, height + 4);
+        slot_cutouts();
+    }}
 }}
 
 bushing();
