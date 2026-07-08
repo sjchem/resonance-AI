@@ -1473,6 +1473,20 @@ UI_HTML = """<!doctype html>
       border: 1px dashed #b8c8da;
       background: #f8fbff;
     }
+    .upload-context-card .rail-card-body {
+      display: grid;
+      gap: 10px;
+    }
+    .upload-pill {
+      background: #eef8f5;
+      color: var(--cad-dark);
+      border-color: #b6ddd6;
+    }
+    .upload-context-note {
+      margin: 0;
+      font-size: 12px;
+      line-height: 1.45;
+    }
     .label-with-info {
       display: inline-flex;
       align-items: center;
@@ -2702,29 +2716,9 @@ UI_HTML = """<!doctype html>
             <span class="status-pill">Model ready</span>
           </button>
           <div class="rail-card-body" id="engineeringChatBody">
-            <div class="attachment-tools">
-              <label for="contextFile" class="label-with-info">
-                Add document, image, or old CAD model
-                <span
-                  class="info-dot"
-                  tabindex="0"
-                  aria-label="Supported file types: PDF, image jpg, JSON, STEP/STP/IGES/STL/OBJ/DXF/SCAD/FCStd"
-                  data-tooltip="Supported file types: PDF, image (jpg), JSON, STEP/STP/IGES/STL/OBJ/DXF/SCAD/FCStd"
-                >i</span>
-              </label>
-              <div class="attachment-row">
-                <input
-                  id="contextFile"
-                  type="file"
-                  accept=".pdf,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff,.step,.stp,.iges,.igs,.stl,.obj,.dxf,.scad,.fcstd,.txt,.md,.json,.xml,.csv"
-                >
-                <button id="uploadContextButton" type="button">Attach File</button>
-              </div>
-              <div id="attachmentList" class="attachment-list"></div>
-            </div>
             <div id="chatShell" class="chat-shell idle">
               <div id="chatLog" class="chat-log">
-                <div class="msg bot intro">Start by adding a PDF, image, JSON status file, or old CAD model. I will extract context and draft a short prompt for approval. Images are reference-only in this POC, so please type the key dimensions in chat.</div>
+                <div class="msg bot intro">Use chat for text instructions, corrections, and engineering decisions. Upload images, documents, or CAD models in the separate Upload Context card.</div>
               </div>
               <form id="chatForm" class="chat-composer">
                 <textarea id="chatInput" placeholder="Describe the part, main dimensions, material, and anything important for the CAD model..." autocomplete="off"></textarea>
@@ -2744,6 +2738,36 @@ UI_HTML = """<!doctype html>
             </div>
             <div class="summary-box" id="summaryBox">
               <p>Upload a file or write a request. I will summarize the proposed CAD intent before generating the model.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="rail-card upload-context-card collapsed" id="uploadContextPanel">
+          <button type="button" class="rail-card-header" id="uploadContextToggle" aria-expanded="false" aria-controls="uploadContextBody">
+            <span class="rail-card-title">Upload context</span>
+            <span class="status-pill upload-pill">Image / CAD</span>
+          </button>
+          <div class="rail-card-body" id="uploadContextBody">
+            <div class="attachment-tools">
+              <label for="contextFile" class="label-with-info">
+                Add document, image, or old CAD model
+                <span
+                  class="info-dot"
+                  tabindex="0"
+                  aria-label="Supported file types: PDF, image jpg, JSON, STEP/STP/IGES/STL/OBJ/DXF/SCAD/FCStd"
+                  data-tooltip="Supported file types: PDF, image (jpg), JSON, STEP/STP/IGES/STL/OBJ/DXF/SCAD/FCStd"
+                >i</span>
+              </label>
+              <div class="attachment-row">
+                <input
+                  id="contextFile"
+                  type="file"
+                  accept=".pdf,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff,.step,.stp,.iges,.igs,.stl,.obj,.dxf,.scad,.fcstd,.txt,.md,.json,.xml,.csv"
+                >
+                <button id="uploadContextButton" type="button">Attach File</button>
+              </div>
+              <div id="attachmentList" class="attachment-list"></div>
+              <p class="muted upload-context-note">Rubber bushing uploads can drive OpenSCAD CAD, Design Space, Target Stiffness, mesh, and FEM without using chat.</p>
             </div>
           </div>
         </section>
@@ -2893,6 +2917,8 @@ UI_HTML = """<!doctype html>
     const summaryBox = document.getElementById("summaryBox");
     const engineeringChatPanel = document.getElementById("engineeringChatPanel");
     const engineeringChatToggle = document.getElementById("engineeringChatToggle");
+    const uploadContextPanel = document.getElementById("uploadContextPanel");
+    const uploadContextToggle = document.getElementById("uploadContextToggle");
     const chatShell = document.getElementById("chatShell");
     const chatForm = document.getElementById("chatForm");
     const chatInput = document.getElementById("chatInput");
@@ -2936,6 +2962,7 @@ UI_HTML = """<!doctype html>
     let currentEditIntent = null;
     let baseGeometry = null;
     let engineeringChatOpen = true;
+    let uploadContextOpen = false;
     let paramEditorOpen = false;
     let selectedCadEngine = "cadquery";
     let rubberBushingWorkflowActive = false;
@@ -2965,6 +2992,13 @@ UI_HTML = """<!doctype html>
       setEngineeringChatOpen(false);
     }
 
+    if (uploadContextToggle) {
+      uploadContextToggle.addEventListener("click", () => {
+        setUploadContextOpen(!uploadContextOpen);
+      });
+      setUploadContextOpen(false);
+    }
+
     if (paramToggle) {
       paramToggle.addEventListener("click", () => {
         setParamEditorOpen(!paramEditorOpen);
@@ -2982,6 +3016,17 @@ UI_HTML = """<!doctype html>
       }
       if (engineeringChatOpen) {
         autoResizeChatInput();
+      }
+    }
+
+    function setUploadContextOpen(open) {
+      uploadContextOpen = Boolean(open);
+      if (uploadContextPanel) {
+        uploadContextPanel.classList.toggle("collapsed", !uploadContextOpen);
+        uploadContextPanel.classList.toggle("open", uploadContextOpen);
+      }
+      if (uploadContextToggle) {
+        uploadContextToggle.setAttribute("aria-expanded", uploadContextOpen ? "true" : "false");
       }
     }
 
@@ -3032,6 +3077,12 @@ UI_HTML = """<!doctype html>
             title: "Rubber bushing",
             desc: "Suspension & chassis bushings",
             prompt: "I want a rubber suspension bushing. Outer diameter 60 mm, inner diameter 20 mm, height 40 mm. Material: rubber, Shore A 55. Please ask me anything else needed (chamfer, fillet, load direction).",
+          },
+          {
+            key: "rubber-upload",
+            title: "Upload image / CAD",
+            desc: "Start from document, image, STEP, STL, SCAD",
+            prompt: "Create a rubber bushing from uploaded engineering context.",
           },
           {
             key: "bonded-bushing",
@@ -3132,6 +3183,10 @@ UI_HTML = """<!doctype html>
       autoResizeChatInput();
       if (key === "rubber-bushing") {
         activateRubberBushingWorkflow(item);
+        return;
+      }
+      if (key === "rubber-upload") {
+        activateRubberUploadWorkflow(item);
         return;
       }
       chatInput.focus();
@@ -3328,14 +3383,28 @@ UI_HTML = """<!doctype html>
           messageParts.push(meshNote);
         }
         messageParts.push(`Proposed short CAD prompt:\\n${pendingDraftPrompt}`);
-        messageParts.push('Type "proceed" to apply the dimensions and lock in the model, or type corrections/additional dimensions.');
+        if (rubberBushingWorkflowActive) {
+          selectedCadEngine = "openscad";
+          lastExport.prompt = pendingDraftPrompt || lastExport.prompt || "Rubber bushing structured parametric JSON";
+          lastExport.intent = currentEditIntent || normalizeRubberBushingIntent(defaultRubberBushingIntent());
+          lastExport.cadEngine = selectedCadEngine;
+          jsonOutput.textContent = JSON.stringify(lastExport.intent, null, 2);
+          syncDownloadItems();
+          buildParamControls(lastExport.intent);
+          renderMeshPanel();
+          renderSimPanel();
+          summaryBox.innerHTML = `
+            <p><strong>Upload context ready.</strong> Review or edit the Rubber bushing parameters, then Generate CAD with OpenSCAD. Design Space and Target Stiffness can use the same uploaded context.</p>
+          `;
+        } else {
+          messageParts.push('Type "proceed" to apply the dimensions and lock in the model, or type corrections/additional dimensions.');
+          chatInput.value = "proceed";
+          autoResizeChatInput();
+          summaryBox.innerHTML = `
+            <p><strong>Awaiting approval.</strong> Review the proposed short prompt in the chat. Type "proceed" to generate the structured CAD result and preview, or add corrections.</p>
+          `;
+        }
         appendMsg("bot", messageParts.join("\\n\\n"));
-
-        summaryBox.innerHTML = `
-          <p><strong>Awaiting approval.</strong> Review the proposed short prompt in the chat. Type "proceed" to generate the structured CAD result and preview, or add corrections.</p>
-        `;
-        chatInput.value = "proceed";
-        autoResizeChatInput();
         contextFile.value = "";
         completeActivity(payload.clientMesh ? "Geometry loaded" : "Draft ready");
       } catch (error) {
@@ -5344,6 +5413,18 @@ UI_HTML = """<!doctype html>
       cleanupViewer();
       preview.innerHTML = '<div class="placeholder"><p class="muted">Edit the rubber-bushing parameters, then click Generate CAD.</p></div>';
       if (paramHint) paramHint.textContent = "Rubber bushing parametric workflow is ready.";
+    }
+
+    function activateRubberUploadWorkflow(item) {
+      selectedCadEngine = "openscad";
+      activateRubberBushingWorkflow(item || { prompt: "Create a rubber bushing from uploaded engineering context." });
+      setUploadContextOpen(true);
+      setEngineeringChatOpen(false);
+      setParamEditorOpen(true);
+      if (summaryBox) {
+        summaryBox.innerHTML = '<p><strong>Upload workflow ready.</strong> Add an image, document, or CAD model. The extracted context will update the Rubber bushing workflow and keep OpenSCAD selected for parametric generation.</p>';
+      }
+      if (contextFile) contextFile.focus();
     }
 
     function defaultRubberBushingIntent() {
