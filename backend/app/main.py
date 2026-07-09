@@ -5341,11 +5341,15 @@ UI_HTML = """<!doctype html>
       }
       if (state.status === "ok" && state.data) {
         const d = state.data;
-        const hasMesh = d.fem_mesh && Array.isArray(d.fem_mesh.faces) && d.fem_mesh.faces.length;
+        const displayMesh = femSurfaceForDisplay(d);
+        const hasMesh = displayMesh && Array.isArray(displayMesh.faces) && displayMesh.faces.length;
+        const uploadFemNote = displayMesh && displayMesh.source === "uploaded_stl"
+          ? '<p class="sim-fem-msg">Contour preview is mapped onto the uploaded STL surface; modal solve values come from the structured hex surrogate.</p>'
+          : '';
         const femView = hasMesh
           ? '<div class="sim-fem-frame">' +
             '<div class="sim-fem-viewer" id="simFemViewer" aria-label="Interactive FEM contour view"></div>' +
-            femLegendHtml(d.fem_mesh) +
+            femLegendHtml(displayMesh) +
             '</div>'
           : '<img alt="von Mises stress contour for mode ' + d.mode + '" src="data:image/png;base64,' + d.contour_png_base64 + '"/>';
         const modesRows = (d.modes || []).map((m) => (
@@ -5358,6 +5362,7 @@ UI_HTML = """<!doctype html>
           '<div class="sim-contour">' +
           '<p class="sim-fem-msg"><strong>Validated FEM batch</strong> \u00b7 ' + d.num_modes + ' mode(s) solved \u00b7 showing von Mises contour for mode ' + d.mode +
           ' \u00b7 material ' + escapeHtml(d.material) + '</p>' +
+          uploadFemNote +
           femView +
           '<div class="sim-head-actions" style="margin-top:10px;justify-content:flex-end">' +
           '<button type="button" class="sim-btn" id="femCsvBtn">Download CSV</button>' +
@@ -5366,7 +5371,7 @@ UI_HTML = """<!doctype html>
           (modesRows ? ('<table class="sim-table sim-table-rows" style="margin-top:10px"><tr><th>FEM mode</th><th style="text-align:right">Frequency</th></tr>' + modesRows + '</table>') : '') +
           '</div>';
         if (hasMesh) {
-          renderFemMeshCanvas(document.getElementById("simFemViewer"), d.fem_mesh);
+          renderFemMeshCanvas(document.getElementById("simFemViewer"), displayMesh);
         }
         bindFemPcaPlot(d.pca);
         const csvBtn = document.getElementById("femCsvBtn");
@@ -5376,6 +5381,64 @@ UI_HTML = """<!doctype html>
           });
         }
       }
+    }
+
+    function femSurfaceForDisplay(data) {
+      const uploadedSurface = uploadedFemSurfaceForDisplay(data && data.fem_mesh);
+      return uploadedSurface || (data && data.fem_mesh) || null;
+    }
+
+    function uploadedFemSurfaceForDisplay(femMesh) {
+      if (!rubberBushingWorkflowActive) return null;
+      const baseSurface = uploadedMeshSurfaceForMeshResult();
+      if (!baseSurface || !Array.isArray(baseSurface.faces) || !baseSurface.faces.length) return null;
+      const bounds = computeMeshBounds(baseSurface.faces);
+      const span = Math.max(bounds.size.y, bounds.size.x, bounds.size.z, 1e-6);
+      const axis = bounds.size.y >= bounds.size.x && bounds.size.y >= bounds.size.z
+        ? "y"
+        : (bounds.size.x >= bounds.size.z ? "x" : "z");
+      const minAxis = bounds.center[axis] - bounds.size[axis] / 2;
+      const maxAxis = bounds.center[axis] + bounds.size[axis] / 2;
+      const axisSpan = Math.max(maxAxis - minAxis, span, 1e-6);
+      return {
+        faces: baseSurface.faces.map((face) => {
+          const average = face.points.reduce((sum, point) => sum + Number(point[axis] || 0), 0) / Math.max(face.points.length, 1);
+          const t = clamp((average - minAxis) / axisSpan, 0, 1);
+          return Object.assign({}, face, {
+            color: contourPreviewColor(t),
+            value: t,
+          });
+        }),
+        field: ((femMesh && femMesh.field) || "S, Mises") + " mapped preview",
+        unit: femMesh && femMesh.unit ? femMesh.unit : "",
+        scalar_min: femMesh && Number.isFinite(Number(femMesh.scalar_min)) ? Number(femMesh.scalar_min) : 0,
+        scalar_max: femMesh && Number.isFinite(Number(femMesh.scalar_max)) ? Number(femMesh.scalar_max) : 1,
+        face_count: baseSurface.faces.length,
+        source: "uploaded_stl",
+      };
+    }
+
+    function contourPreviewColor(t) {
+      const stops = [
+        [0.00, [32, 25, 156]],
+        [0.18, [0, 91, 255]],
+        [0.36, [0, 200, 255]],
+        [0.54, [64, 220, 104]],
+        [0.70, [255, 235, 59]],
+        [0.84, [255, 135, 0]],
+        [1.00, [204, 0, 0]],
+      ];
+      const value = clamp(Number(t) || 0, 0, 1);
+      for (let index = 1; index < stops.length; index += 1) {
+        const left = stops[index - 1];
+        const right = stops[index];
+        if (value <= right[0]) {
+          const local = (value - left[0]) / Math.max(right[0] - left[0], 1e-9);
+          const rgb = left[1].map((channel, channelIndex) => Math.round(channel + (right[1][channelIndex] - channel) * local));
+          return rgbToHex({ r: rgb[0], g: rgb[1], b: rgb[2] });
+        }
+      }
+      return "#cc0000";
     }
 
     function femPcaHtml(pca) {
