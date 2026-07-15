@@ -312,16 +312,39 @@ async def generate_mesh(payload: dict) -> dict:
     try:
         raw_mesh = work_dir / f"{name}_hex.msh"
         step_path: Path | None = None
+        fallback_reason = None
         if uploaded_geometry:
-          raw_mesh = work_dir / f"{name}_uploaded_tet.msh"
-          mesh_result = uploaded_geometry_to_tet_mesh(
-            uploaded_geometry,
-            raw_mesh,
-            target_size_mm=element_size_mm,
-          )
-          step_path = uploaded_geometry
-          mesh_strategy = "uploaded_geometry_tetra"
-          mesh_format = f"Exact uploaded {mesh_result.source_format} tetrahedral volume mesh"
+            raw_mesh = work_dir / f"{name}_uploaded_tet.msh"
+            try:
+                mesh_result = uploaded_geometry_to_tet_mesh(
+                    uploaded_geometry,
+                    raw_mesh,
+                    target_size_mm=element_size_mm,
+                )
+                step_path = uploaded_geometry
+                mesh_strategy = "uploaded_geometry_tetra"
+                mesh_format = f"Exact uploaded {mesh_result.source_format} tetrahedral volume mesh"
+            except Exception as exc:  # noqa: BLE001 - use bushing surrogate when exact STL is not a closed solid
+                if not _is_structured_bushing_intent(intent):
+                    raise
+                fallback_reason = (
+                    "Exact uploaded STL volume meshing failed, so Resonance AI used the editable bushing "
+                    f"structured mesh from the measured/confirmed dimensions. Exact meshing detail: {exc}"
+                )
+                raw_mesh = work_dir / f"{name}_hex.vtk"
+                mesh_result = generate_bushing_hex_mesh(
+                    intent,
+                    raw_mesh,
+                    target_size_mm=element_size_mm,
+                    mesh_mode=mesh_mode,
+                    template=global_template,
+                )
+                step_path = None
+                mesh_strategy = mesh_result.mesh_kind
+                if mesh_result.global_compatible:
+                    mesh_format = "Fallback global dataset-compatible hexahedral bushing mesh"
+                else:
+                    mesh_format = "Fallback mapped structured hexahedral bushing mesh"
         elif _is_structured_bushing_intent(intent):
             raw_mesh = work_dir / f"{name}_hex.vtk"
             mesh_result = generate_bushing_hex_mesh(
@@ -337,13 +360,13 @@ async def generate_mesh(payload: dict) -> dict:
             else:
                 mesh_format = "Mapped structured hexahedral slotted-bushing mesh" if mesh_result.mesh_kind == "mapped_slotted_bushing_hex" else "Mapped structured hexahedral bushing mesh"
         else:
-          try:
-            from text_to_cad.cad_agent import generate_with_agent  # noqa: WPS433
-          except ModuleNotFoundError as exc:
-            raise HTTPException(
-              status_code=501,
-              detail="Prompt-based meshing requires the CadQuery/text-to-CAD pipeline. Upload STEP/STL for exact uploaded-geometry meshing.",
-            ) from exc
+            try:
+                from text_to_cad.cad_agent import generate_with_agent  # noqa: WPS433
+            except ModuleNotFoundError as exc:
+                raise HTTPException(
+                    status_code=501,
+                    detail="Prompt-based meshing requires the CadQuery/text-to-CAD pipeline. Upload STEP/STL for exact uploaded-geometry meshing.",
+                ) from exc
 
             cad_code = -1
             last_exc: Exception | None = None
@@ -387,7 +410,6 @@ async def generate_mesh(payload: dict) -> dict:
                         f"Gmsh detail: {exc}"
                     ),
                 ) from exc
-        fallback_reason = None
 
         clean_mesh_path = work_dir / f"{name}_clean.vtk"
         clean_result = clean_mesh(raw_mesh, clean_mesh_path)
@@ -402,7 +424,7 @@ async def generate_mesh(payload: dict) -> dict:
             "status": "ok",
             "mesh_format": mesh_format,
             "mesh_strategy": mesh_strategy,
-            "mesh_source": "exact_uploaded_geometry" if uploaded_geometry else "generated_or_structured_geometry",
+            "mesh_source": "exact_uploaded_geometry" if uploaded_geometry and mesh_strategy == "uploaded_geometry_tetra" else "generated_or_structured_geometry",
             "fallback_reason": fallback_reason,
             "step_file": step_path.name if step_path else "structured_bushing_parameters",
             "mesh_file": raw_mesh.name,
@@ -5008,6 +5030,9 @@ UI_HTML = """<!doctype html>
       const exactUploadNote = result.mesh_source === "exact_uploaded_geometry"
         ? '<div class="muted" style="margin-top:6px">Exact uploaded-geometry mesh: statistics, FEM readiness, and preview come from the uploaded STEP/STL volume mesh.</div>'
         : "";
+      const fallbackNote = result.fallback_reason
+        ? '<div class="muted" style="margin-top:6px"><strong>Fallback:</strong> ' + escapeHtml(result.fallback_reason) + '</div>'
+        : "";
       const uploadPreviewNote = result.mesh_source !== "exact_uploaded_geometry" && displayMesh && displayMesh.source === "uploaded_stl"
         ? '<div class="muted" style="margin-top:6px">Preview surface follows the uploaded STL geometry; mesh statistics/FEM readiness use the generated structured hex mesh.</div>'
         : "";
@@ -5017,6 +5042,7 @@ UI_HTML = """<!doctype html>
         strategyNote +
         globalHtml +
         exactUploadNote +
+        fallbackNote +
         uploadPreviewNote +
         '<div class="mesh-stats">' +
         '<span>Nodes: <strong>' + formatInt(result.nodes) + '</strong></span>' +
