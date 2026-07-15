@@ -57,6 +57,10 @@ def uploaded_geometry_to_tet_mesh(
         raise ValueError("Exact uploaded-geometry FEM currently supports STEP/STP and watertight STL files.")
 
     output_file.parent.mkdir(parents=True, exist_ok=True)
+    mesh_source_file = source_file
+    repair_notes: list[str] = []
+    if suffix == ".stl":
+        mesh_source_file, repair_notes = _prepare_stl_for_volume_mesh(source_file, output_file.parent)
 
     _initialize_gmsh(gmsh)
     repaired_surface = False
@@ -65,11 +69,11 @@ def uploaded_geometry_to_tet_mesh(
         gmsh.model.add(source_file.stem + "_uploaded")
         if suffix in {".step", ".stp"}:
             source_format = "STEP"
-            gmsh.model.occ.importShapes(str(source_file))
+            gmsh.model.occ.importShapes(str(mesh_source_file))
             gmsh.model.occ.synchronize()
         else:
             source_format = "STL"
-            _import_stl_as_volume(gmsh, source_file)
+            _import_stl_as_volume(gmsh, mesh_source_file)
             repaired_surface = True
 
         diagonal = _bounding_box_diagonal(gmsh)
@@ -91,10 +95,16 @@ def uploaded_geometry_to_tet_mesh(
         gmsh.write(str(output_file))
 
         node_count, tetra_count, min_edge, max_edge = _mesh_stats(gmsh)
+    except Exception as exc:
+        if suffix == ".stl":
+            raise ValueError(_stl_volume_error(str(exc), repair_notes)) from exc
+        raise
     finally:
         gmsh.finalize()
 
     if tetra_count <= 0:
+        if suffix == ".stl":
+            raise ValueError(_stl_volume_error("Gmsh did not create tetrahedral volume elements.", repair_notes))
         raise ValueError("Gmsh did not create tetrahedral volume elements. Check that the uploaded geometry is a closed solid.")
 
     return UploadedMeshResult(
@@ -105,8 +115,61 @@ def uploaded_geometry_to_tet_mesh(
         tetra_count=tetra_count,
         min_edge_mm=min_edge,
         max_edge_mm=max_edge,
-        repaired_surface=repaired_surface,
+        repaired_surface=repaired_surface or bool(repair_notes),
     )
+
+
+def _prepare_stl_for_volume_mesh(source_file: Path, work_dir: Path) -> tuple[Path, list[str]]:
+    """Write a cleaned STL for Gmsh and return repair notes."""
+
+    try:
+        import trimesh
+    except ImportError:
+        return source_file, ["trimesh cleanup unavailable"]
+
+    try:
+        loaded = trimesh.load_mesh(str(source_file), process=True)
+        if isinstance(loaded, trimesh.Scene):
+            geometries = [geom for geom in loaded.geometry.values() if hasattr(geom, "faces") and len(geom.faces)]
+            if not geometries:
+                return source_file, ["no triangle geometry found"]
+            mesh = trimesh.util.concatenate(geometries)
+        else:
+            mesh = loaded
+    except Exception as exc:  # noqa: BLE001 - keep original STL if cleanup cannot read it
+        return source_file, [f"trimesh cleanup failed: {exc}"]
+
+    notes: list[str] = []
+    try:
+        before_faces = int(len(mesh.faces))
+        if hasattr(mesh, "unique_faces"):
+            mesh.update_faces(mesh.unique_faces())
+        if hasattr(mesh, "nondegenerate_faces"):
+            mesh.update_faces(mesh.nondegenerate_faces())
+        mesh.remove_unreferenced_vertices()
+        mesh.merge_vertices()
+        trimesh.repair.fix_normals(mesh)
+        trimesh.repair.fix_inversion(mesh)
+        filled = bool(mesh.fill_holes())
+        after_faces = int(len(mesh.faces))
+        if after_faces != before_faces:
+            notes.append(f"cleaned triangles {before_faces}->{after_faces}")
+        if filled:
+            notes.append("filled small holes")
+        if not mesh.is_watertight:
+            notes.append("STL is still not watertight after cleanup")
+        if getattr(mesh, "is_winding_consistent", True) is False:
+            notes.append("STL winding is inconsistent")
+    except Exception as exc:  # noqa: BLE001 - export best-effort processed mesh
+        notes.append(f"partial cleanup only: {exc}")
+
+    repaired_file = work_dir / f"{source_file.stem}_cleaned_for_volume.stl"
+    try:
+        mesh.export(repaired_file)
+    except Exception as exc:  # noqa: BLE001
+        notes.append(f"cleaned STL export failed: {exc}")
+        return source_file, notes
+    return repaired_file, notes or ["processed STL surface"]
 
 
 def _import_stl_as_volume(gmsh_module, source_file: Path) -> None:
@@ -143,6 +206,17 @@ def _import_stl_as_volume(gmsh_module, source_file: Path) -> None:
         "STL could not be converted into a closed volume for exact FEM. "
         "Repair the STL surface, export STEP if possible, or use the editable bushing surrogate. "
         f"Gmsh detail: {detail}"
+    )
+
+
+def _stl_volume_error(detail: str, repair_notes: list[str]) -> str:
+    notes = "; ".join(note for note in repair_notes if note)
+    note_text = f" Cleanup notes: {notes}." if notes else ""
+    return (
+        "Uploaded STL could not be converted into a tetrahedral volume mesh. "
+        "The file is likely open, self-intersecting, has overlapping internal faces, or is a surface-only shell. "
+        "For exact FEM, upload a watertight STL or STEP solid; otherwise use Convert to editable bushing for the surrogate workflow."
+        f"{note_text} Gmsh detail: {detail}"
     )
 
 
