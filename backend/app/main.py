@@ -23,7 +23,7 @@ from app.openai_client import (
     parse_cad_prompt,
 )
 from app.schemas import CADChatRequest, CADChatResponse, CADPromptOutput, CADPromptRequest
-from app.upload_context import UploadContext, build_upload_context, uploaded_geometry_path
+from app.upload_context import UploadContext, build_upload_context, persist_uploaded_geometry_bytes, uploaded_geometry_path
 from cad_backends.openscad_backend import (
     OpenScadExportError,
     OpenScadUnavailable,
@@ -569,14 +569,38 @@ def _mesh_mode_from_payload(payload: dict) -> str:
 
 def _uploaded_geometry_from_payload(payload: dict) -> Path | None:
   upload_id = str(payload.get("upload_id") or "").strip()
-  if not upload_id:
-    return None
-  path = uploaded_geometry_path(upload_id)
+  path = uploaded_geometry_path(upload_id) if upload_id else None
   if path is None:
-    raise HTTPException(status_code=404, detail="Uploaded geometry was not found. Upload the STEP/STL file again.")
+    path = _uploaded_geometry_from_inline_payload(payload)
+  if path is None:
+    return None if not upload_id else _raise_missing_uploaded_geometry()
   if path.suffix.lower() not in {".step", ".stp", ".stl"}:
     raise HTTPException(status_code=422, detail="Exact uploaded-geometry FEM currently supports STEP/STP and watertight STL files.")
   return path
+
+
+def _uploaded_geometry_from_inline_payload(payload: dict) -> Path | None:
+  encoded = str(payload.get("upload_data_base64") or "").strip()
+  if not encoded:
+    return None
+  filename = str(payload.get("upload_filename") or "uploaded_geometry.stl").strip() or "uploaded_geometry.stl"
+  content_type = str(payload.get("upload_content_type") or "application/octet-stream").strip() or None
+  try:
+    raw = base64.b64decode(encoded, validate=True)
+    return persist_uploaded_geometry_bytes(filename, content_type, raw)
+  except Exception as exc:  # noqa: BLE001
+    raise HTTPException(status_code=422, detail=f"Uploaded geometry fallback bytes could not be read: {exc}") from exc
+
+
+def _raise_missing_uploaded_geometry() -> None:
+  raise HTTPException(
+    status_code=404,
+    detail=(
+      "Uploaded geometry was not found on this server worker. The request may have reached a different Azure "
+      "container instance than the upload request. Refresh and upload the STEP/STL again; if this continues, "
+      "set RESONANCE_UPLOAD_DIR to a shared writable path such as /home/resonance-ai/uploads."
+    ),
+  )
 
 
 def _global_mesh_payload(mesh_result) -> dict:
@@ -3562,10 +3586,11 @@ UI_HTML = """<!doctype html>
         // Parse real geometry from STL uploads so the 3D viewer shows the actual part.
         let meshNote = "";
         const lowerName = (file.name || "").toLowerCase();
+        let uploadBuffer = null;
         if (lowerName.endsWith(".stl")) {
           try {
-            const buffer = await file.arrayBuffer();
-            const mesh = parseStlMesh(buffer, payload.filename);
+            uploadBuffer = await file.arrayBuffer();
+            const mesh = parseStlMesh(uploadBuffer, payload.filename);
             if (mesh) {
               payload.clientMesh = mesh;
               payload.measured = measuredSummaryFromMesh(mesh);
@@ -3580,7 +3605,13 @@ UI_HTML = """<!doctype html>
             meshNote = "The STL could not be parsed for an exact preview, so I will show a sized model instead.";
           }
         } else if (lowerName.endsWith(".step") || lowerName.endsWith(".stp")) {
+          uploadBuffer = await file.arrayBuffer();
           meshNote = "STEP file received. I can read its dimensions, but an exact surface preview needs the geometry kernel, so I will show a sized model for now.";
+        }
+        if (uploadBuffer && payload.exact_fem && payload.exact_fem.supported) {
+          payload.upload_data_base64 = arrayBufferToBase64(uploadBuffer);
+          payload.upload_filename = payload.filename || file.name || "uploaded_geometry.stl";
+          payload.upload_content_type = file.type || "application/octet-stream";
         }
 
         if (rubberBushingWorkflowActive) {
@@ -4875,6 +4906,11 @@ UI_HTML = """<!doctype html>
       if (exactUpload && exactUpload.upload_id) {
         options.upload_id = exactUpload.upload_id;
       }
+      if (exactUpload && exactUpload.upload_data_base64) {
+        options.upload_data_base64 = exactUpload.upload_data_base64;
+        options.upload_filename = exactUpload.upload_filename || exactUpload.filename || "uploaded_geometry.stl";
+        options.upload_content_type = exactUpload.upload_content_type || "application/octet-stream";
+      }
       return options;
     }
 
@@ -5135,7 +5171,7 @@ UI_HTML = """<!doctype html>
     function exactUploadedGeometryContext() {
       for (let i = attachmentContexts.length - 1; i >= 0; i -= 1) {
         const context = attachmentContexts[i];
-        if (context && context.upload_id && context.exact_fem && context.exact_fem.supported) {
+        if (context && context.exact_fem && context.exact_fem.supported && (context.upload_id || context.upload_data_base64)) {
           return context;
         }
       }
@@ -5150,8 +5186,9 @@ UI_HTML = """<!doctype html>
         return;
       }
       const intent = meshIntentForRequest();
-      const prompt = (lastExport && lastExport.prompt) || pendingDraftPrompt || (intent ? "Rubber bushing structured parametric JSON" : "");
-      if (!prompt.trim() && !isStructuredBushingIntentClient(intent)) {
+      const exactUpload = exactUploadedGeometryContext();
+      const prompt = (lastExport && lastExport.prompt) || pendingDraftPrompt || (intent ? "Rubber bushing structured parametric JSON" : (exactUpload ? "Exact uploaded geometry mesh" : ""));
+      if (!exactUpload && !prompt.trim() && !isStructuredBushingIntentClient(intent)) {
         lastMeshResult = { status: "error", message: "Generate or upload a Rubber bushing first, or send a chat prompt for a general CAD model." };
         renderMeshPanel();
         return;
@@ -5234,6 +5271,17 @@ UI_HTML = """<!doctype html>
         activeMeshViewer.dispose();
       }
       activeMeshViewer = null;
+    }
+
+    function arrayBufferToBase64(buffer) {
+      const bytes = new Uint8Array(buffer);
+      const chunkSize = 0x8000;
+      let binary = "";
+      for (let index = 0; index < bytes.length; index += chunkSize) {
+        const chunk = bytes.subarray(index, index + chunkSize);
+        binary += String.fromCharCode.apply(null, chunk);
+      }
+      return btoa(binary);
     }
 
     function renderGmshMeshCanvas(host, mesh) {

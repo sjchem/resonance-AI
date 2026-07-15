@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import re
 import struct
 import uuid
@@ -16,7 +17,10 @@ from pydantic import BaseModel, ConfigDict
 
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 MAX_CONTEXT_CHARS = 12000
-UPLOAD_STORAGE_DIR = Path(__file__).resolve().parents[2] / "outputs" / "uploads"
+LEGACY_UPLOAD_STORAGE_DIR = Path(__file__).resolve().parents[2] / "outputs" / "uploads"
+UPLOAD_STORAGE_DIR = Path(os.getenv("RESONANCE_UPLOAD_DIR") or os.getenv("UPLOAD_STORAGE_DIR") or "/home/resonance-ai/uploads")
+if not UPLOAD_STORAGE_DIR.is_absolute():
+    UPLOAD_STORAGE_DIR = Path(__file__).resolve().parents[2] / UPLOAD_STORAGE_DIR
 TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".json", ".xml", ".dxf", ".scad"}
 JSON_EXTENSIONS = {".json"}
 CAD_EXTENSIONS = {".step", ".stp", ".iges", ".igs", ".stl", ".obj", ".dxf", ".scad", ".fcstd"}
@@ -137,7 +141,30 @@ def uploaded_geometry_path(upload_id: str) -> Path | None:
 
     if not re.fullmatch(r"[a-f0-9]{32}", upload_id or ""):
         return None
-    manifest_path = UPLOAD_STORAGE_DIR / upload_id / "manifest.json"
+    for storage_dir in _upload_storage_dirs():
+        path = _uploaded_geometry_path_from_dir(upload_id, storage_dir)
+        if path is not None:
+            return path
+    return None
+
+
+def persist_uploaded_geometry_bytes(filename: str, content_type: str | None, raw: bytes) -> Path:
+    """Persist uploaded STEP/STL bytes and return the stored path."""
+
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise ValueError(f"File is too large. Maximum size is {MAX_UPLOAD_BYTES // (1024 * 1024)} MB.")
+    suffix = Path(filename or "uploaded_geometry").suffix.lower()
+    if suffix not in REAL_FEM_EXTENSIONS:
+        raise ValueError("Exact uploaded-geometry FEM currently supports STEP/STP and watertight STL files.")
+    upload_id = _persist_uploaded_geometry(filename, content_type, raw, suffix)
+    path = uploaded_geometry_path(upload_id)
+    if path is None:
+        raise FileNotFoundError("Uploaded geometry could not be persisted for meshing.")
+    return path
+
+
+def _uploaded_geometry_path_from_dir(upload_id: str, storage_dir: Path) -> Path | None:
+    manifest_path = storage_dir / upload_id / "manifest.json"
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -145,17 +172,25 @@ def uploaded_geometry_path(upload_id: str) -> Path | None:
     stored_name = Path(str(manifest.get("stored_filename") or "")).name
     if not stored_name:
         return None
-    path = UPLOAD_STORAGE_DIR / upload_id / stored_name
+    path = storage_dir / upload_id / stored_name
     try:
-        path.relative_to(UPLOAD_STORAGE_DIR)
+        path.relative_to(storage_dir)
     except ValueError:
         return None
     return path if path.exists() else None
 
 
+def _upload_storage_dirs() -> list[Path]:
+    dirs = [UPLOAD_STORAGE_DIR]
+    if LEGACY_UPLOAD_STORAGE_DIR != UPLOAD_STORAGE_DIR:
+        dirs.append(LEGACY_UPLOAD_STORAGE_DIR)
+    return dirs
+
+
 def _persist_uploaded_geometry(filename: str, content_type: str | None, raw: bytes, suffix: str) -> str:
     upload_id = uuid.uuid4().hex
-    upload_dir = UPLOAD_STORAGE_DIR / upload_id
+    storage_dir = _writable_upload_storage_dir()
+    upload_dir = storage_dir / upload_id
     upload_dir.mkdir(parents=True, exist_ok=True)
     safe_name = _safe_upload_filename(filename, suffix)
     (upload_dir / safe_name).write_bytes(raw)
@@ -170,6 +205,20 @@ def _persist_uploaded_geometry(filename: str, content_type: str | None, raw: byt
     }
     (upload_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return upload_id
+
+
+def _writable_upload_storage_dir() -> Path:
+    last_error: Exception | None = None
+    for storage_dir in _upload_storage_dirs():
+        try:
+            storage_dir.mkdir(parents=True, exist_ok=True)
+            probe = storage_dir / ".write_probe"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+            return storage_dir
+        except OSError as exc:
+            last_error = exc
+    raise OSError(f"No writable upload storage directory is available: {last_error}")
 
 
 def _safe_upload_filename(filename: str, suffix: str) -> str:
