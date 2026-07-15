@@ -110,16 +110,40 @@ def uploaded_geometry_to_tet_mesh(
 
 
 def _import_stl_as_volume(gmsh_module, source_file: Path) -> None:
-    gmsh_module.merge(str(source_file))
     angle = 40.0 * 3.141592653589793 / 180.0
-    gmsh_module.model.mesh.classifySurfaces(angle, True, True, angle)
-    gmsh_module.model.mesh.createGeometry()
-    surfaces = gmsh_module.model.getEntities(2)
-    if not surfaces:
-        raise ValueError("No closed STL surfaces were found. Repair the STL before exact FEM.")
-    loop = gmsh_module.model.geo.addSurfaceLoop([tag for _, tag in surfaces])
-    gmsh_module.model.geo.addVolume([loop])
-    gmsh_module.model.geo.synchronize()
+    attempts = (
+        ("parametrized", True, "geometry"),
+        ("relaxed", False, "geometry"),
+        ("discrete_topology", False, "topology"),
+    )
+    errors: list[str] = []
+    for index, (label, for_reparametrization, topology_method) in enumerate(attempts):
+        if index > 0:
+            gmsh_module.clear()
+            gmsh_module.model.add(source_file.stem + f"_uploaded_{label}")
+        try:
+            gmsh_module.merge(str(source_file))
+            gmsh_module.model.mesh.classifySurfaces(angle, True, for_reparametrization, angle)
+            if topology_method == "topology":
+                gmsh_module.model.mesh.createTopology(makeSimplyConnected=True, exportDiscrete=True)
+            else:
+                gmsh_module.model.mesh.createGeometry()
+            surfaces = gmsh_module.model.getEntities(2)
+            if not surfaces:
+                raise ValueError("No closed STL surfaces were found.")
+            loop = gmsh_module.model.geo.addSurfaceLoop([tag for _, tag in surfaces])
+            gmsh_module.model.geo.addVolume([loop])
+            gmsh_module.model.geo.synchronize()
+            return
+        except Exception as exc:  # noqa: BLE001 - keep trying alternative STL topology modes
+            errors.append(f"{label}: {exc}")
+
+    detail = "; ".join(errors[-2:]) if errors else "unknown STL topology error"
+    raise ValueError(
+        "STL could not be converted into a closed volume for exact FEM. "
+        "Repair the STL surface, export STEP if possible, or use the editable bushing surrogate. "
+        f"Gmsh detail: {detail}"
+    )
 
 
 def _initialize_gmsh(gmsh_module) -> None:
