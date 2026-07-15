@@ -23,7 +23,7 @@ from app.openai_client import (
     parse_cad_prompt,
 )
 from app.schemas import CADChatRequest, CADChatResponse, CADPromptOutput, CADPromptRequest
-from app.upload_context import UploadContext, build_upload_context
+from app.upload_context import UploadContext, build_upload_context, uploaded_geometry_path
 from cad_backends.openscad_backend import (
     OpenScadExportError,
     OpenScadUnavailable,
@@ -275,7 +275,8 @@ async def generate_mesh(payload: dict) -> dict:
     prompt = str(payload.get("prompt", "")).strip()
     name = _safe_export_name(str(payload.get("name", "model")))
     intent = payload.get("intent") if isinstance(payload.get("intent"), dict) else {}
-    if not prompt and not _is_structured_bushing_intent(intent):
+    uploaded_geometry = _uploaded_geometry_from_payload(payload)
+    if not uploaded_geometry and not prompt and not _is_structured_bushing_intent(intent):
         raise HTTPException(status_code=400, detail="A prompt is required to generate a mesh.")
 
     element_size = payload.get("element_size_mm")
@@ -293,7 +294,6 @@ async def generate_mesh(payload: dict) -> dict:
         sys.path.insert(0, str(repo_root))
 
     try:
-        from text_to_cad.cad_agent import generate_with_agent  # noqa: WPS433
         from geometry.bushing_hex_mesh import generate_bushing_hex_mesh  # noqa: WPS433
         from geometry.hex_swept_mesh import (  # noqa: WPS433
             StructuredHexUnavailable,
@@ -301,6 +301,7 @@ async def generate_mesh(payload: dict) -> dict:
         )
         from geometry.mesh_cleaner import clean_mesh  # noqa: WPS433
         from geometry.mesh_quality import evaluate_mesh  # noqa: WPS433
+        from geometry.uploaded_volume_mesh import uploaded_geometry_to_tet_mesh  # noqa: WPS433
     except ModuleNotFoundError as exc:
         raise HTTPException(
             status_code=501,
@@ -311,7 +312,17 @@ async def generate_mesh(payload: dict) -> dict:
     try:
         raw_mesh = work_dir / f"{name}_hex.msh"
         step_path: Path | None = None
-        if _is_structured_bushing_intent(intent):
+        if uploaded_geometry:
+          raw_mesh = work_dir / f"{name}_uploaded_tet.msh"
+          mesh_result = uploaded_geometry_to_tet_mesh(
+            uploaded_geometry,
+            raw_mesh,
+            target_size_mm=element_size_mm,
+          )
+          step_path = uploaded_geometry
+          mesh_strategy = "uploaded_geometry_tetra"
+          mesh_format = f"Exact uploaded {mesh_result.source_format} tetrahedral volume mesh"
+        elif _is_structured_bushing_intent(intent):
             raw_mesh = work_dir / f"{name}_hex.vtk"
             mesh_result = generate_bushing_hex_mesh(
                 intent,
@@ -326,6 +337,14 @@ async def generate_mesh(payload: dict) -> dict:
             else:
                 mesh_format = "Mapped structured hexahedral slotted-bushing mesh" if mesh_result.mesh_kind == "mapped_slotted_bushing_hex" else "Mapped structured hexahedral bushing mesh"
         else:
+          try:
+            from text_to_cad.cad_agent import generate_with_agent  # noqa: WPS433
+          except ModuleNotFoundError as exc:
+            raise HTTPException(
+              status_code=501,
+              detail="Prompt-based meshing requires the CadQuery/text-to-CAD pipeline. Upload STEP/STL for exact uploaded-geometry meshing.",
+            ) from exc
+
             cad_code = -1
             last_exc: Exception | None = None
             for provider in ("auto", "fallback"):
@@ -383,6 +402,7 @@ async def generate_mesh(payload: dict) -> dict:
             "status": "ok",
             "mesh_format": mesh_format,
             "mesh_strategy": mesh_strategy,
+            "mesh_source": "exact_uploaded_geometry" if uploaded_geometry else "generated_or_structured_geometry",
             "fallback_reason": fallback_reason,
             "step_file": step_path.name if step_path else "structured_bushing_parameters",
             "mesh_file": raw_mesh.name,
@@ -545,6 +565,18 @@ def _is_structured_bushing_intent(intent: dict) -> bool:
 def _mesh_mode_from_payload(payload: dict) -> str:
     mode = str(payload.get("mesh_mode") or "structured").strip().lower()
     return "global" if mode in {"global", "global_template", "dataset"} else "structured"
+
+
+def _uploaded_geometry_from_payload(payload: dict) -> Path | None:
+  upload_id = str(payload.get("upload_id") or "").strip()
+  if not upload_id:
+    return None
+  path = uploaded_geometry_path(upload_id)
+  if path is None:
+    raise HTTPException(status_code=404, detail="Uploaded geometry was not found. Upload the STEP/STL file again.")
+  if path.suffix.lower() not in {".step", ".stp", ".stl"}:
+    raise HTTPException(status_code=422, detail="Exact uploaded-geometry FEM currently supports STEP/STP and watertight STL files.")
+  return path
 
 
 def _global_mesh_payload(mesh_result) -> dict:
@@ -786,7 +818,8 @@ async def run_fem(payload: dict) -> dict:
     prompt = str(payload.get("prompt", "")).strip()
     name = _safe_export_name(str(payload.get("name", "model")))
     intent = payload.get("intent") if isinstance(payload.get("intent"), dict) else {}
-    if not prompt and not _is_structured_bushing_intent(intent):
+    uploaded_geometry = _uploaded_geometry_from_payload(payload)
+    if not uploaded_geometry and not prompt and not _is_structured_bushing_intent(intent):
         raise HTTPException(status_code=400, detail="A prompt is required to run the FEM pipeline.")
 
     try:
@@ -808,19 +841,9 @@ async def run_fem(payload: dict) -> dict:
         sys.path.insert(0, str(repo_root))
 
     try:
-        from text_to_cad.cad_agent import generate_with_agent  # noqa: WPS433
-    except ModuleNotFoundError as exc:
-        raise HTTPException(
-            status_code=501,
-            detail=(
-                "FEM requires the CadQuery pipeline, which is not installed in this "
-                "deployment. The analytical estimate above is still available."
-            ),
-        ) from exc
-
-    try:
         from geometry.bushing_hex_mesh import generate_bushing_hex_mesh  # noqa: WPS433
         from geometry.mesh_cleaner import clean_mesh  # noqa: WPS433
+        from geometry.uploaded_volume_mesh import uploaded_geometry_to_tet_mesh  # noqa: WPS433
         from simulate.pipeline import PipelineConfig, run_pipeline  # noqa: WPS433
         from simulate.materials import resolve_material  # noqa: WPS433
         from simulate.modal_solver import ModalSetup, run_modal  # noqa: WPS433
@@ -845,27 +868,55 @@ async def run_fem(payload: dict) -> dict:
 
     work_dir = Path(tempfile.mkdtemp(prefix="resonance_fem_"))
     try:
-        if _is_structured_bushing_intent(intent):
-            sim_dir = work_dir / "sim"
-            sim_dir.mkdir(parents=True, exist_ok=True)
-            raw_mesh = sim_dir / f"{name}.vtk"
-            clean_mesh_path = sim_dir / f"{name}_clean.vtk"
-            generate_bushing_hex_mesh(intent, raw_mesh, mesh_mode=mesh_mode, template=global_template)
-            clean_mesh(raw_mesh, clean_mesh_path)
-            setup = ModalSetup(
-                mesh_file=clean_mesh_path,
-                material=resolve_material(material),
-                num_modes=num_modes,
-                boundary="fixed_bottom",
-            )
-            run = run_modal(setup, sim_dir, job_name=name)
-            if not run.ok:
-                detail = run.stderr or run.stdout or "CalculiX solve failed."
-                raise HTTPException(status_code=500, detail=f"FEM solve failed: {detail}")
-            results = parse_dat(run.dat_file)
-            write_report(results, sim_dir / f"{name}_modal.json")
-            _try_modal_pca(run.frd_file, sim_dir / f"{name}_pca.json", num_modes)
-            return _structured_fem_response_payload(run.frd_file, sim_dir, name, mode, num_modes, material)
+      if uploaded_geometry:
+        sim_dir = work_dir / "sim"
+        sim_dir.mkdir(parents=True, exist_ok=True)
+        raw_mesh = sim_dir / f"{name}_uploaded_tet.msh"
+        clean_mesh_path = sim_dir / f"{name}_clean.vtk"
+        uploaded_geometry_to_tet_mesh(uploaded_geometry, raw_mesh)
+        clean_mesh(raw_mesh, clean_mesh_path)
+        setup = ModalSetup(
+          mesh_file=clean_mesh_path,
+          material=resolve_material(material),
+          num_modes=num_modes,
+          boundary="fixed_bottom",
+        )
+        run = run_modal(setup, sim_dir, job_name=name)
+        if not run.ok:
+          detail = run.stderr or run.stdout or "CalculiX solve failed."
+          raise HTTPException(status_code=500, detail=f"Uploaded-geometry FEM solve failed: {detail}")
+        results = parse_dat(run.dat_file)
+        write_report(results, sim_dir / f"{name}_modal.json")
+        _try_modal_pca(run.frd_file, sim_dir / f"{name}_pca.json", num_modes)
+        _render_modal_contour(run.frd_file, sim_dir / f"{name}_mode{mode}_mises.png", mode)
+        response = _fem_response_payload(sim_dir, name, mode, num_modes, material)
+        response["fem_source"] = "exact_uploaded_geometry"
+        response["source_file"] = uploaded_geometry.name
+        return response
+
+      if _is_structured_bushing_intent(intent):
+        sim_dir = work_dir / "sim"
+        sim_dir.mkdir(parents=True, exist_ok=True)
+        raw_mesh = sim_dir / f"{name}.vtk"
+        clean_mesh_path = sim_dir / f"{name}_clean.vtk"
+        generate_bushing_hex_mesh(intent, raw_mesh, mesh_mode=mesh_mode, template=global_template)
+        clean_mesh(raw_mesh, clean_mesh_path)
+        setup = ModalSetup(
+          mesh_file=clean_mesh_path,
+          material=resolve_material(material),
+          num_modes=num_modes,
+          boundary="fixed_bottom",
+        )
+        run = run_modal(setup, sim_dir, job_name=name)
+        if not run.ok:
+          detail = run.stderr or run.stdout or "CalculiX solve failed."
+          raise HTTPException(status_code=500, detail=f"FEM solve failed: {detail}")
+        results = parse_dat(run.dat_file)
+        write_report(results, sim_dir / f"{name}_modal.json")
+        _try_modal_pca(run.frd_file, sim_dir / f"{name}_pca.json", num_modes)
+        response = _structured_fem_response_payload(run.frd_file, sim_dir, name, mode, num_modes, material)
+        response["fem_source"] = "structured_bushing_surrogate"
+        return response
 
         # Try the configured provider ("auto" prefers Azure when available),
         # but fall back to the deterministic parser if the LLM path errors out.
@@ -873,6 +924,17 @@ async def run_fem(payload: dict) -> dict:
         # block the user from seeing a contour image.
         cad_code = -1
         last_exc: Exception | None = None
+        try:
+            from text_to_cad.cad_agent import generate_with_agent  # noqa: WPS433
+        except ModuleNotFoundError as exc:
+            raise HTTPException(
+                status_code=501,
+                detail=(
+                    "FEM requires the CadQuery pipeline, which is not installed in this "
+                    "deployment. The analytical estimate above is still available."
+                ),
+            ) from exc
+
         for provider in ("auto", "fallback"):
             try:
                 cad_code = generate_with_agent(
@@ -3545,6 +3607,9 @@ UI_HTML = """<!doctype html>
         if (meshNote) {
           messageParts.push(meshNote);
         }
+        if (payload.exact_fem && payload.exact_fem.supported) {
+          messageParts.push(payload.exact_fem.message || "Uploaded geometry is stored for exact mesh/FEM.");
+        }
         messageParts.push(`Proposed short CAD prompt:\\n${pendingDraftPrompt}`);
         if (rubberBushingWorkflowActive) {
           selectedCadEngine = "openscad";
@@ -4802,10 +4867,15 @@ UI_HTML = """<!doctype html>
     }
 
     function meshRequestOptions() {
-      return {
+      const exactUpload = exactUploadedGeometryContext();
+      const options = {
         mesh_mode: meshMode,
         global_template: Object.assign({}, globalMeshTemplate),
       };
+      if (exactUpload && exactUpload.upload_id) {
+        options.upload_id = exactUpload.upload_id;
+      }
+      return options;
     }
 
     function renderMeshOutputPanel() {
@@ -4829,6 +4899,9 @@ UI_HTML = """<!doctype html>
     }
 
     function meshSurfaceForDisplay(result) {
+      if (result && result.mesh_source === "exact_uploaded_geometry") {
+        return result.surface_mesh || null;
+      }
       const uploadedSurface = uploadedMeshSurfaceForMeshResult();
       return uploadedSurface || (result && result.surface_mesh) || null;
     }
@@ -4896,7 +4969,10 @@ UI_HTML = """<!doctype html>
       const ready = q.ready_for_fem ? "Ready for FEM" : "Needs attention";
       const strategyNote = meshStrategyNote(result);
       const globalHtml = globalMeshHtml(result.global_mesh);
-      const uploadPreviewNote = displayMesh && displayMesh.source === "uploaded_stl"
+      const exactUploadNote = result.mesh_source === "exact_uploaded_geometry"
+        ? '<div class="muted" style="margin-top:6px">Exact uploaded-geometry mesh: statistics, FEM readiness, and preview come from the uploaded STEP/STL volume mesh.</div>'
+        : "";
+      const uploadPreviewNote = result.mesh_source !== "exact_uploaded_geometry" && displayMesh && displayMesh.source === "uploaded_stl"
         ? '<div class="muted" style="margin-top:6px">Preview surface follows the uploaded STL geometry; mesh statistics/FEM readiness use the generated structured hex mesh.</div>'
         : "";
       return (
@@ -4904,6 +4980,7 @@ UI_HTML = """<!doctype html>
         '<strong>' + ready + '</strong> · ' + escapeHtml(result.mesh_format || "Gmsh mesh") +
         strategyNote +
         globalHtml +
+        exactUploadNote +
         uploadPreviewNote +
         '<div class="mesh-stats">' +
         '<span>Nodes: <strong>' + formatInt(result.nodes) + '</strong></span>' +
@@ -4952,6 +5029,9 @@ UI_HTML = """<!doctype html>
       }
       if (result.mesh_strategy === "structured_hex") {
         return '<div class="muted" style="margin-top:6px">Pure structured hex/swept mesh succeeded for this geometry.</div>';
+      }
+      if (result.mesh_strategy === "uploaded_geometry_tetra") {
+        return '<div class="muted" style="margin-top:6px">Tetrahedral volume mesh generated directly from uploaded geometry. This is the exact FEM path for arbitrary STEP/STL uploads.</div>';
       }
       return '<div class="muted" style="margin-top:6px">Hex-only meshing is required for this workflow.</div>';
     }
@@ -5050,6 +5130,16 @@ UI_HTML = """<!doctype html>
       buildParamControls(connectedIntent);
       updateSummary(connectedIntent);
       return connectedIntent;
+    }
+
+    function exactUploadedGeometryContext() {
+      for (let i = attachmentContexts.length - 1; i >= 0; i -= 1) {
+        const context = attachmentContexts[i];
+        if (context && context.upload_id && context.exact_fem && context.exact_fem.supported) {
+          return context;
+        }
+      }
+      return null;
     }
 
     async function runGmshMesh() {
@@ -5343,6 +5433,9 @@ UI_HTML = """<!doctype html>
         const d = state.data;
         const displayMesh = femSurfaceForDisplay(d);
         const hasMesh = displayMesh && Array.isArray(displayMesh.faces) && displayMesh.faces.length;
+        const exactFemNote = d.fem_source === "exact_uploaded_geometry"
+          ? '<p class="sim-fem-msg">Exact uploaded-geometry FEM: modal solve and contour are computed on the uploaded STEP/STL volume mesh.</p>'
+          : '';
         const uploadFemNote = displayMesh && displayMesh.source === "uploaded_stl"
           ? '<p class="sim-fem-msg">Contour preview is mapped onto the uploaded STL surface; modal solve values come from the structured hex surrogate.</p>'
           : '';
@@ -5362,6 +5455,7 @@ UI_HTML = """<!doctype html>
           '<div class="sim-contour">' +
           '<p class="sim-fem-msg"><strong>Validated FEM batch</strong> \u00b7 ' + d.num_modes + ' mode(s) solved \u00b7 showing von Mises contour for mode ' + d.mode +
           ' \u00b7 material ' + escapeHtml(d.material) + '</p>' +
+          exactFemNote +
           uploadFemNote +
           femView +
           '<div class="sim-head-actions" style="margin-top:10px;justify-content:flex-end">' +
@@ -5384,6 +5478,9 @@ UI_HTML = """<!doctype html>
     }
 
     function femSurfaceForDisplay(data) {
+      if (data && data.fem_source === "exact_uploaded_geometry") {
+        return data.fem_mesh || null;
+      }
       const uploadedSurface = uploadedFemSurfaceForDisplay(data && data.fem_mesh);
       return uploadedSurface || (data && data.fem_mesh) || null;
     }
@@ -5768,9 +5865,11 @@ UI_HTML = """<!doctype html>
 
     async function runFemContour() {
       const femBtn = document.getElementById("simFemBtn");
-      const prompt = (lastExport && lastExport.prompt) || "";
-      if (!prompt.trim()) {
-        lastFemContour = { status: "error", message: "Send a chat message first so the FEM has a parsed bushing prompt to solve." };
+      const exactUpload = exactUploadedGeometryContext();
+      const prompt = (lastExport && lastExport.prompt) || pendingDraftPrompt || (exactUpload ? "Exact uploaded geometry FEM" : "");
+      const intent = (lastExport && lastExport.intent) || {};
+      if (!exactUpload && !prompt.trim() && !isStructuredBushingIntentClient(intent)) {
+        lastFemContour = { status: "error", message: "Send a chat message first, upload STEP/STL geometry, or generate a Rubber bushing before running FEM." };
         renderFemContour(lastFemContour);
         return;
       }
@@ -5795,7 +5894,7 @@ UI_HTML = """<!doctype html>
             mode: femContourMode,
             num_modes: femBatchCount,
             name: (lastExport && lastExport.name) || "model",
-            intent: (lastExport && lastExport.intent) || {},
+            intent: intent,
             ...meshRequestOptions(),
           }),
         });

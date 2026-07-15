@@ -6,6 +6,7 @@ import io
 import json
 import re
 import struct
+import uuid
 import zipfile
 from pathlib import Path
 
@@ -15,11 +16,13 @@ from pydantic import BaseModel, ConfigDict
 
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 MAX_CONTEXT_CHARS = 12000
+UPLOAD_STORAGE_DIR = Path(__file__).resolve().parents[2] / "outputs" / "uploads"
 TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".json", ".xml", ".dxf", ".scad"}
 JSON_EXTENSIONS = {".json"}
 CAD_EXTENSIONS = {".step", ".stp", ".iges", ".igs", ".stl", ".obj", ".dxf", ".scad", ".fcstd"}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
 PDF_EXTENSIONS = {".pdf"}
+REAL_FEM_EXTENSIONS = {".step", ".stp", ".stl"}
 
 
 class UploadContext(BaseModel):
@@ -34,6 +37,8 @@ class UploadContext(BaseModel):
     summary: str
     extracted_text: str | None = None
     prompt_context: str
+    upload_id: str | None = None
+    exact_fem: dict | None = None
 
 
 async def build_upload_context(file: UploadFile) -> UploadContext:
@@ -108,6 +113,12 @@ def _cad_context(filename: str, content_type: str | None, raw: bytes, suffix: st
     if numeric_hints:
         summary += f" Numeric hints found: {numeric_hints}."
 
+    upload_id = None
+    exact_fem = _exact_fem_context(suffix)
+    if suffix in REAL_FEM_EXTENSIONS:
+        upload_id = _persist_uploaded_geometry(filename, content_type, raw, suffix)
+        summary += " Stored for exact uploaded-geometry mesh/FEM."
+
     return UploadContext(
         filename=filename,
         content_type=content_type,
@@ -116,7 +127,72 @@ def _cad_context(filename: str, content_type: str | None, raw: bytes, suffix: st
         summary=summary,
         extracted_text=_truncate(text),
         prompt_context=_format_prompt_context(filename, "cad", summary, text),
+        upload_id=upload_id,
+        exact_fem=exact_fem,
     )
+
+
+def uploaded_geometry_path(upload_id: str) -> Path | None:
+    """Return the persisted uploaded geometry path for a safe upload id."""
+
+    if not re.fullmatch(r"[a-f0-9]{32}", upload_id or ""):
+        return None
+    manifest_path = UPLOAD_STORAGE_DIR / upload_id / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    stored_name = Path(str(manifest.get("stored_filename") or "")).name
+    if not stored_name:
+        return None
+    path = UPLOAD_STORAGE_DIR / upload_id / stored_name
+    try:
+        path.relative_to(UPLOAD_STORAGE_DIR)
+    except ValueError:
+        return None
+    return path if path.exists() else None
+
+
+def _persist_uploaded_geometry(filename: str, content_type: str | None, raw: bytes, suffix: str) -> str:
+    upload_id = uuid.uuid4().hex
+    upload_dir = UPLOAD_STORAGE_DIR / upload_id
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = _safe_upload_filename(filename, suffix)
+    (upload_dir / safe_name).write_bytes(raw)
+    manifest = {
+        "upload_id": upload_id,
+        "filename": filename,
+        "stored_filename": safe_name,
+        "content_type": content_type,
+        "suffix": suffix,
+        "size_bytes": len(raw),
+        "exact_fem": _exact_fem_context(suffix),
+    }
+    (upload_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    return upload_id
+
+
+def _safe_upload_filename(filename: str, suffix: str) -> str:
+    stem = re.sub(r"[^a-zA-Z0-9_-]+", "_", Path(filename).stem).strip("_")[:60] or "uploaded_geometry"
+    return f"{stem}{suffix}"
+
+
+def _exact_fem_context(suffix: str) -> dict | None:
+    if suffix not in REAL_FEM_EXTENSIONS:
+        return None
+    if suffix in {".step", ".stp"}:
+        return {
+            "supported": True,
+            "source_format": "STEP",
+            "mesh_strategy": "uploaded_geometry_tetra",
+            "message": "Ready for exact uploaded-geometry tetra FEM using Gmsh/OpenCASCADE and CalculiX.",
+        }
+    return {
+        "supported": True,
+        "source_format": "STL",
+        "mesh_strategy": "uploaded_geometry_tetra",
+        "message": "Ready for exact STL tetra FEM when the STL surface is closed/watertight; otherwise geometry repair is required.",
+    }
 
 
 def _json_context(filename: str, content_type: str | None, raw: bytes) -> UploadContext:
