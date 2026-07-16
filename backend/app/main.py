@@ -4050,11 +4050,12 @@ UI_HTML = """<!doctype html>
             const projectedPoints = rotatedPoints.map((point) => projectRotatedPoint(point));
             const normal = computeFaceNormal(rotatedPoints);
             const intensity = clamp(dotProduct(normal, lightDirection) * 0.55 + 0.72, 0.28, 0.95);
+            const fillIntensity = face.smoothPreview ? 0.78 : intensity;
             const averageDepth = rotatedPoints.reduce((sum, point) => sum + point.z, 0) / rotatedPoints.length;
             return {
               projectedPoints,
               averageDepth,
-              fill: shadeColor(face.color, intensity),
+              fill: shadeColor(face.color, fillIntensity),
               stroke: shadeColor(face.color, Math.max(intensity - 0.2, 0.18)),
               smoothPreview: face.smoothPreview,
             };
@@ -4962,7 +4963,7 @@ UI_HTML = """<!doctype html>
     }
 
     function meshSurfaceForDisplay(result) {
-      if (result && result.mesh_source === "exact_uploaded_geometry") {
+      if (result && result.surface_mesh) {
         return result.surface_mesh || null;
       }
       const uploadedSurface = uploadedMeshSurfaceForMeshResult();
@@ -5077,6 +5078,7 @@ UI_HTML = """<!doctype html>
       return {
         faces: limitedFaces.map((face) => ({
           color: face.color || UPLOAD_MESH_COLOR,
+          smoothPreview: Boolean(face.smoothPreview),
           value: 1,
           points: face.points,
         })),
