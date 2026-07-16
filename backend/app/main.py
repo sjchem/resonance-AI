@@ -3973,6 +3973,7 @@ UI_HTML = """<!doctype html>
       const lightDirection = normalizeVector({ x: 0.35, y: 0.85, z: 0.4 });
       const centeredFaces = mesh.faces.map((face) => ({
         color: face.color,
+        smoothPreview: Boolean(face.smoothPreview),
         points: face.points.map((point) => ({
           x: point.x - center.x,
           y: point.y - center.y,
@@ -4055,6 +4056,7 @@ UI_HTML = """<!doctype html>
               averageDepth,
               fill: shadeColor(face.color, intensity),
               stroke: shadeColor(face.color, Math.max(intensity - 0.2, 0.18)),
+              smoothPreview: face.smoothPreview,
             };
           })
           .sort((left, right) => left.averageDepth - right.averageDepth);
@@ -4067,10 +4069,12 @@ UI_HTML = """<!doctype html>
           }
           context.closePath();
           context.fillStyle = face.fill;
-          context.strokeStyle = face.stroke;
-          context.lineWidth = 1.2;
           context.fill();
-          context.stroke();
+          if (!face.smoothPreview) {
+            context.strokeStyle = face.stroke;
+            context.lineWidth = 1.2;
+            context.stroke();
+          }
         }
       }
 
@@ -4272,7 +4276,7 @@ UI_HTML = """<!doctype html>
 
     function makeStlFace(a, b, c) {
       // Reverse winding to keep outward normals after the Z-up -> Y-up swap below.
-      return { color: UPLOAD_MESH_COLOR, points: [stlPoint(a), stlPoint(c), stlPoint(b)] };
+      return { color: UPLOAD_MESH_COLOR, smoothPreview: true, points: [stlPoint(a), stlPoint(c), stlPoint(b)] };
     }
 
     function stlPoint(p) {
@@ -4478,6 +4482,7 @@ UI_HTML = """<!doctype html>
 
       return editableMesh.originalFaces.map((face) => ({
         color: face.color,
+        smoothPreview: Boolean(face.smoothPreview),
         points: face.points.map((p) => {
           const dx = p.x - cx;
           const dz = p.z - cz;
