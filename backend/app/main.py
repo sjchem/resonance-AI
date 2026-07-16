@@ -275,7 +275,8 @@ async def generate_mesh(payload: dict) -> dict:
     prompt = str(payload.get("prompt", "")).strip()
     name = _safe_export_name(str(payload.get("name", "model")))
     intent = payload.get("intent") if isinstance(payload.get("intent"), dict) else {}
-    uploaded_geometry = _uploaded_geometry_from_payload(payload)
+    geometry_source = str(payload.get("geometry_source") or "").strip().lower()
+    uploaded_geometry = None if geometry_source == "bushing_poc_hex" else _uploaded_geometry_from_payload(payload)
     if not uploaded_geometry and not prompt and not _is_structured_bushing_intent(intent):
         raise HTTPException(status_code=400, detail="A prompt is required to generate a mesh.")
 
@@ -412,7 +413,7 @@ async def generate_mesh(payload: dict) -> dict:
             "status": "ok",
             "mesh_format": mesh_format,
             "mesh_strategy": mesh_strategy,
-            "mesh_source": "exact_uploaded_geometry" if uploaded_geometry and mesh_strategy == "uploaded_geometry_tetra" else "generated_or_structured_geometry",
+            "mesh_source": "exact_uploaded_geometry" if uploaded_geometry and mesh_strategy == "uploaded_geometry_tetra" else ("bushing_poc_hex" if geometry_source == "bushing_poc_hex" else "generated_or_structured_geometry"),
             "fallback_reason": fallback_reason,
             "step_file": step_path.name if step_path else "structured_bushing_parameters",
             "mesh_file": raw_mesh.name,
@@ -852,7 +853,8 @@ async def run_fem(payload: dict) -> dict:
     prompt = str(payload.get("prompt", "")).strip()
     name = _safe_export_name(str(payload.get("name", "model")))
     intent = payload.get("intent") if isinstance(payload.get("intent"), dict) else {}
-    uploaded_geometry = _uploaded_geometry_from_payload(payload)
+    geometry_source = str(payload.get("geometry_source") or "").strip().lower()
+    uploaded_geometry = None if geometry_source == "bushing_poc_hex" else _uploaded_geometry_from_payload(payload)
     if not uploaded_geometry and not prompt and not _is_structured_bushing_intent(intent):
         raise HTTPException(status_code=400, detail="A prompt is required to run the FEM pipeline.")
 
@@ -907,7 +909,16 @@ async def run_fem(payload: dict) -> dict:
         sim_dir.mkdir(parents=True, exist_ok=True)
         raw_mesh = sim_dir / f"{name}_uploaded_tet.msh"
         clean_mesh_path = sim_dir / f"{name}_clean.vtk"
-        uploaded_geometry_to_tet_mesh(uploaded_geometry, raw_mesh)
+        try:
+          uploaded_geometry_to_tet_mesh(uploaded_geometry, raw_mesh)
+        except Exception as exc:  # noqa: BLE001 - exact FEM requires a valid closed volume
+          raise HTTPException(
+            status_code=422,
+            detail=(
+              "FEM batch requires a successful exact volume mesh. This uploaded geometry could not be "
+              f"converted into tetrahedral solid elements. Upload a watertight STL/STEP solid. Gmsh detail: {exc}"
+            ),
+          ) from exc
         clean_mesh(raw_mesh, clean_mesh_path)
         setup = ModalSetup(
           mesh_file=clean_mesh_path,
@@ -949,7 +960,7 @@ async def run_fem(payload: dict) -> dict:
         write_report(results, sim_dir / f"{name}_modal.json")
         _try_modal_pca(run.frd_file, sim_dir / f"{name}_pca.json", num_modes)
         response = _structured_fem_response_payload(run.frd_file, sim_dir, name, mode, num_modes, material)
-        response["fem_source"] = "structured_bushing_surrogate"
+        response["fem_source"] = "bushing_poc_hex" if geometry_source == "bushing_poc_hex" else "structured_bushing_hex"
         return response
 
         # Try the configured provider ("auto" prefers Azure when available),
@@ -4930,16 +4941,22 @@ UI_HTML = """<!doctype html>
       });
     }
 
-    function meshRequestOptions() {
+    function useBushingPocHex(intent) {
+      return Boolean(exactUploadedGeometryContext() && rubberBushingWorkflowActive && isStructuredBushingIntentClient(intent || currentEditIntent || (lastExport && lastExport.intent)));
+    }
+
+    function meshRequestOptions(intent) {
       const exactUpload = exactUploadedGeometryContext();
       const options = {
         mesh_mode: meshMode,
         global_template: Object.assign({}, globalMeshTemplate),
       };
-      if (exactUpload && exactUpload.upload_id) {
+      if (useBushingPocHex(intent)) {
+        options.geometry_source = "bushing_poc_hex";
+      } else if (exactUpload && exactUpload.upload_id) {
         options.upload_id = exactUpload.upload_id;
       }
-      if (exactUpload && exactUpload.upload_data_base64) {
+      if (exactUpload && exactUpload.upload_data_base64 && !useBushingPocHex(intent)) {
         options.upload_data_base64 = exactUpload.upload_data_base64;
         options.upload_filename = exactUpload.upload_filename || exactUpload.filename || "uploaded_geometry.stl";
         options.upload_content_type = exactUpload.upload_content_type || "application/octet-stream";
@@ -5056,6 +5073,9 @@ UI_HTML = """<!doctype html>
       const exactUploadNote = result.mesh_source === "exact_uploaded_geometry"
         ? '<div class="muted" style="margin-top:6px">Exact uploaded-geometry mesh: statistics, FEM readiness, and preview come from the uploaded STEP/STL volume mesh.</div>'
         : "";
+      const bushingPocNote = result.mesh_source === "bushing_poc_hex"
+        ? '<div class="muted" style="margin-top:6px">Rubber bushing POC hex mesh: generated from measured/confirmed bushing dimensions using the standard global/block hex template. The uploaded STL remains the front-end geometry reference.</div>'
+        : "";
       const fallbackNote = result.fallback_reason
         ? '<div class="muted" style="margin-top:6px"><strong>Fallback:</strong> ' + escapeHtml(result.fallback_reason) + '</div>'
         : "";
@@ -5068,6 +5088,7 @@ UI_HTML = """<!doctype html>
         strategyNote +
         globalHtml +
         exactUploadNote +
+        bushingPocNote +
         fallbackNote +
         uploadPreviewNote +
         '<div class="mesh-stats">' +
@@ -5270,7 +5291,7 @@ UI_HTML = """<!doctype html>
             prompt: prompt,
             name: (lastExport && lastExport.name) || exportBaseName(intent || {}) || "model",
             intent: intent || {},
-            ...meshRequestOptions(),
+            ...meshRequestOptions(intent),
           }),
         });
         const payload = await response.json().catch(() => ({}));
@@ -5320,7 +5341,7 @@ UI_HTML = """<!doctype html>
             intent: intent,
             samples: 12,
             components: 10,
-            ...meshRequestOptions(),
+            ...meshRequestOptions(intent),
           }),
         });
         const payload = await response.json().catch(() => ({}));
@@ -5374,6 +5395,7 @@ UI_HTML = """<!doctype html>
       const lightDirection = normalizeVector({ x: 0.35, y: 0.85, z: 0.4 });
       const centeredFaces = mesh.faces.map((face) => ({
         color: face.color || "#00c8ff",
+        smoothPreview: Boolean(face.smoothPreview),
         points: face.points.map((point) => ({
           x: point.x - center.x,
           y: point.y - center.y,
@@ -5433,11 +5455,13 @@ UI_HTML = """<!doctype html>
             const projectedPoints = rotatedPoints.map(projectRotatedPoint);
             const normal = computeFaceNormal(rotatedPoints);
             const intensity = clamp(dotProduct(normal, lightDirection) * 0.5 + 0.76, 0.34, 1.0);
+            const fillIntensity = face.smoothPreview ? 0.82 : intensity;
             const averageDepth = rotatedPoints.reduce((sum, point) => sum + point.z, 0) / rotatedPoints.length;
             return {
               projectedPoints,
               averageDepth,
-              fill: shadeColor(face.color, intensity),
+              fill: shadeColor(face.color, fillIntensity),
+              smoothPreview: face.smoothPreview,
             };
           })
           .sort((left, right) => left.averageDepth - right.averageDepth);
@@ -5450,10 +5474,12 @@ UI_HTML = """<!doctype html>
           }
           context.closePath();
           context.fillStyle = face.fill;
-          context.strokeStyle = "rgba(255, 255, 255, 0.82)";
-          context.lineWidth = 0.75;
           context.fill();
-          context.stroke();
+          if (!face.smoothPreview) {
+            context.strokeStyle = "rgba(255, 255, 255, 0.82)";
+            context.lineWidth = 0.75;
+            context.stroke();
+          }
         }
       }
 
@@ -5990,8 +6016,17 @@ UI_HTML = """<!doctype html>
       const exactUpload = exactUploadedGeometryContext();
       const prompt = (lastExport && lastExport.prompt) || pendingDraftPrompt || (exactUpload ? "Exact uploaded geometry FEM" : "");
       const intent = (lastExport && lastExport.intent) || {};
+      const bushingPocHex = useBushingPocHex(intent);
       if (!exactUpload && !prompt.trim() && !isStructuredBushingIntentClient(intent)) {
         lastFemContour = { status: "error", message: "Send a chat message first, upload STEP/STL geometry, or generate a Rubber bushing before running FEM." };
+        renderFemContour(lastFemContour);
+        return;
+      }
+      if (exactUpload && !bushingPocHex && lastMeshResult && lastMeshResult.status === "preview_only") {
+        lastFemContour = {
+          status: "error",
+          message: "FEM needs a real closed volume mesh. This uploaded STL is preview-only because exact meshing failed; upload a watertight STL/STEP solid before running FEM batch.",
+        };
         renderFemContour(lastFemContour);
         return;
       }
@@ -6017,7 +6052,7 @@ UI_HTML = """<!doctype html>
             num_modes: femBatchCount,
             name: (lastExport && lastExport.name) || "model",
             intent: intent,
-            ...meshRequestOptions(),
+            ...meshRequestOptions(intent),
           }),
         });
         if (!response.ok) {
