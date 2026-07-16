@@ -321,30 +321,18 @@ async def generate_mesh(payload: dict) -> dict:
                     raw_mesh,
                     target_size_mm=element_size_mm,
                 )
-                step_path = uploaded_geometry
-                mesh_strategy = "uploaded_geometry_tetra"
-                mesh_format = f"Exact uploaded {mesh_result.source_format} tetrahedral volume mesh"
-            except Exception as exc:  # noqa: BLE001 - use bushing surrogate when exact STL is not a closed solid
-                if not _is_structured_bushing_intent(intent):
-                    raise
-                fallback_reason = (
-                    "Exact uploaded STL volume meshing failed, so Resonance AI used the editable bushing "
-                    f"structured mesh from the measured/confirmed dimensions. Exact meshing detail: {exc}"
-                )
-                raw_mesh = work_dir / f"{name}_hex.vtk"
-                mesh_result = generate_bushing_hex_mesh(
-                    intent,
-                    raw_mesh,
-                    target_size_mm=element_size_mm,
-                    mesh_mode=mesh_mode,
-                    template=global_template,
-                )
-                step_path = None
-                mesh_strategy = mesh_result.mesh_kind
-                if mesh_result.global_compatible:
-                    mesh_format = "Fallback global dataset-compatible hexahedral bushing mesh"
-                else:
-                    mesh_format = "Fallback mapped structured hexahedral bushing mesh"
+            except Exception as exc:  # noqa: BLE001 - exact FEM requires a real closed volume
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "Exact uploaded STL/STEP volume meshing failed. Resonance AI will keep the uploaded "
+                        "front-end geometry preview, but no surrogate cylindrical mesh was generated. "
+                        f"Upload a watertight STL or STEP solid for exact FEM. Gmsh detail: {exc}"
+                    ),
+                ) from exc
+            step_path = uploaded_geometry
+            mesh_strategy = "uploaded_geometry_tetra"
+            mesh_format = f"Exact uploaded {mesh_result.source_format} tetrahedral volume mesh"
         elif _is_structured_bushing_intent(intent):
             raw_mesh = work_dir / f"{name}_hex.vtk"
             mesh_result = generate_bushing_hex_mesh(
@@ -3656,6 +3644,23 @@ UI_HTML = """<!doctype html>
           }
         }
 
+        const autoBushingDims = payload.clientMesh ? measureBushingFromMesh(payload.clientMesh) : null;
+        if (autoBushingDims && !rubberBushingWorkflowActive) {
+          selectedCadEngine = "openscad";
+          meshMode = "global";
+          pendingDraftPrompt = pendingDraftPrompt || "Rubber bushing from uploaded STL geometry";
+          convertUploadedToBushing();
+          renderMeshPanel();
+          renderSimPanel();
+          summaryBox.innerHTML = `
+            <p><strong>Upload connected to Rubber bushing.</strong> The uploaded STL stays as the front-end geometry example. Exact mesh/FEM will run only when the STL is a watertight solid; no surrogate cylinder is generated for failed exact meshing.</p>
+          `;
+          appendMsg("bot", `Extracted file context from ${payload.filename}.\n\n${payload.summary}\n\n${meshNote || "Loaded uploaded STL geometry."}`);
+          contextFile.value = "";
+          completeActivity("Rubber bushing loaded");
+          return;
+        }
+
         const messageParts = [`Extracted file context from ${payload.filename}.`, payload.summary];
         if (meshNote) {
           messageParts.push(meshNote);
@@ -4963,11 +4968,17 @@ UI_HTML = """<!doctype html>
     }
 
     function meshSurfaceForDisplay(result) {
-      if (result && result.surface_mesh) {
+      if (result && result.status === "preview_only") {
+        return uploadedMeshSurfaceForMeshResult(result);
+      }
+      if (result && result.mesh_source === "exact_uploaded_geometry" && result.surface_mesh) {
         return result.surface_mesh || null;
       }
-      const uploadedSurface = uploadedMeshSurfaceForMeshResult();
-      return uploadedSurface || (result && result.surface_mesh) || null;
+      if (result && result.fallback_reason) {
+        const uploadedFallbackSurface = uploadedMeshSurfaceForMeshResult(result);
+        if (uploadedFallbackSurface) return uploadedFallbackSurface;
+      }
+      return (result && result.surface_mesh) || uploadedMeshSurfaceForMeshResult(result) || null;
     }
 
     function renderShapePcaOutputPanel() {
@@ -5028,6 +5039,15 @@ UI_HTML = """<!doctype html>
       if (result.status === "error") {
         return '<div class="mesh-output err">Mesh generation failed: ' + escapeHtml(result.message) + '</div>';
       }
+      if (result.status === "preview_only") {
+        return (
+          '<div class="mesh-output">' +
+          '<strong>Uploaded geometry preview only</strong>' +
+          '<div class="muted" style="margin-top:6px">' + escapeHtml(result.message || "Exact volume mesh was not generated for this STL.") + '</div>' +
+          meshViewerHtml(displayMesh) +
+          '</div>'
+        );
+      }
       const q = result.quality || {};
       const cleaning = result.cleaning || {};
       const ready = q.ready_for_fem ? "Ready for FEM" : "Needs attention";
@@ -5066,8 +5086,7 @@ UI_HTML = """<!doctype html>
       );
     }
 
-    function uploadedMeshSurfaceForMeshResult() {
-      if (!rubberBushingWorkflowActive) return null;
+    function uploadedMeshSurfaceForMeshResult(result) {
       const faces = meshEditMode && editableMesh
         ? (overrideMeshFaces || warpEditableMeshFaces((currentEditIntent && currentEditIntent.geometry) || {}))
         : (pickUploadedMesh() ? pickUploadedMesh().faces : null);
@@ -5075,17 +5094,31 @@ UI_HTML = """<!doctype html>
       const limitedFaces = faces.length > 12000
         ? faces.filter((face, index) => index % Math.ceil(faces.length / 12000) === 0)
         : faces;
+      const scalarMesh = result && result.surface_mesh ? result.surface_mesh : null;
+      const scalarMin = scalarMesh && Number.isFinite(Number(scalarMesh.scalar_min)) ? Number(scalarMesh.scalar_min) : 0;
+      const scalarMax = scalarMesh && Number.isFinite(Number(scalarMesh.scalar_max)) && Number(scalarMesh.scalar_max) > scalarMin ? Number(scalarMesh.scalar_max) : scalarMin + 1;
+      const bounds = computeMeshBounds(limitedFaces);
+      const axis = bounds.size.y >= bounds.size.x && bounds.size.y >= bounds.size.z
+        ? "y"
+        : (bounds.size.x >= bounds.size.z ? "x" : "z");
+      const axisMin = bounds.center[axis] - bounds.size[axis] / 2;
+      const axisSpan = Math.max(bounds.size[axis], 1e-6);
       return {
-        faces: limitedFaces.map((face) => ({
-          color: face.color || UPLOAD_MESH_COLOR,
-          smoothPreview: Boolean(face.smoothPreview),
-          value: 1,
-          points: face.points,
-        })),
-        field: "Uploaded STL surface",
-        unit: "",
-        scalar_min: 0,
-        scalar_max: 1,
+        faces: limitedFaces.map((face) => {
+          const average = face.points.reduce((sum, point) => sum + Number(point[axis] || 0), 0) / Math.max(face.points.length, 1);
+          const t = clamp((average - axisMin) / axisSpan, 0, 1);
+          const value = scalarMin + t * (scalarMax - scalarMin);
+          return {
+            color: scalarMesh ? contourPreviewColor(t) : (face.color || UPLOAD_MESH_COLOR),
+            smoothPreview: Boolean(face.smoothPreview),
+            value,
+            points: face.points,
+          };
+        }),
+        field: scalarMesh && scalarMesh.field ? scalarMesh.field + " mapped to uploaded STL" : "Uploaded STL preview",
+        unit: scalarMesh && scalarMesh.unit ? scalarMesh.unit : "",
+        scalar_min: scalarMin,
+        scalar_max: scalarMax,
         face_count: limitedFaces.length,
         source: "uploaded_stl",
       };
@@ -5247,7 +5280,15 @@ UI_HTML = """<!doctype html>
         lastMeshResult = payload;
         renderMeshPanel();
       } catch (error) {
-        lastMeshResult = { status: "error", message: error.message || String(error) };
+        const exactUpload = exactUploadedGeometryContext();
+        if (exactUpload) {
+          lastMeshResult = {
+            status: "preview_only",
+            message: (error.message || String(error)) + " No surrogate cylindrical mesh was generated; the uploaded STL remains as the visual example.",
+          };
+        } else {
+          lastMeshResult = { status: "error", message: error.message || String(error) };
+        }
         renderMeshPanel();
       } finally {
         const nextBtn = document.getElementById("meshGenerateBtn");
