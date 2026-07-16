@@ -4991,6 +4991,10 @@ UI_HTML = """<!doctype html>
       if (result && result.mesh_source === "exact_uploaded_geometry" && result.surface_mesh) {
         return result.surface_mesh || null;
       }
+      if (result && result.mesh_source === "bushing_poc_hex") {
+        const uploadedPocSurface = uploadedMeshSurfaceForMeshResult(result);
+        if (uploadedPocSurface) return uploadedPocSurface;
+      }
       if (result && result.fallback_reason) {
         const uploadedFallbackSurface = uploadedMeshSurfaceForMeshResult(result);
         if (uploadedFallbackSurface) return uploadedFallbackSurface;
