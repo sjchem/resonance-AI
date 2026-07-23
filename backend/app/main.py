@@ -305,7 +305,7 @@ async def generate_mesh(payload: dict) -> dict:
         )
         from geometry.mesh_cleaner import clean_mesh  # noqa: WPS433
         from geometry.mesh_quality import evaluate_mesh  # noqa: WPS433
-        from geometry.uploaded_volume_mesh import uploaded_geometry_to_tet_mesh  # noqa: WPS433
+        from geometry.uploaded_volume_mesh import uploaded_geometry_to_volume_mesh  # noqa: WPS433
     except ModuleNotFoundError as exc:
         raise HTTPException(
             status_code=501,
@@ -318,25 +318,27 @@ async def generate_mesh(payload: dict) -> dict:
         step_path: Path | None = None
         fallback_reason = None
         if uploaded_geometry:
-            raw_mesh = work_dir / f"{name}_uploaded_tet.msh"
+            raw_mesh = work_dir / f"{name}_uploaded_hex.msh"
             try:
-                mesh_result = uploaded_geometry_to_tet_mesh(
+                mesh_result = uploaded_geometry_to_volume_mesh(
                     uploaded_geometry,
                     raw_mesh,
                     target_size_mm=element_size_mm,
+                    mesh_mode=mesh_mode,
+                    template=global_template,
                 )
             except Exception as exc:  # noqa: BLE001 - exact FEM requires a real closed volume
                 raise HTTPException(
                     status_code=422,
                     detail=(
-                        "Exact uploaded STL/STEP volume meshing failed. Resonance AI will keep the uploaded "
-                        "front-end geometry preview, but no surrogate cylindrical mesh was generated. "
-                        f"Upload a watertight STL or STEP solid for exact FEM. Gmsh detail: {exc}"
+                        "Uploaded STL/STEP all-hexa meshing failed after the Gmsh repair and "
+                        f"reparametrization stages. Gmsh detail: {exc}"
                     ),
                 ) from exc
             step_path = uploaded_geometry
-            mesh_strategy = "uploaded_geometry_tetra"
-            mesh_format = f"Exact uploaded {mesh_result.source_format} tetrahedral volume mesh"
+            mesh_strategy = mesh_result.mesh_kind
+            mode_label = "global-density" if mesh_mode == "global" else "automatic-density"
+            mesh_format = f"Uploaded {mesh_result.source_format} body-fitted all-hexa mesh ({mode_label})"
         elif _is_structured_bushing_intent(intent):
             raw_mesh = work_dir / f"{name}_hex.vtk"
             mesh_result = generate_bushing_hex_mesh(
@@ -416,7 +418,7 @@ async def generate_mesh(payload: dict) -> dict:
             "status": "ok",
             "mesh_format": mesh_format,
             "mesh_strategy": mesh_strategy,
-            "mesh_source": "exact_uploaded_geometry" if uploaded_geometry and mesh_strategy == "uploaded_geometry_tetra" else ("bushing_poc_hex" if geometry_source == "bushing_poc_hex" else "generated_or_structured_geometry"),
+            "mesh_source": "exact_uploaded_geometry" if uploaded_geometry else ("bushing_poc_hex" if geometry_source == "bushing_poc_hex" else "generated_or_structured_geometry"),
             "fallback_reason": fallback_reason,
             "step_file": step_path.name if step_path else "structured_bushing_parameters",
             "mesh_file": raw_mesh.name,
@@ -618,13 +620,17 @@ def _raise_missing_uploaded_geometry() -> None:
 
 
 def _global_mesh_payload(mesh_result) -> dict:
+    mesh_kind = str(getattr(mesh_result, "mesh_kind", "") or "")
+    settings_only = mesh_kind == "uploaded_geometry_global_hex"
+    template_id = getattr(mesh_result, "template_id", "") or None
     return {
-        "enabled": bool(getattr(mesh_result, "global_compatible", False)),
-        "template_id": getattr(mesh_result, "template_id", "") or None,
+        "enabled": bool(getattr(mesh_result, "global_compatible", False) or settings_only),
+        "template_id": template_id,
         "circumferential_divisions": getattr(mesh_result, "circumferential_divisions", 0),
         "radial_divisions": getattr(mesh_result, "radial_divisions", 0),
         "axial_divisions": getattr(mesh_result, "axial_divisions", 0),
         "shared_connectivity": bool(getattr(mesh_result, "global_compatible", False)),
+        "settings_only": settings_only,
     }
 
 
@@ -690,11 +696,11 @@ def _count_tetra_cells(cell_counts: dict[str, int]) -> int:
 
 
 def _quality_payload(quality, cell_counts: dict[str, int]) -> dict:
-    """Normalize tetra quality output for tetra or structured hex meshes."""
+    """Normalize quality output for tetrahedral or hexahedral volume meshes."""
 
     hex_count = _count_hex_cells(cell_counts)
     tetra_count = _count_tetra_cells(cell_counts)
-    if tetra_count > 0:
+    if tetra_count > 0 or hex_count > 0:
         return {
             "ready_for_fem": quality.is_solvable,
             "min_quality": quality.min_quality,
@@ -704,7 +710,7 @@ def _quality_payload(quality, cell_counts: dict[str, int]) -> dict:
             "min_volume_mm3": quality.min_volume_mm3,
         }
     return {
-        "ready_for_fem": hex_count > 0,
+        "ready_for_fem": False,
         "min_quality": None,
         "mean_quality": None,
         "inverted_count": 0,
@@ -882,7 +888,7 @@ async def run_fem(payload: dict) -> dict:
     try:
         from geometry.bushing_hex_mesh import generate_bushing_hex_mesh  # noqa: WPS433
         from geometry.mesh_cleaner import clean_mesh  # noqa: WPS433
-        from geometry.uploaded_volume_mesh import uploaded_geometry_to_tet_mesh  # noqa: WPS433
+        from geometry.uploaded_volume_mesh import uploaded_geometry_to_volume_mesh  # noqa: WPS433
         from simulate.pipeline import PipelineConfig, run_pipeline  # noqa: WPS433
         from simulate.materials import resolve_material  # noqa: WPS433
         from simulate.modal_solver import ModalSetup, run_modal  # noqa: WPS433
@@ -910,16 +916,21 @@ async def run_fem(payload: dict) -> dict:
       if uploaded_geometry:
         sim_dir = work_dir / "sim"
         sim_dir.mkdir(parents=True, exist_ok=True)
-        raw_mesh = sim_dir / f"{name}_uploaded_tet.msh"
+        raw_mesh = sim_dir / f"{name}_uploaded_hex.msh"
         clean_mesh_path = sim_dir / f"{name}_clean.vtk"
         try:
-          uploaded_geometry_to_tet_mesh(uploaded_geometry, raw_mesh)
+          uploaded_geometry_to_volume_mesh(
+            uploaded_geometry,
+            raw_mesh,
+            mesh_mode=mesh_mode,
+            template=global_template,
+          )
         except Exception as exc:  # noqa: BLE001 - exact FEM requires a valid closed volume
           raise HTTPException(
             status_code=422,
             detail=(
-              "FEM batch requires a successful exact volume mesh. This uploaded geometry could not be "
-              f"converted into tetrahedral solid elements. Upload a watertight STL/STEP solid. Gmsh detail: {exc}"
+              "FEM batch requires a successful uploaded-geometry all-hexa mesh. "
+              f"Gmsh could not repair and volume-mesh this file. Detail: {exc}"
             ),
           ) from exc
         clean_mesh(raw_mesh, clean_mesh_path)
@@ -2488,14 +2499,6 @@ UI_HTML = """<!doctype html>
     .mesh-control-field select {
       padding: 7px 9px;
       font-size: 13px;
-    }
-    .mesh-readonly-value {
-      padding: 8px 9px;
-      border: 1px solid var(--line);
-      background: #fff;
-      color: var(--ink);
-      font-size: 13px;
-      font-weight: 700;
     }
     .mesh-global-summary {
       display: flex;
@@ -4920,7 +4923,6 @@ UI_HTML = """<!doctype html>
     function renderMeshPanel() {
       if (!meshResults) return;
       const src = simSourceDims();
-      const exactUpload = exactUploadedGeometryContext();
       if (!src) {
         cleanupMeshViewer();
         meshResults.innerHTML = "";
@@ -4934,7 +4936,7 @@ UI_HTML = """<!doctype html>
         '<div class="sim-head"><strong>Gmsh mesh</strong>' +
         '<span class="sim-head-actions">' +
         '<button type="button" class="sim-btn" id="meshGenerateBtn">Generate mesh</button>' +
-        (exactUpload ? "" : '<button type="button" class="sim-btn secondary" id="shapePcaBtn">Shape PCA</button>') +
+        '<button type="button" class="sim-btn secondary" id="shapePcaBtn">Shape PCA</button>' +
         '</span></div>' +
         meshControlsHtml() +
         '<p class="muted" style="margin:10px 0 0">Mesh result appears below the CAD model preview.</p>' +
@@ -4952,9 +4954,14 @@ UI_HTML = """<!doctype html>
       if (exactUploadedGeometryContext()) {
         return (
           '<div class="mesh-controls">' +
-          '<div class="mesh-control-field full"><label>Mesh source</label>' +
-          '<div class="mesh-readonly-value">Exact uploaded STEP/STL geometry</div></div>' +
-          '<p class="muted" style="margin:0">Gmsh creates a tetrahedral volume mesh directly from the uploaded solid. OD, ID, height, and the internal bushing template are not used.</p>' +
+          '<div class="mesh-control-field full"><label for="meshModeSelect">Mesh mode</label>' +
+          '<select id="meshModeSelect"><option value="structured"' + (meshMode === "structured" ? " selected" : "") + '>Uploaded geometry - Gmsh all-hexa</option><option value="global"' + (meshMode === "global" ? " selected" : "") + '>Uploaded geometry - global-density all-hexa</option></select></div>' +
+          '<div class="mesh-template-grid">' +
+          '<div class="mesh-control-field"><label for="globalCircumDivisions">Circum.</label><input id="globalCircumDivisions" type="number" min="24" max="192" step="4" value="' + globalMeshTemplate.circumferential_divisions + '"></div>' +
+          '<div class="mesh-control-field"><label for="globalRadialDivisions">Radial</label><input id="globalRadialDivisions" type="number" min="2" max="32" step="1" value="' + globalMeshTemplate.radial_divisions + '"></div>' +
+          '<div class="mesh-control-field"><label for="globalAxialDivisions">Axial</label><input id="globalAxialDivisions" type="number" min="3" max="64" step="1" value="' + globalMeshTemplate.axial_divisions + '"></div>' +
+          '</div>' +
+          '<p class="muted" style="margin:0">Both modes follow only the uploaded STEP/STL shape. Gmsh repairs and volume-meshes the uploaded solid, then converts its volume elements to all-hexa cells. Global mode uses the fixed density settings above for repeatable runs of the same geometry.</p>' +
           '</div>'
         );
       }
@@ -5147,7 +5154,7 @@ UI_HTML = """<!doctype html>
       const strategyNote = meshStrategyNote(result);
       const globalHtml = globalMeshHtml(result.global_mesh);
       const exactUploadNote = result.mesh_source === "exact_uploaded_geometry"
-        ? '<div class="muted" style="margin-top:6px">Exact uploaded-geometry mesh: statistics, FEM readiness, and preview come from the uploaded STEP/STL volume mesh.</div>'
+        ? '<div class="muted" style="margin-top:6px">Uploaded-geometry all-hexa mesh: statistics, FEM readiness, and preview come from the repaired STEP/STL solid. The OD/ID/height bushing generator is not used.</div>'
         : "";
       const bushingPocNote = result.mesh_source === "bushing_poc_hex"
         ? '<div class="muted" style="margin-top:6px">Rubber bushing hex surrogate: generated from measured/confirmed OD, ID, height, and editable parameters. It is not the exact uploaded STL topology; the uploaded STL remains the front-end geometry reference.</div>'
@@ -5270,6 +5277,12 @@ UI_HTML = """<!doctype html>
       if (result.mesh_strategy === "uploaded_geometry_tetra") {
         return '<div class="muted" style="margin-top:6px">Tetrahedral volume mesh generated directly from uploaded geometry. This is the exact FEM path for arbitrary STEP/STL uploads.</div>';
       }
+      if (result.mesh_strategy === "uploaded_geometry_subdivided_hex") {
+        return '<div class="muted" style="margin-top:6px">Gmsh body-fitted all-hexa mesh generated from the repaired uploaded STEP/STL volume.</div>';
+      }
+      if (result.mesh_strategy === "uploaded_geometry_global_hex") {
+        return '<div class="muted" style="margin-top:6px">Gmsh body-fitted all-hexa mesh generated with fixed global density settings. Connectivity is repeatable for the same uploaded geometry, but is not shared across unrelated CAD models.</div>';
+      }
       return '<div class="muted" style="margin-top:6px">Hex-only meshing is required for this workflow.</div>';
     }
 
@@ -5279,7 +5292,7 @@ UI_HTML = """<!doctype html>
         '<div class="mesh-global-summary">' +
         '<span>Template: <strong>' + escapeHtml(globalMesh.template_id || "global") + '</strong></span>' +
         '<span>Connectivity: <strong>' + (globalMesh.shared_connectivity ? "shared" : "unique") + '</strong></span>' +
-        '<span>Divisions: <strong>C' + formatInt(globalMesh.circumferential_divisions) + ' / R' + formatInt(globalMesh.radial_divisions) + ' / A' + formatInt(globalMesh.axial_divisions) + '</strong></span>' +
+        '<span>' + (globalMesh.settings_only ? "Density settings" : "Divisions") + ': <strong>C' + formatInt(globalMesh.circumferential_divisions) + ' / R' + formatInt(globalMesh.radial_divisions) + ' / A' + formatInt(globalMesh.axial_divisions) + '</strong></span>' +
         '</div>'
       );
     }
@@ -5421,7 +5434,7 @@ UI_HTML = """<!doctype html>
         if (exactUpload) {
           lastMeshResult = {
             status: "preview_only",
-            message: (error.message || String(error)) + " No surrogate cylindrical mesh was generated; the uploaded STL remains as the visual example.",
+            message: (error.message || String(error)) + " The uploaded geometry remains available for preview; repair the source STL or upload STEP to generate the body-fitted all-hexa volume mesh.",
           };
         } else {
           lastMeshResult = { status: "error", message: error.message || String(error) };

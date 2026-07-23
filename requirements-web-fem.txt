@@ -22,3 +22,4 @@ gmsh==4.15.2
 pyvista==0.48.4
 meshio==5.3.5
 numpy==2.4.6
+trimesh==4.12.2
