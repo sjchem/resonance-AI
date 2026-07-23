@@ -4937,16 +4937,22 @@ UI_HTML = """<!doctype html>
     }
 
     function meshControlsHtml() {
+      const uploadedHexSurrogate = Boolean(exactUploadedGeometryContext() && rubberBushingWorkflowActive);
+      const structuredLabel = uploadedHexSurrogate ? "Bushing surrogate - structured hex" : "Structured hex";
+      const globalLabel = uploadedHexSurrogate ? "Bushing surrogate - global dataset hex" : "Global dataset mesh";
+      const helperText = uploadedHexSurrogate
+        ? "For uploaded STL/CAD in this POC, hex meshing builds a bushing surrogate from confirmed dimensions. The uploaded file stays as the visual reference; exact uploaded-geometry meshing uses the tetra path."
+        : "Global mode keeps node IDs and element connectivity shared across the dataset.";
       return (
         '<div class="mesh-controls">' +
         '<div class="mesh-control-field full"><label for="meshModeSelect">Mesh mode</label>' +
-        '<select id="meshModeSelect"><option value="structured"' + (meshMode === "structured" ? " selected" : "") + '>Structured hex</option><option value="global"' + (meshMode === "global" ? " selected" : "") + '>Global dataset mesh</option></select></div>' +
+        '<select id="meshModeSelect"><option value="structured"' + (meshMode === "structured" ? " selected" : "") + '>' + structuredLabel + '</option><option value="global"' + (meshMode === "global" ? " selected" : "") + '>' + globalLabel + '</option></select></div>' +
         '<div class="mesh-template-grid">' +
         '<div class="mesh-control-field"><label for="globalCircumDivisions">Circum.</label><input id="globalCircumDivisions" type="number" min="24" max="192" step="4" value="' + globalMeshTemplate.circumferential_divisions + '"></div>' +
         '<div class="mesh-control-field"><label for="globalRadialDivisions">Radial</label><input id="globalRadialDivisions" type="number" min="2" max="32" step="1" value="' + globalMeshTemplate.radial_divisions + '"></div>' +
         '<div class="mesh-control-field"><label for="globalAxialDivisions">Axial</label><input id="globalAxialDivisions" type="number" min="3" max="64" step="1" value="' + globalMeshTemplate.axial_divisions + '"></div>' +
         '</div>' +
-        '<p class="muted" style="margin:0">Global mode keeps node IDs and element connectivity shared across the dataset.</p>' +
+        '<p class="muted" style="margin:0">' + escapeHtml(helperText) + '</p>' +
         '</div>'
       );
     }
@@ -5135,14 +5141,14 @@ UI_HTML = """<!doctype html>
         ? '<div class="muted" style="margin-top:6px">Exact uploaded-geometry mesh: statistics, FEM readiness, and preview come from the uploaded STEP/STL volume mesh.</div>'
         : "";
       const bushingPocNote = result.mesh_source === "bushing_poc_hex"
-        ? '<div class="muted" style="margin-top:6px">Rubber bushing POC hex mesh: generated from measured/confirmed bushing dimensions using the standard global/block hex template. The uploaded STL remains the front-end geometry reference.</div>'
+        ? '<div class="muted" style="margin-top:6px">Rubber bushing hex surrogate: generated from measured/confirmed OD, ID, height, and editable parameters. It is not the exact uploaded STL topology; the uploaded STL remains the front-end geometry reference.</div>'
         : "";
       const fallbackNote = result.fallback_reason
         ? '<div class="muted" style="margin-top:6px"><strong>Fallback:</strong> ' + escapeHtml(result.fallback_reason) + '</div>'
         : "";
       const comparison = meshComparisonMeshes(result);
       const uploadPreviewNote = comparison.uploaded && comparison.surrogate
-        ? '<div class="muted" style="margin-top:6px">Left view is the uploaded STL reference; right view is the actual structured hex surrogate used for mesh quality and FEM readiness.</div>'
+        ? '<div class="muted" style="margin-top:6px">Left view is the uploaded STL reference; right view is the generated dimension-based hex surrogate used for mesh quality and FEM readiness.</div>'
         : (result.mesh_source !== "exact_uploaded_geometry" && displayMesh && displayMesh.source === "uploaded_stl"
         ? '<div class="muted" style="margin-top:6px">Preview surface follows the uploaded STL geometry; mesh statistics/FEM readiness use the generated structured hex mesh.</div>'
         : "");
@@ -5189,7 +5195,7 @@ UI_HTML = """<!doctype html>
       return (
         '<div class="mesh-compare" aria-label="Uploaded STL reference and structured hex surrogate mesh comparison">' +
         meshPreviewCardHtml("meshUploadedViewer", "Uploaded STL reference", "front-end geometry reference", uploadedMesh) +
-        meshPreviewCardHtml("meshSurrogateViewer", "Mesh quality preview", "actual structured hex surrogate", surrogateMesh) +
+        meshPreviewCardHtml("meshSurrogateViewer", "Mesh quality preview", "dimension-based hex surrogate", surrogateMesh) +
         '</div>'
       );
     }
@@ -5245,6 +5251,9 @@ UI_HTML = """<!doctype html>
       if (!result || !result.mesh_strategy) return "";
       if (result.mesh_strategy === "global_bushing_hex" || result.mesh_strategy === "global_slotted_bushing_hex") {
         return '<div class="muted" style="margin-top:6px">Global dataset mesh: node count and hex connectivity are fixed by the selected template.</div>';
+      }
+      if (result.mesh_strategy === "mapped_bushing_hex" || result.mesh_strategy === "mapped_slotted_bushing_hex") {
+        return '<div class="muted" style="margin-top:6px">Structured bushing surrogate: divisions are generated from the confirmed bushing dimensions and editable parameters.</div>';
       }
       if (result.mesh_strategy === "structured_hex") {
         return '<div class="muted" style="margin-top:6px">Pure structured hex/swept mesh succeeded for this geometry.</div>';
