@@ -2591,6 +2591,48 @@ UI_HTML = """<!doctype html>
         #cc0000 100%
       );
     }
+    .mesh-compare,
+    .fem-compare {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      align-items: stretch;
+      margin-top: 10px;
+    }
+    .mesh-compare-card {
+      min-width: 0;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      gap: 8px;
+    }
+    .mesh-compare-card-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 10px;
+      color: var(--muted);
+    }
+    .mesh-compare-card-head strong {
+      color: var(--brand);
+      font-size: 13px;
+    }
+    .mesh-compare-card-head span {
+      font-size: 12px;
+      text-align: right;
+    }
+    .mesh-compare-card .mesh-viewer,
+    .fem-compare .sim-fem-viewer {
+      height: clamp(430px, 48vh, 650px);
+      min-height: 430px;
+    }
+    .mesh-compare-card .mesh-viewer-wrap {
+      margin-top: 0;
+      grid-template-columns: minmax(0, 1fr) 58px;
+    }
+    .mesh-compare-card .mesh-legend {
+      min-width: 58px;
+      font-size: 11px;
+    }
     .sim-compare {
       display: grid;
       grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -2883,6 +2925,7 @@ UI_HTML = """<!doctype html>
       .hero-inner, .workspace { grid-template-columns: 1fr; }
       .hero-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
       .sim-compare { grid-template-columns: 1fr; }
+      .mesh-compare, .fem-compare { grid-template-columns: 1fr; }
       .mesh-viewer, .sim-fem-viewer {
         height: 440px;
         min-height: 440px;
@@ -2897,6 +2940,7 @@ UI_HTML = """<!doctype html>
       .grid { grid-template-columns: 1fr; }
       .category-family-grid { grid-template-columns: 1fr; }
       .mesh-viewer-wrap, .sim-fem-frame { grid-template-columns: 1fr; }
+      .mesh-compare-card .mesh-viewer-wrap { grid-template-columns: 1fr; }
       .mesh-legend {
         grid-template-columns: auto auto minmax(120px, 1fr) auto;
         grid-template-rows: auto;
@@ -4969,12 +5013,31 @@ UI_HTML = """<!doctype html>
       const displayMesh = meshSurfaceForDisplay(lastMeshResult);
       meshOutputPanel.innerHTML =
         '<div class="mesh-block analysis-result-block">' +
-        '<div class="sim-head"><strong>Mesh result</strong><span class="muted">Below CAD preview</span></div>' +
+        '<div class="sim-head"><strong>Mesh quality preview</strong><span class="muted">Below CAD preview</span></div>' +
         '<div id="meshOutput">' + meshResultHtml(lastMeshResult, displayMesh) + '</div>' +
         '</div>';
       updateAnalysisResultsVisibility();
+      renderMeshViewers(lastMeshResult, displayMesh);
+    }
+
+    function renderMeshViewers(result, displayMesh) {
+      const comparison = meshComparisonMeshes(result);
+      if (comparison.uploaded && comparison.surrogate) {
+        renderGmshMeshCanvas(document.getElementById("meshUploadedViewer"), comparison.uploaded, {
+          edgeColor: "rgba(14, 165, 233, 0.92)",
+          wireframe: true,
+        });
+        renderGmshMeshCanvas(document.getElementById("meshSurrogateViewer"), comparison.surrogate, {
+          edgeColor: "rgba(8, 145, 178, 0.98)",
+          wireframe: true,
+        });
+        return;
+      }
       if (displayMesh) {
-        renderGmshMeshCanvas(document.getElementById("meshViewer"), displayMesh);
+        renderGmshMeshCanvas(document.getElementById("meshViewer"), displayMesh, {
+          edgeColor: "rgba(14, 165, 233, 0.92)",
+          wireframe: true,
+        });
       }
     }
 
@@ -5077,9 +5140,15 @@ UI_HTML = """<!doctype html>
       const fallbackNote = result.fallback_reason
         ? '<div class="muted" style="margin-top:6px"><strong>Fallback:</strong> ' + escapeHtml(result.fallback_reason) + '</div>'
         : "";
-      const uploadPreviewNote = result.mesh_source !== "exact_uploaded_geometry" && displayMesh && displayMesh.source === "uploaded_stl"
+      const comparison = meshComparisonMeshes(result);
+      const uploadPreviewNote = comparison.uploaded && comparison.surrogate
+        ? '<div class="muted" style="margin-top:6px">Left view is the uploaded STL reference; right view is the actual structured hex surrogate used for mesh quality and FEM readiness.</div>'
+        : (result.mesh_source !== "exact_uploaded_geometry" && displayMesh && displayMesh.source === "uploaded_stl"
         ? '<div class="muted" style="margin-top:6px">Preview surface follows the uploaded STL geometry; mesh statistics/FEM readiness use the generated structured hex mesh.</div>'
-        : "";
+        : "");
+      const meshPreviewHtml = comparison.uploaded && comparison.surrogate
+        ? meshComparisonHtml(comparison.uploaded, comparison.surrogate)
+        : meshViewerHtml(displayMesh || result.surface_mesh);
       return (
         '<div class="mesh-output">' +
         '<strong>' + ready + '</strong> · ' + escapeHtml(result.mesh_format || "Gmsh mesh") +
@@ -5100,7 +5169,36 @@ UI_HTML = """<!doctype html>
         '<span>Merged nodes: <strong>' + formatInt(cleaning.merged_nodes) + '</strong></span>' +
         '<span>Removed cells: <strong>' + formatInt(cleaning.removed_cells) + '</strong></span>' +
         '</div>' +
-        meshViewerHtml(displayMesh || result.surface_mesh) +
+        meshPreviewHtml +
+        '</div>'
+      );
+    }
+
+    function meshComparisonMeshes(result) {
+      const surrogate = result && result.surface_mesh && Array.isArray(result.surface_mesh.faces) && result.surface_mesh.faces.length
+        ? Object.assign({}, result.surface_mesh, { source: result.surface_mesh.source || "structured_hex_surrogate" })
+        : null;
+      const uploaded = uploadedMeshSurfaceForMeshResult(result);
+      if (result && result.mesh_source === "bushing_poc_hex" && uploaded && surrogate) {
+        return { uploaded, surrogate };
+      }
+      return { uploaded: null, surrogate: null };
+    }
+
+    function meshComparisonHtml(uploadedMesh, surrogateMesh) {
+      return (
+        '<div class="mesh-compare" aria-label="Uploaded STL reference and structured hex surrogate mesh comparison">' +
+        meshPreviewCardHtml("meshUploadedViewer", "Uploaded STL reference", "front-end geometry reference", uploadedMesh) +
+        meshPreviewCardHtml("meshSurrogateViewer", "Mesh quality preview", "actual structured hex surrogate", surrogateMesh) +
+        '</div>'
+      );
+    }
+
+    function meshPreviewCardHtml(viewerId, title, subtitle, mesh) {
+      return (
+        '<div class="mesh-compare-card">' +
+        '<div class="mesh-compare-card-head"><strong>' + escapeHtml(title) + '</strong><span>' + escapeHtml(subtitle) + '</span></div>' +
+        meshViewerHtml(mesh, viewerId, title) +
         '</div>'
       );
     }
@@ -5168,15 +5266,17 @@ UI_HTML = """<!doctype html>
       );
     }
 
-    function meshViewerHtml(mesh) {
+    function meshViewerHtml(mesh, viewerId, ariaLabel) {
       if (!mesh || !Array.isArray(mesh.faces) || !mesh.faces.length) {
         return '<div class="mesh-output err" style="margin-top:10px">Mesh was generated, but no exterior surface triangles were available for preview.</div>';
       }
       const minLabel = formatEngineering(mesh.scalar_min, mesh.unit || "");
       const maxLabel = formatEngineering(mesh.scalar_max, mesh.unit || "");
+      const id = viewerId || "meshViewer";
+      const label = ariaLabel || "Interactive Gmsh mesh preview";
       return (
         '<div class="mesh-viewer-wrap">' +
-        '<div class="mesh-viewer" id="meshViewer" aria-label="Interactive Gmsh mesh preview"></div>' +
+        '<div class="mesh-viewer" id="' + escapeHtml(id) + '" aria-label="' + escapeHtml(label) + '"></div>' +
         '<div class="mesh-legend" aria-label="' + escapeHtml(mesh.field || "Volume") + ' legend">' +
         '<strong>' + escapeHtml(mesh.field || "Volume") + '</strong>' +
         '<span>' + escapeHtml(maxLabel) + '</span>' +
@@ -5360,10 +5460,20 @@ UI_HTML = """<!doctype html>
     }
 
     function cleanupMeshViewer() {
-      if (activeMeshViewer && typeof activeMeshViewer.dispose === "function") {
-        activeMeshViewer.dispose();
-      }
+      const viewers = Array.isArray(activeMeshViewer) ? activeMeshViewer : (activeMeshViewer ? [activeMeshViewer] : []);
+      viewers.forEach((viewer) => {
+        if (viewer && typeof viewer.dispose === "function") {
+          viewer.dispose();
+        }
+      });
       activeMeshViewer = null;
+    }
+
+    function trackMeshViewer(viewer) {
+      if (!viewer) return;
+      if (!activeMeshViewer) activeMeshViewer = [];
+      if (!Array.isArray(activeMeshViewer)) activeMeshViewer = [activeMeshViewer];
+      activeMeshViewer.push(viewer);
     }
 
     function arrayBufferToBase64(buffer) {
@@ -5377,8 +5487,9 @@ UI_HTML = """<!doctype html>
       return btoa(binary);
     }
 
-    function renderGmshMeshCanvas(host, mesh) {
+    function renderGmshMeshCanvas(host, mesh, options) {
       if (!host || !mesh || !Array.isArray(mesh.faces) || !mesh.faces.length) return;
+      const renderOptions = options || {};
       const canvas = document.createElement("canvas");
       host.innerHTML = "";
       host.appendChild(canvas);
@@ -5473,9 +5584,9 @@ UI_HTML = """<!doctype html>
           context.closePath();
           context.fillStyle = face.fill;
           context.fill();
-          if (!face.smoothPreview) {
-            context.strokeStyle = "rgba(255, 255, 255, 0.82)";
-            context.lineWidth = 0.75;
+          if (renderOptions.wireframe || !face.smoothPreview) {
+            context.strokeStyle = renderOptions.edgeColor || (face.smoothPreview ? "rgba(14, 165, 233, 0.82)" : "rgba(8, 145, 178, 0.95)");
+            context.lineWidth = face.smoothPreview ? 0.85 : 1.05;
             context.stroke();
           }
         }
@@ -5524,7 +5635,7 @@ UI_HTML = """<!doctype html>
       resizeObserver.observe(host);
       resizeCanvas();
 
-      activeMeshViewer = {
+      trackMeshViewer({
         dispose() {
           cancelAnimationFrame(state.animationFrameId);
           resizeObserver.disconnect();
@@ -5534,7 +5645,7 @@ UI_HTML = """<!doctype html>
           canvas.removeEventListener("pointerleave", onPointerUp);
           canvas.removeEventListener("wheel", onWheel);
         },
-      };
+      });
     }
 
     function escapeHtml(text) {
@@ -5577,20 +5688,32 @@ UI_HTML = """<!doctype html>
       }
       if (state.status === "ok" && state.data) {
         const d = state.data;
-        const displayMesh = femSurfaceForDisplay(d);
+        const comparison = femComparisonMeshes(d);
+        const displayMesh = comparison.surrogate || femSurfaceForDisplay(d);
         const hasMesh = displayMesh && Array.isArray(displayMesh.faces) && displayMesh.faces.length;
+        const hasComparison = comparison.uploaded && comparison.surrogate;
         const exactFemNote = d.fem_source === "exact_uploaded_geometry"
           ? '<p class="sim-fem-msg">Exact uploaded-geometry FEM: modal solve and contour are computed on the uploaded STEP/STL volume mesh.</p>'
           : '';
-        const uploadFemNote = displayMesh && displayMesh.source === "uploaded_stl"
+        const uploadFemNote = hasComparison
+          ? '<p class="sim-fem-msg">Uploaded STL reference is shown beside the actual structured hex surrogate; FEM stress contour is rendered smooth without dense mesh lines.</p>'
+          : (displayMesh && displayMesh.source === "uploaded_stl"
           ? '<p class="sim-fem-msg">Contour preview is mapped onto the uploaded STL surface; modal solve values come from the structured hex surrogate.</p>'
-          : '';
-        const femView = hasMesh
+          : '');
+        const femView = hasComparison
+          ? '<div class="sim-fem-frame">' +
+            '<div class="fem-compare" aria-label="Uploaded STL reference and structured hex surrogate FEM comparison">' +
+            femPreviewCardHtml("simFemUploadedViewer", "Uploaded STL reference", "mapped stress reference", comparison.uploaded) +
+            femPreviewCardHtml("simFemSurrogateViewer", "FEM stress contour", "actual structured hex surrogate", comparison.surrogate) +
+            '</div>' +
+            femLegendHtml(comparison.surrogate) +
+            '</div>'
+          : (hasMesh
           ? '<div class="sim-fem-frame">' +
             '<div class="sim-fem-viewer" id="simFemViewer" aria-label="Interactive FEM contour view"></div>' +
             femLegendHtml(displayMesh) +
             '</div>'
-          : '<img alt="von Mises stress contour for mode ' + d.mode + '" src="data:image/png;base64,' + d.contour_png_base64 + '"/>';
+          : '<img alt="von Mises stress contour for mode ' + d.mode + '" src="data:image/png;base64,' + d.contour_png_base64 + '"/>');
         const modesRows = (d.modes || []).map((m) => (
           '<tr class="' + (Number(m.mode_number) === Number(d.mode) ? 'sim-row-active' : '') + '">' +
           '<td>Mode ' + m.mode_number + '</td>' +
@@ -5610,8 +5733,11 @@ UI_HTML = """<!doctype html>
           pcaHtml +
           (modesRows ? ('<table class="sim-table sim-table-rows" style="margin-top:10px"><tr><th>FEM mode</th><th style="text-align:right">Frequency</th></tr>' + modesRows + '</table>') : '') +
           '</div>';
-        if (hasMesh) {
-          renderFemMeshCanvas(document.getElementById("simFemViewer"), displayMesh);
+        if (hasComparison) {
+          renderFemMeshCanvas(document.getElementById("simFemUploadedViewer"), comparison.uploaded, { showEdges: false });
+          renderFemMeshCanvas(document.getElementById("simFemSurrogateViewer"), comparison.surrogate, { showEdges: false });
+        } else if (hasMesh) {
+          renderFemMeshCanvas(document.getElementById("simFemViewer"), displayMesh, { showEdges: false });
         }
         bindFemPcaPlot(d.pca);
         const csvBtn = document.getElementById("femCsvBtn");
@@ -5621,6 +5747,32 @@ UI_HTML = """<!doctype html>
           });
         }
       }
+    }
+
+    function femComparisonMeshes(data) {
+      if (!data || data.fem_source === "exact_uploaded_geometry") {
+        return { uploaded: null, surrogate: null };
+      }
+      const surrogate = data.fem_mesh && Array.isArray(data.fem_mesh.faces) && data.fem_mesh.faces.length
+        ? Object.assign({}, data.fem_mesh, { source: data.fem_mesh.source || "structured_hex_surrogate" })
+        : null;
+      const uploaded = uploadedFemSurfaceForDisplay(surrogate);
+      if (uploaded && surrogate) {
+        return { uploaded, surrogate };
+      }
+      return { uploaded: null, surrogate: null };
+    }
+
+    function femPreviewCardHtml(viewerId, title, subtitle, mesh) {
+      if (!mesh || !Array.isArray(mesh.faces) || !mesh.faces.length) {
+        return '<div class="mesh-output err">FEM surface was not available for this preview.</div>';
+      }
+      return (
+        '<div class="mesh-compare-card">' +
+        '<div class="mesh-compare-card-head"><strong>' + escapeHtml(title) + '</strong><span>' + escapeHtml(subtitle) + '</span></div>' +
+        '<div class="sim-fem-viewer" id="' + escapeHtml(viewerId) + '" aria-label="' + escapeHtml(title) + '"></div>' +
+        '</div>'
+      );
     }
 
     function femSurfaceForDisplay(data) {
@@ -5847,14 +5999,25 @@ UI_HTML = """<!doctype html>
     }
 
     function cleanupFemViewer() {
-      if (activeFemViewer && typeof activeFemViewer.dispose === "function") {
-        activeFemViewer.dispose();
-      }
+      const viewers = Array.isArray(activeFemViewer) ? activeFemViewer : (activeFemViewer ? [activeFemViewer] : []);
+      viewers.forEach((viewer) => {
+        if (viewer && typeof viewer.dispose === "function") {
+          viewer.dispose();
+        }
+      });
       activeFemViewer = null;
     }
 
-    function renderFemMeshCanvas(host, mesh) {
+    function trackFemViewer(viewer) {
+      if (!viewer) return;
+      if (!activeFemViewer) activeFemViewer = [];
+      if (!Array.isArray(activeFemViewer)) activeFemViewer = [activeFemViewer];
+      activeFemViewer.push(viewer);
+    }
+
+    function renderFemMeshCanvas(host, mesh, options) {
       if (!host || !mesh || !Array.isArray(mesh.faces) || !mesh.faces.length) return;
+      const renderOptions = options || {};
       const canvas = document.createElement("canvas");
       host.innerHTML = "";
       host.appendChild(canvas);
@@ -5933,7 +6096,7 @@ UI_HTML = """<!doctype html>
               projectedPoints,
               averageDepth,
               fill: shadeColor(face.color, intensity),
-              stroke: shadeColor(face.color, Math.max(intensity - 0.24, 0.2)),
+              stroke: renderOptions.edgeColor || shadeColor(face.color, Math.max(intensity - 0.24, 0.2)),
             };
           })
           .sort((left, right) => left.averageDepth - right.averageDepth);
@@ -5946,10 +6109,12 @@ UI_HTML = """<!doctype html>
           }
           context.closePath();
           context.fillStyle = face.fill;
-          context.strokeStyle = face.stroke;
-          context.lineWidth = 0.8;
           context.fill();
-          context.stroke();
+          if (renderOptions.showEdges) {
+            context.strokeStyle = face.stroke;
+            context.lineWidth = renderOptions.edgeWidth || 0.35;
+            context.stroke();
+          }
         }
       }
 
@@ -5996,7 +6161,7 @@ UI_HTML = """<!doctype html>
       resizeObserver.observe(host);
       resizeCanvas();
 
-      activeFemViewer = {
+      trackFemViewer({
         dispose() {
           cancelAnimationFrame(state.animationFrameId);
           resizeObserver.disconnect();
@@ -6006,7 +6171,7 @@ UI_HTML = """<!doctype html>
           canvas.removeEventListener("pointerleave", onPointerUp);
           canvas.removeEventListener("wheel", onWheel);
         },
-      };
+      });
     }
 
     async function runFemContour() {
