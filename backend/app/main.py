@@ -3307,6 +3307,34 @@ UI_HTML = """<!doctype html>
     let rubberBushingTab = "space";
     let designSpaceCases = [];
     let targetStiffnessResult = null;
+    const CLIENT_BUSHING_SPEC = Object.freeze({
+      target_kx_n_mm: 88.4,
+      target_ky_n_mm: 294.5,
+      target_kz_n_mm: 294.5,
+      inner_diameter_min_mm: 21,
+      inner_diameter_max_mm: 35,
+      inner_core_length_min_mm: 20,
+      inner_core_length_max_mm: 71,
+      outer_core_length_min_mm: 20,
+      outer_core_length_max_mm: 55,
+      outer_diameter_mm: 76,
+      swaging_value_mm: 3,
+      decking_value_mm: 0,
+      internal_teeth: false,
+      match_tolerance: 0.1,
+    });
+    let targetSearchInputs = {
+      kx: CLIENT_BUSHING_SPEC.target_kx_n_mm,
+      ky: CLIENT_BUSHING_SPEC.target_ky_n_mm,
+      kz: CLIENT_BUSHING_SPEC.target_kz_n_mm,
+      idMin: CLIENT_BUSHING_SPEC.inner_diameter_min_mm,
+      idMax: CLIENT_BUSHING_SPEC.inner_diameter_max_mm,
+      innerLengthMin: CLIENT_BUSHING_SPEC.inner_core_length_min_mm,
+      innerLengthMax: CLIENT_BUSHING_SPEC.inner_core_length_max_mm,
+      outerLengthMin: CLIENT_BUSHING_SPEC.outer_core_length_min_mm,
+      outerLengthMax: CLIENT_BUSHING_SPEC.outer_core_length_max_mm,
+      samples: 200,
+    };
     let paramRenderQueued = false;
     let uploadNeedsParametricConfirmation = false;
     // When true, ignore the uploaded mesh and render the parametric model instead
@@ -6447,9 +6475,9 @@ UI_HTML = """<!doctype html>
       return '<div class="param-section" data-rubber-section="space">' +
         '<div class="param-section-title">Design ranges</div>' +
         '<div class="param-form-grid">' +
-        rangeField("ds_inner_diameter", "Inner-core diameter (mm)", 21, 35) +
-        rangeField("ds_inner_core_length", "Inner-core length (mm)", 20, 71) +
-        rangeField("ds_outer_core_length", "Outer-core length (mm)", 20, 55) +
+        rangeField("ds_inner_diameter", "Inner-core diameter (mm)", CLIENT_BUSHING_SPEC.inner_diameter_min_mm, CLIENT_BUSHING_SPEC.inner_diameter_max_mm, CLIENT_BUSHING_SPEC.inner_diameter_min_mm, CLIENT_BUSHING_SPEC.inner_diameter_max_mm) +
+        rangeField("ds_inner_core_length", "Inner-core length (mm)", CLIENT_BUSHING_SPEC.inner_core_length_min_mm, CLIENT_BUSHING_SPEC.inner_core_length_max_mm, CLIENT_BUSHING_SPEC.inner_core_length_min_mm, CLIENT_BUSHING_SPEC.inner_core_length_max_mm) +
+        rangeField("ds_outer_core_length", "Outer-core length (mm)", CLIENT_BUSHING_SPEC.outer_core_length_min_mm, CLIENT_BUSHING_SPEC.outer_core_length_max_mm, CLIENT_BUSHING_SPEC.outer_core_length_min_mm, CLIENT_BUSHING_SPEC.outer_core_length_max_mm) +
         '<div class="param-form-field full"><label for="ds_sample_count">Samples</label><select id="ds_sample_count"><option value="50">50</option><option value="100">100</option><option value="200">200</option></select></div>' +
         '</div>' +
         bushingConditionsHtml() +
@@ -6459,25 +6487,21 @@ UI_HTML = """<!doctype html>
     }
 
     function bushingConditionsHtml() {
-      const geom = currentEditIntent && currentEditIntent.geometry ? currentEditIntent.geometry : {};
-      const outer = Number.isFinite(Number(geom.outer_diameter_mm)) ? Number(geom.outer_diameter_mm) : 76;
-      const swaging = Number.isFinite(Number(geom.swaging_value_mm)) ? Number(geom.swaging_value_mm) : 3.0;
-      const decking = Number.isFinite(Number(geom.decking_value_mm)) ? Number(geom.decking_value_mm) : 0.0;
       return '<div class="best-geometry">' +
-        '<strong>Conditions</strong>' +
-        '<span>Diameter inner core: 21 to 35 mm</span>' +
-        '<span>Length inner core: 20 to 71 mm</span>' +
-        '<span>Length outer core: 20 to 55 mm</span>' +
-        '<span>Outer diameter: ' + formatNumber(outer, 1) + ' mm</span>' +
-        '<span>Swaging value: ' + formatNumber(swaging, 1) + ' mm</span>' +
-        '<span>Decking value: ' + formatNumber(decking, 1) + ' mm</span>' +
+        '<strong>Client conditions</strong>' +
+        '<span>Diameter inner core: ' + CLIENT_BUSHING_SPEC.inner_diameter_min_mm + ' to ' + CLIENT_BUSHING_SPEC.inner_diameter_max_mm + ' mm</span>' +
+        '<span>Length inner core: ' + CLIENT_BUSHING_SPEC.inner_core_length_min_mm + ' to ' + CLIENT_BUSHING_SPEC.inner_core_length_max_mm + ' mm</span>' +
+        '<span>Length outer core: ' + CLIENT_BUSHING_SPEC.outer_core_length_min_mm + ' to ' + CLIENT_BUSHING_SPEC.outer_core_length_max_mm + ' mm</span>' +
+        '<span>Outer diameter: ' + formatNumber(CLIENT_BUSHING_SPEC.outer_diameter_mm, 1) + ' mm (fixed)</span>' +
+        '<span>Swaging value: ' + formatNumber(CLIENT_BUSHING_SPEC.swaging_value_mm, 1) + ' mm</span>' +
+        '<span>Decking value: ' + formatNumber(CLIENT_BUSHING_SPEC.decking_value_mm, 1) + ' mm</span>' +
         '<span>Internal teeth: no</span>' +
         '</div>';
     }
 
-    function rangeField(prefix, label, minValue, maxValue) {
-      return '<div class="param-form-field"><label for="' + prefix + '_min">' + escapeHtml(label) + ' min</label><input id="' + prefix + '_min" type="number" value="' + minValue + '" step="0.5" min="0"></div>' +
-        '<div class="param-form-field"><label for="' + prefix + '_max">' + escapeHtml(label) + ' max</label><input id="' + prefix + '_max" type="number" value="' + maxValue + '" step="0.5" min="0"></div>';
+    function rangeField(prefix, label, minValue, maxValue, allowedMin = 0, allowedMax = "") {
+      return '<div class="param-form-field"><label for="' + prefix + '_min">' + escapeHtml(label) + ' min</label><input id="' + prefix + '_min" type="number" value="' + minValue + '" step="0.5" min="' + allowedMin + '" max="' + allowedMax + '"></div>' +
+        '<div class="param-form-field"><label for="' + prefix + '_max">' + escapeHtml(label) + ' max</label><input id="' + prefix + '_max" type="number" value="' + maxValue + '" step="0.5" min="' + allowedMin + '" max="' + allowedMax + '"></div>';
     }
 
     function designSpaceTableHtml() {
@@ -6497,25 +6521,29 @@ UI_HTML = """<!doctype html>
     }
 
     function targetStiffnessHtml() {
+      const resultTitle = targetStiffnessResult && targetStiffnessResult.withinTolerance
+        ? "Target match"
+        : "Closest screened geometry - outside 10% tolerance";
       const resultHtml = targetStiffnessResult ? '<div class="best-geometry">' +
-        '<strong>Best geometry: ' + escapeHtml(targetStiffnessResult.case_id) + '</strong>' +
+        '<strong>' + resultTitle + ': ' + escapeHtml(targetStiffnessResult.case_id) + '</strong>' +
         '<span>OD ' + formatNumber(targetStiffnessResult.geometry.outer_diameter_mm, 1) + ' mm, ID ' + formatNumber(targetStiffnessResult.geometry.inner_diameter_mm, 1) + ' mm, inner core ' + formatNumber(targetStiffnessResult.geometry.inner_core_length_mm, 1) + ' mm, outer core ' + formatNumber(targetStiffnessResult.geometry.outer_core_length_mm, 1) + ' mm</span>' +
-        '<span>Kx ' + formatStiffness(targetStiffnessResult.kx) + ', Ky ' + formatStiffness(targetStiffnessResult.ky) + ', Kz ' + formatStiffness(targetStiffnessResult.kz) + '</span>' +
-        '<span>Relative score ' + formatNumber(targetStiffnessResult.score, 4) + '</span>' +
+        '<span>Kx ' + formatTargetStiffness(targetStiffnessResult.kx) + ', Ky ' + formatTargetStiffness(targetStiffnessResult.ky) + ', Kz ' + formatTargetStiffness(targetStiffnessResult.kz) + '</span>' +
+        '<span>Maximum target error ' + formatNumber(targetStiffnessResult.maxRelativeError * 100, 1) + '%; RMS target error ' + formatNumber(targetStiffnessResult.rmsRelativeError * 100, 1) + '%</span>' +
         '</div>' : '<p class="muted">Enter target stiffness and search the bounded design space.</p>';
       return '<div class="param-section" data-rubber-section="target">' +
         '<div class="param-section-title">Targets</div>' +
         '<div class="param-form-grid">' +
-        '<div class="param-form-field"><label for="target_kx">Target Kx (N/mm)</label><input id="target_kx" type="number" value="88.4" min="0" step="0.1"></div>' +
-        '<div class="param-form-field"><label for="target_ky">Target Ky (N/mm)</label><input id="target_ky" type="number" value="294.5" min="0" step="0.1"></div>' +
-        '<div class="param-form-field"><label for="target_kz">Target Kz (N/mm)</label><input id="target_kz" type="number" value="294.5" min="0" step="0.1"></div>' +
+        '<div class="param-form-field"><label for="target_kx">Target Kx (N/mm)</label><input id="target_kx" data-target-input type="number" value="' + targetSearchInputs.kx + '" min="0" step="0.1"></div>' +
+        '<div class="param-form-field"><label for="target_ky">Target Ky (N/mm)</label><input id="target_ky" data-target-input type="number" value="' + targetSearchInputs.ky + '" min="0" step="0.1"></div>' +
+        '<div class="param-form-field"><label for="target_kz">Target Kz (N/mm)</label><input id="target_kz" data-target-input type="number" value="' + targetSearchInputs.kz + '" min="0" step="0.1"></div>' +
         '</div>' +
+        '<p class="muted">POC test assumption: X is the bushing centerline, the outer core is fixed, and the inner core is displaced. Kx is axial; Ky and Kz are radial. Validate shortlisted designs with client test data or directional static FEM.</p>' +
         '<div class="param-section-title">Design bounds</div>' +
         '<div class="param-form-grid">' +
-        rangeField("ts_inner_diameter", "Inner-core diameter (mm)", 21, 35) +
-        rangeField("ts_inner_core_length", "Inner-core length (mm)", 20, 71) +
-        rangeField("ts_outer_core_length", "Outer-core length (mm)", 20, 55) +
-        '<div class="param-form-field full"><label for="ts_sample_count">Sample count</label><select id="ts_sample_count"><option value="50">50</option><option value="100">100</option><option value="200">200</option></select></div>' +
+        rangeField("ts_inner_diameter", "Inner-core diameter (mm)", targetSearchInputs.idMin, targetSearchInputs.idMax, CLIENT_BUSHING_SPEC.inner_diameter_min_mm, CLIENT_BUSHING_SPEC.inner_diameter_max_mm) +
+        rangeField("ts_inner_core_length", "Inner-core length (mm)", targetSearchInputs.innerLengthMin, targetSearchInputs.innerLengthMax, CLIENT_BUSHING_SPEC.inner_core_length_min_mm, CLIENT_BUSHING_SPEC.inner_core_length_max_mm) +
+        rangeField("ts_outer_core_length", "Outer-core length (mm)", targetSearchInputs.outerLengthMin, targetSearchInputs.outerLengthMax, CLIENT_BUSHING_SPEC.outer_core_length_min_mm, CLIENT_BUSHING_SPEC.outer_core_length_max_mm) +
+        '<div class="param-form-field full"><label for="ts_sample_count">Sample count</label><select id="ts_sample_count" data-target-input><option value="50"' + (targetSearchInputs.samples === 50 ? ' selected' : '') + '>50</option><option value="100"' + (targetSearchInputs.samples === 100 ? ' selected' : '') + '>100</option><option value="200"' + (targetSearchInputs.samples === 200 ? ' selected' : '') + '>200</option></select></div>' +
         '</div>' +
         bushingConditionsHtml() +
         '<div class="param-actions"><button type="button" class="param-primary" id="findBestGeometryBtn">Find Best Geometry</button></div>' +
@@ -6535,6 +6563,9 @@ UI_HTML = """<!doctype html>
       if (variants) variants.addEventListener("click", generateDesignSpaceVariants);
       const best = document.getElementById("findBestGeometryBtn");
       if (best) best.addEventListener("click", findBestGeometry);
+      for (const control of paramControls.querySelectorAll("[data-target-input], #ts_inner_diameter_min, #ts_inner_diameter_max, #ts_inner_core_length_min, #ts_inner_core_length_max, #ts_outer_core_length_min, #ts_outer_core_length_max")) {
+        control.addEventListener("change", captureTargetSearchInputs);
+      }
       for (const button of paramControls.querySelectorAll("[data-download-variant]")) {
         button.addEventListener("click", () => downloadVariantJson(Number(button.dataset.downloadVariant)));
       }
@@ -6602,12 +6633,12 @@ UI_HTML = """<!doctype html>
 
     function generateDesignSpaceVariants() {
       const samples = clampInt(readFormNumber("ds_sample_count", 50), 1, 200, 50);
-      const idMin = readFormNumber("ds_inner_diameter_min", 21);
-      const idMax = Math.max(idMin, readFormNumber("ds_inner_diameter_max", 35));
-      const liMin = readFormNumber("ds_inner_core_length_min", 20);
-      const liMax = Math.max(liMin, readFormNumber("ds_inner_core_length_max", 71));
-      const loMin = readFormNumber("ds_outer_core_length_min", 20);
-      const loMax = Math.max(loMin, readFormNumber("ds_outer_core_length_max", 55));
+      const idMin = clamp(readFormNumber("ds_inner_diameter_min", CLIENT_BUSHING_SPEC.inner_diameter_min_mm), CLIENT_BUSHING_SPEC.inner_diameter_min_mm, CLIENT_BUSHING_SPEC.inner_diameter_max_mm);
+      const idMax = Math.max(idMin, clamp(readFormNumber("ds_inner_diameter_max", CLIENT_BUSHING_SPEC.inner_diameter_max_mm), CLIENT_BUSHING_SPEC.inner_diameter_min_mm, CLIENT_BUSHING_SPEC.inner_diameter_max_mm));
+      const liMin = clamp(readFormNumber("ds_inner_core_length_min", CLIENT_BUSHING_SPEC.inner_core_length_min_mm), CLIENT_BUSHING_SPEC.inner_core_length_min_mm, CLIENT_BUSHING_SPEC.inner_core_length_max_mm);
+      const liMax = Math.max(liMin, clamp(readFormNumber("ds_inner_core_length_max", CLIENT_BUSHING_SPEC.inner_core_length_max_mm), CLIENT_BUSHING_SPEC.inner_core_length_min_mm, CLIENT_BUSHING_SPEC.inner_core_length_max_mm));
+      const loMin = clamp(readFormNumber("ds_outer_core_length_min", CLIENT_BUSHING_SPEC.outer_core_length_min_mm), CLIENT_BUSHING_SPEC.outer_core_length_min_mm, CLIENT_BUSHING_SPEC.outer_core_length_max_mm);
+      const loMax = Math.max(loMin, clamp(readFormNumber("ds_outer_core_length_max", CLIENT_BUSHING_SPEC.outer_core_length_max_mm), CLIENT_BUSHING_SPEC.outer_core_length_min_mm, CLIENT_BUSHING_SPEC.outer_core_length_max_mm));
       designSpaceCases = makeRubberCandidates(samples, idMin, idMax, liMin, liMax, loMin, loMax).map((intent, index) => ({
         case_id: "RB-" + String(index + 1).padStart(3, "0"),
         geometry: intent.geometry,
@@ -6618,15 +6649,16 @@ UI_HTML = """<!doctype html>
 
     function makeRubberCandidates(samples, idMin, idMax, liMin, liMax, loMin, loMax) {
       const base = normalizeRubberBushingIntent(currentEditIntent || defaultRubberBushingIntent());
+      base.material.name = "rubber";
       const count = Math.max(1, samples);
       const sleeveDelta = Math.max(0, (base.geometry.inner_sleeve_diameter_mm || base.geometry.inner_diameter_mm) - base.geometry.inner_diameter_mm);
       return Array.from({ length: count }, (_, index) => {
-        const t = count === 1 ? 0 : index / (count - 1);
-        const wobble = ((index * 37) % count) / Math.max(1, count - 1);
-        const id = lerp(idMin, idMax, t);
-        const innerLength = lerp(liMin, liMax, wobble);
-        const outerLength = lerp(loMin, loMax, (t + wobble) % 1);
+        const sampleIndex = index + 1;
+        const id = lerp(idMin, idMax, halton(sampleIndex, 2));
+        const innerLength = lerp(liMin, liMax, halton(sampleIndex, 3));
+        const outerLength = lerp(loMin, loMax, halton(sampleIndex, 5));
         const intent = normalizeRubberBushingIntent(base);
+        intent.geometry.outer_diameter_mm = CLIENT_BUSHING_SPEC.outer_diameter_mm;
         intent.geometry.inner_diameter_mm = roundTo(id, 0.5);
         intent.geometry.inner_sleeve_diameter_mm = intent.geometry.inner_sleeve ? roundTo(id + sleeveDelta, 0.5) : intent.geometry.inner_diameter_mm;
         intent.geometry.inner_sleeve_thickness_mm = intent.geometry.inner_sleeve ? Math.max(0, (intent.geometry.inner_sleeve_diameter_mm - intent.geometry.inner_diameter_mm) / 2) : 0;
@@ -6634,6 +6666,9 @@ UI_HTML = """<!doctype html>
         intent.geometry.outer_core_length_mm = roundTo(outerLength, 0.5);
         intent.geometry.inner_sleeve_length_mm = intent.geometry.inner_sleeve ? intent.geometry.inner_core_length_mm : 0;
         intent.geometry.height_mm = Math.max(intent.geometry.inner_core_length_mm, intent.geometry.outer_core_length_mm, 1);
+        intent.geometry.swaging_value_mm = CLIENT_BUSHING_SPEC.swaging_value_mm;
+        intent.geometry.decking_value_mm = CLIENT_BUSHING_SPEC.decking_value_mm;
+        intent.geometry.internal_teeth = CLIENT_BUSHING_SPEC.internal_teeth;
         intent.geometry.rubber_thickness_mm = Math.max(0, (intent.geometry.outer_diameter_mm - intent.geometry.inner_sleeve_diameter_mm) / 2 - intent.geometry.outer_sleeve_thickness_mm);
         return intent;
       });
@@ -6641,6 +6676,18 @@ UI_HTML = """<!doctype html>
 
     function lerp(a, b, t) {
       return a + (b - a) * t;
+    }
+
+    function halton(index, base) {
+      let fraction = 1;
+      let result = 0;
+      let value = Math.max(1, Math.trunc(index));
+      while (value > 0) {
+        fraction /= base;
+        result += fraction * (value % base);
+        value = Math.floor(value / base);
+      }
+      return result;
     }
 
     function roundTo(value, step) {
@@ -6683,34 +6730,68 @@ UI_HTML = """<!doctype html>
       return false;
     }
 
+    function captureTargetSearchInputs() {
+      const clampBounds = (value, minimum, maximum) => clamp(Number(value), minimum, maximum);
+      const idMin = clampBounds(readFormNumber("ts_inner_diameter_min", targetSearchInputs.idMin), CLIENT_BUSHING_SPEC.inner_diameter_min_mm, CLIENT_BUSHING_SPEC.inner_diameter_max_mm);
+      const innerLengthMin = clampBounds(readFormNumber("ts_inner_core_length_min", targetSearchInputs.innerLengthMin), CLIENT_BUSHING_SPEC.inner_core_length_min_mm, CLIENT_BUSHING_SPEC.inner_core_length_max_mm);
+      const outerLengthMin = clampBounds(readFormNumber("ts_outer_core_length_min", targetSearchInputs.outerLengthMin), CLIENT_BUSHING_SPEC.outer_core_length_min_mm, CLIENT_BUSHING_SPEC.outer_core_length_max_mm);
+      targetSearchInputs = {
+        kx: readPositiveNumber(readFormNumber("target_kx", targetSearchInputs.kx), CLIENT_BUSHING_SPEC.target_kx_n_mm),
+        ky: readPositiveNumber(readFormNumber("target_ky", targetSearchInputs.ky), CLIENT_BUSHING_SPEC.target_ky_n_mm),
+        kz: readPositiveNumber(readFormNumber("target_kz", targetSearchInputs.kz), CLIENT_BUSHING_SPEC.target_kz_n_mm),
+        idMin,
+        idMax: Math.max(idMin, clampBounds(readFormNumber("ts_inner_diameter_max", targetSearchInputs.idMax), CLIENT_BUSHING_SPEC.inner_diameter_min_mm, CLIENT_BUSHING_SPEC.inner_diameter_max_mm)),
+        innerLengthMin,
+        innerLengthMax: Math.max(innerLengthMin, clampBounds(readFormNumber("ts_inner_core_length_max", targetSearchInputs.innerLengthMax), CLIENT_BUSHING_SPEC.inner_core_length_min_mm, CLIENT_BUSHING_SPEC.inner_core_length_max_mm)),
+        outerLengthMin,
+        outerLengthMax: Math.max(outerLengthMin, clampBounds(readFormNumber("ts_outer_core_length_max", targetSearchInputs.outerLengthMax), CLIENT_BUSHING_SPEC.outer_core_length_min_mm, CLIENT_BUSHING_SPEC.outer_core_length_max_mm)),
+        samples: clampInt(readFormNumber("ts_sample_count", targetSearchInputs.samples), 1, 200, 50),
+      };
+      return targetSearchInputs;
+    }
+
+    function formatTargetStiffness(value) {
+      return formatNumber(value, 1) + " N/mm";
+    }
+
     async function findBestGeometry() {
-      const targetKx = readFormNumber("target_kx", 88.4);
-      const targetKy = readFormNumber("target_ky", 294.5);
-      const targetKz = readFormNumber("target_kz", 294.5);
-      const samples = clampInt(readFormNumber("ts_sample_count", 50), 1, 200, 50);
-      const idMin = readFormNumber("ts_inner_diameter_min", 21);
-      const idMax = Math.max(idMin, readFormNumber("ts_inner_diameter_max", 35));
-      const liMin = readFormNumber("ts_inner_core_length_min", 20);
-      const liMax = Math.max(liMin, readFormNumber("ts_inner_core_length_max", 71));
-      const loMin = readFormNumber("ts_outer_core_length_min", 20);
-      const loMax = Math.max(loMin, readFormNumber("ts_outer_core_length_max", 55));
+      const search = captureTargetSearchInputs();
       let best = null;
-      makeRubberCandidates(samples, idMin, idMax, liMin, liMax, loMin, loMax).forEach((intent, index) => {
+      makeRubberCandidates(search.samples, search.idMin, search.idMax, search.innerLengthMin, search.innerLengthMax, search.outerLengthMin, search.outerLengthMax).forEach((intent, index) => {
         const est = estimateBushingModal(intent.geometry, intent.material && intent.material.name);
         if (!est) return;
-        const kx = est.kBending;
+        const kx = est.kAxial;
         const ky = est.kBending;
-        const kz = est.kAxial;
-        const score = relError(kx, targetKx) + relError(ky, targetKy) + relError(kz, targetKz);
+        const kz = est.kBending;
+        const relativeErrors = [
+          relativeErrorMagnitude(kx, search.kx),
+          relativeErrorMagnitude(ky, search.ky),
+          relativeErrorMagnitude(kz, search.kz),
+        ];
+        const score = relativeErrors.reduce((total, error) => total + error * error, 0);
         if (!best || score < best.score) {
-          best = { case_id: "BEST-" + String(index + 1).padStart(3, "0"), intent, geometry: intent.geometry, kx, ky, kz, score };
+          best = {
+            case_id: "BEST-" + String(index + 1).padStart(3, "0"),
+            intent,
+            geometry: intent.geometry,
+            kx,
+            ky,
+            kz,
+            score,
+            maxRelativeError: Math.max(...relativeErrors),
+            rmsRelativeError: Math.sqrt(score / relativeErrors.length),
+          };
         }
       });
       if (!best) {
         appendMsg("bot", "Target stiffness search could not evaluate the current bounds.");
         return;
       }
+      best.withinTolerance = best.maxRelativeError <= CLIENT_BUSHING_SPEC.match_tolerance;
       targetStiffnessResult = best;
+      if (!best.withinTolerance) {
+        appendMsg("bot", "No design in the client bounds reached the 10% stiffness tolerance with the current screening model. The closest candidate is shown for review; validate or calibrate it with directional static FEM or client test data.");
+      }
       const keptUploadedMesh = applyRubberDesignIntent(best.intent);
       if (!keptUploadedMesh) {
         await generateRubberParametricCad(currentEditIntent);
@@ -6719,9 +6800,9 @@ UI_HTML = """<!doctype html>
       buildParamControls(currentEditIntent);
     }
 
-    function relError(value, target) {
+    function relativeErrorMagnitude(value, target) {
       const scale = Math.max(Math.abs(target), 1);
-      return Math.pow((value - target) / scale, 2);
+      return Math.abs(value - target) / scale;
     }
 
     function cadEngineSelectorHtml() {
