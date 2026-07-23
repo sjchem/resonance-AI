@@ -12,6 +12,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+MAX_VOXEL_HEX_CELLS = 120_000
+
+
 @dataclass(frozen=True)
 class UploadedMeshResult:
     """Summary of an uploaded-geometry volume mesh."""
@@ -31,6 +34,8 @@ class UploadedMeshResult:
     circumferential_divisions: int = 0
     radial_divisions: int = 0
     axial_divisions: int = 0
+    voxel_pitch_mm: float = 0.0
+    repair_detail: str = ""
 
     def summary(self) -> str:
         repair = " with STL surface classification" if self.repaired_surface else ""
@@ -84,6 +89,7 @@ def uploaded_geometry_to_volume_mesh(
 
     _initialize_gmsh(gmsh)
     repaired_surface = False
+    gmsh_error: Exception | None = None
     try:
         gmsh.option.setNumber("General.Terminal", 1 if verbose else 0)
         gmsh.option.setNumber("Mesh.StlRemoveBadTriangles", 2)
@@ -136,11 +142,24 @@ def uploaded_geometry_to_volume_mesh(
             count for name, count in element_counts.items() if name.startswith("hexahedron")
         )
     except Exception as exc:
-        if suffix == ".stl":
-            raise ValueError(_stl_volume_error(str(exc), repair_notes)) from exc
-        raise
+        gmsh_error = exc
     finally:
         gmsh.finalize()
+
+    if gmsh_error is not None:
+        if suffix == ".stl" and all_hexa:
+            return _uploaded_stl_to_voxel_hex(
+                mesh_source_file,
+                source_file,
+                output_file,
+                target_size_mm=target_size_mm,
+                global_mode=global_mode,
+                template=template_config,
+                repair_detail=_stl_volume_error(str(gmsh_error), repair_notes),
+            )
+        if suffix == ".stl":
+            raise ValueError(_stl_volume_error(str(gmsh_error), repair_notes)) from gmsh_error
+        raise gmsh_error
 
     if all_hexa and hexa_count <= 0:
         raise ValueError("Gmsh all-hexa subdivision did not create hexahedral volume elements.")
@@ -150,6 +169,24 @@ def uploaded_geometry_to_volume_mesh(
         if suffix == ".stl":
             raise ValueError(_stl_volume_error("Gmsh did not create tetrahedral volume elements.", repair_notes))
         raise ValueError("Gmsh did not create tetrahedral volume elements. Check that the uploaded geometry is a closed solid.")
+
+    if suffix == ".stl" and all_hexa:
+        from geometry.mesh_quality import evaluate_mesh
+
+        quality = evaluate_mesh(output_file)
+        if not quality.is_solvable:
+            return _uploaded_stl_to_voxel_hex(
+                mesh_source_file,
+                source_file,
+                output_file,
+                target_size_mm=target_size_mm,
+                global_mode=global_mode,
+                template=template_config,
+                repair_detail=(
+                    "Gmsh produced an FEM-unsafe uploaded-STL mesh with "
+                    f"{quality.inverted_count} folded and {quality.poor_count} poor hexahedral element(s)."
+                ),
+            )
 
     mesh_kind = "uploaded_geometry_tetra"
     if all_hexa:
@@ -169,6 +206,113 @@ def uploaded_geometry_to_volume_mesh(
         circumferential_divisions=template_config["circumferential"] if global_mode else 0,
         radial_divisions=template_config["radial"] if global_mode else 0,
         axial_divisions=template_config["axial"] if global_mode else 0,
+    )
+
+
+def _uploaded_stl_to_voxel_hex(
+    mesh_source_file: Path,
+    original_source_file: Path,
+    output_file: Path,
+    *,
+    target_size_mm: float | None,
+    global_mode: bool,
+    template: dict[str, int],
+    repair_detail: str,
+) -> UploadedMeshResult:
+    """Create a robust upload-derived C3D8 mesh when body-fitted Gmsh fails."""
+
+    import meshio
+    import numpy as np
+    import trimesh
+
+    mesh = trimesh.load_mesh(str(mesh_source_file), process=True)
+    if isinstance(mesh, trimesh.Scene):
+        geometries = [item for item in mesh.geometry.values() if hasattr(item, "faces") and len(item.faces)]
+        if not geometries:
+            raise ValueError("Uploaded STL contains no triangle surface for voxel hexahedral repair.")
+        mesh = trimesh.util.concatenate(geometries)
+    if not hasattr(mesh, "faces") or len(mesh.faces) == 0:
+        raise ValueError("Uploaded STL contains no triangle surface for voxel hexahedral repair.")
+
+    diagonal = float(np.linalg.norm(np.asarray(mesh.extents, dtype=float)))
+    if diagonal <= 0.0:
+        raise ValueError("Uploaded STL has zero-size bounds and cannot be volume meshed.")
+    if target_size_mm and target_size_mm > 0:
+        pitch = float(target_size_mm)
+    elif global_mode:
+        density = max(
+            template["circumferential"],
+            template["radial"] * 10,
+            template["axial"] * 4,
+        )
+        pitch = diagonal / max(density, 32)
+    else:
+        pitch = diagonal / 80.0
+    pitch = max(diagonal / 180.0, min(pitch, diagonal / 24.0))
+
+    voxel_grid = None
+    indices = np.empty((0, 3), dtype=np.int64)
+    for _ in range(4):
+        voxel_grid = mesh.voxelized(pitch=pitch, method="subdivide").fill(method="holes")
+        indices = np.asarray(voxel_grid.sparse_indices, dtype=np.int64)
+        if len(indices) <= MAX_VOXEL_HEX_CELLS:
+            break
+        pitch *= (len(indices) / MAX_VOXEL_HEX_CELLS) ** (1.0 / 3.0) * 1.05
+    if voxel_grid is None or len(indices) == 0:
+        raise ValueError("Uploaded STL voxel repair produced no solid cells.")
+    if len(indices) > MAX_VOXEL_HEX_CELLS:
+        raise ValueError(
+            "Uploaded STL voxel repair exceeds the "
+            f"{MAX_VOXEL_HEX_CELLS:,}-element POC safety limit."
+        )
+
+    corner_offsets = np.asarray(
+        (
+            (-1, -1, -1),
+            (1, -1, -1),
+            (1, 1, -1),
+            (-1, 1, -1),
+            (-1, -1, 1),
+            (1, -1, 1),
+            (1, 1, 1),
+            (-1, 1, 1),
+        ),
+        dtype=np.int64,
+    )
+    lattice_keys = (indices[:, None, :] * 2 + corner_offsets[None, :, :]).reshape(-1, 3)
+    unique_keys, inverse = np.unique(lattice_keys, axis=0, return_inverse=True)
+    lattice_points = unique_keys.astype(float) / 2.0
+    homogeneous = np.column_stack((lattice_points, np.ones(len(lattice_points), dtype=float)))
+    points = (homogeneous @ np.asarray(voxel_grid.transform, dtype=float).T)[:, :3]
+    cells = inverse.reshape(-1, 8)
+
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    meshio.write(
+        str(output_file),
+        meshio.Mesh(points=points, cells=[("hexahedron", cells)]),
+        file_format="gmsh22",
+        binary=True,
+    )
+    edge_lengths = np.linalg.norm(np.asarray(voxel_grid.transform, dtype=float)[:3, :3], axis=0)
+    mesh_kind = "uploaded_geometry_voxel_global_hex" if global_mode else "uploaded_geometry_voxel_hex"
+    return UploadedMeshResult(
+        source_file=original_source_file,
+        mesh_file=output_file,
+        source_format="STL",
+        node_count=len(points),
+        tetra_count=0,
+        hexa_count=len(cells),
+        min_edge_mm=float(edge_lengths.min()),
+        max_edge_mm=float(edge_lengths.max()),
+        repaired_surface=True,
+        mesh_kind=mesh_kind,
+        global_compatible=False,
+        template_id=_template_id(template) if global_mode else "",
+        circumferential_divisions=template["circumferential"] if global_mode else 0,
+        radial_divisions=template["radial"] if global_mode else 0,
+        axial_divisions=template["axial"] if global_mode else 0,
+        voxel_pitch_mm=float(pitch),
+        repair_detail=repair_detail,
     )
 
 

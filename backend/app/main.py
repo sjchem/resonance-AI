@@ -338,7 +338,15 @@ async def generate_mesh(payload: dict) -> dict:
             step_path = uploaded_geometry
             mesh_strategy = mesh_result.mesh_kind
             mode_label = "global-density" if mesh_mode == "global" else "automatic-density"
-            mesh_format = f"Uploaded {mesh_result.source_format} body-fitted all-hexa mesh ({mode_label})"
+            if mesh_result.mesh_kind.startswith("uploaded_geometry_voxel"):
+                mesh_format = f"Uploaded {mesh_result.source_format} voxel-repaired all-hexa mesh ({mode_label})"
+                fallback_reason = (
+                    "Body-fitted Gmsh meshing could not create solver-safe hexahedra, so the uploaded "
+                    f"surface was reconstructed as a {mesh_result.voxel_pitch_mm:.2f} mm voxel C3D8 mesh. "
+                    "This follows the uploaded shape approximately and does not use OD/ID/height parameters."
+                )
+            else:
+                mesh_format = f"Uploaded {mesh_result.source_format} body-fitted all-hexa mesh ({mode_label})"
         elif _is_structured_bushing_intent(intent):
             raw_mesh = work_dir / f"{name}_hex.vtk"
             mesh_result = generate_bushing_hex_mesh(
@@ -430,6 +438,7 @@ async def generate_mesh(payload: dict) -> dict:
             "global_mesh": _global_mesh_payload(mesh_result),
             "min_edge_mm": mesh_result.min_edge_mm,
             "max_edge_mm": mesh_result.max_edge_mm,
+            "voxel_pitch_mm": getattr(mesh_result, "voxel_pitch_mm", 0.0),
             "cleaning": {
                 "merged_nodes": clean_result.merged_nodes,
                 "removed_cells": clean_result.removed_cells,
@@ -621,7 +630,10 @@ def _raise_missing_uploaded_geometry() -> None:
 
 def _global_mesh_payload(mesh_result) -> dict:
     mesh_kind = str(getattr(mesh_result, "mesh_kind", "") or "")
-    settings_only = mesh_kind == "uploaded_geometry_global_hex"
+    settings_only = mesh_kind in {
+        "uploaded_geometry_global_hex",
+        "uploaded_geometry_voxel_global_hex",
+    }
     template_id = getattr(mesh_result, "template_id", "") or None
     return {
         "enabled": bool(getattr(mesh_result, "global_compatible", False) or settings_only),
@@ -719,7 +731,7 @@ def _quality_payload(quality, cell_counts: dict[str, int]) -> dict:
     }
 
 
-def _mesh_surface_preview(mesh_path: Path, *, max_faces: int = 12000) -> dict:
+def _mesh_surface_preview(mesh_path: Path, *, max_faces: int = 6000) -> dict:
     """Extract exterior mesh triangles for the browser preview."""
 
     import meshio
@@ -5294,6 +5306,9 @@ UI_HTML = """<!doctype html>
       }
       if (result.mesh_strategy === "uploaded_geometry_global_hex") {
         return '<div class="muted" style="margin-top:6px">Gmsh body-fitted all-hexa mesh generated with fixed global density settings. Connectivity is repeatable for the same uploaded geometry, but is not shared across unrelated CAD models.</div>';
+      }
+      if (result.mesh_strategy === "uploaded_geometry_voxel_hex" || result.mesh_strategy === "uploaded_geometry_voxel_global_hex") {
+        return '<div class="muted" style="margin-top:6px">Uploaded-derived voxel all-hexa fallback: each occupied voxel is a valid C3D8 element. Approximation pitch: <strong>' + formatNumber(result.voxel_pitch_mm, 2) + ' mm</strong>.</div>';
       }
       return '<div class="muted" style="margin-top:6px">Hex-only meshing is required for this workflow.</div>';
     }

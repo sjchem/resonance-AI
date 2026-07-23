@@ -22,6 +22,7 @@ gmsh==4.15.2
 pyvista==0.48.4
 meshio==5.3.5
 numpy==2.4.6
+scipy==1.17.1
 trimesh==4.12.2
 networkx==3.6.1
 manifold3d==3.5.2
