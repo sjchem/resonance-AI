@@ -276,7 +276,10 @@ async def generate_mesh(payload: dict) -> dict:
     name = _safe_export_name(str(payload.get("name", "model")))
     intent = payload.get("intent") if isinstance(payload.get("intent"), dict) else {}
     geometry_source = str(payload.get("geometry_source") or "").strip().lower()
-    uploaded_geometry = None if geometry_source == "bushing_poc_hex" else _uploaded_geometry_from_payload(payload)
+    # An uploaded STEP/STL always wins over a parametric mesh hint. This also
+    # protects requests sent by an older cached frontend that still includes
+    # the former bushing surrogate flag.
+    uploaded_geometry = _uploaded_geometry_from_payload(payload)
     if not uploaded_geometry and not prompt and not _is_structured_bushing_intent(intent):
         raise HTTPException(status_code=400, detail="A prompt is required to generate a mesh.")
 
@@ -854,7 +857,7 @@ async def run_fem(payload: dict) -> dict:
     name = _safe_export_name(str(payload.get("name", "model")))
     intent = payload.get("intent") if isinstance(payload.get("intent"), dict) else {}
     geometry_source = str(payload.get("geometry_source") or "").strip().lower()
-    uploaded_geometry = None if geometry_source == "bushing_poc_hex" else _uploaded_geometry_from_payload(payload)
+    uploaded_geometry = _uploaded_geometry_from_payload(payload)
     if not uploaded_geometry and not prompt and not _is_structured_bushing_intent(intent):
         raise HTTPException(status_code=400, detail="A prompt is required to run the FEM pipeline.")
 
@@ -2485,6 +2488,14 @@ UI_HTML = """<!doctype html>
     .mesh-control-field select {
       padding: 7px 9px;
       font-size: 13px;
+    }
+    .mesh-readonly-value {
+      padding: 8px 9px;
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--ink);
+      font-size: 13px;
+      font-weight: 700;
     }
     .mesh-global-summary {
       display: flex;
@@ -4909,6 +4920,7 @@ UI_HTML = """<!doctype html>
     function renderMeshPanel() {
       if (!meshResults) return;
       const src = simSourceDims();
+      const exactUpload = exactUploadedGeometryContext();
       if (!src) {
         cleanupMeshViewer();
         meshResults.innerHTML = "";
@@ -4922,7 +4934,7 @@ UI_HTML = """<!doctype html>
         '<div class="sim-head"><strong>Gmsh mesh</strong>' +
         '<span class="sim-head-actions">' +
         '<button type="button" class="sim-btn" id="meshGenerateBtn">Generate mesh</button>' +
-        '<button type="button" class="sim-btn secondary" id="shapePcaBtn">Shape PCA</button>' +
+        (exactUpload ? "" : '<button type="button" class="sim-btn secondary" id="shapePcaBtn">Shape PCA</button>') +
         '</span></div>' +
         meshControlsHtml() +
         '<p class="muted" style="margin:10px 0 0">Mesh result appears below the CAD model preview.</p>' +
@@ -4937,22 +4949,25 @@ UI_HTML = """<!doctype html>
     }
 
     function meshControlsHtml() {
-      const uploadedHexSurrogate = Boolean(exactUploadedGeometryContext() && rubberBushingWorkflowActive);
-      const structuredLabel = uploadedHexSurrogate ? "Bushing surrogate - structured hex" : "Structured hex";
-      const globalLabel = uploadedHexSurrogate ? "Bushing surrogate - global dataset hex" : "Global dataset mesh";
-      const helperText = uploadedHexSurrogate
-        ? "For uploaded STL/CAD in this POC, hex meshing builds a bushing surrogate from confirmed dimensions. The uploaded file stays as the visual reference; exact uploaded-geometry meshing uses the tetra path."
-        : "Global mode keeps node IDs and element connectivity shared across the dataset.";
+      if (exactUploadedGeometryContext()) {
+        return (
+          '<div class="mesh-controls">' +
+          '<div class="mesh-control-field full"><label>Mesh source</label>' +
+          '<div class="mesh-readonly-value">Exact uploaded STEP/STL geometry</div></div>' +
+          '<p class="muted" style="margin:0">Gmsh creates a tetrahedral volume mesh directly from the uploaded solid. OD, ID, height, and the internal bushing template are not used.</p>' +
+          '</div>'
+        );
+      }
       return (
         '<div class="mesh-controls">' +
         '<div class="mesh-control-field full"><label for="meshModeSelect">Mesh mode</label>' +
-        '<select id="meshModeSelect"><option value="structured"' + (meshMode === "structured" ? " selected" : "") + '>' + structuredLabel + '</option><option value="global"' + (meshMode === "global" ? " selected" : "") + '>' + globalLabel + '</option></select></div>' +
+        '<select id="meshModeSelect"><option value="structured"' + (meshMode === "structured" ? " selected" : "") + '>Structured hex</option><option value="global"' + (meshMode === "global" ? " selected" : "") + '>Global dataset mesh</option></select></div>' +
         '<div class="mesh-template-grid">' +
         '<div class="mesh-control-field"><label for="globalCircumDivisions">Circum.</label><input id="globalCircumDivisions" type="number" min="24" max="192" step="4" value="' + globalMeshTemplate.circumferential_divisions + '"></div>' +
         '<div class="mesh-control-field"><label for="globalRadialDivisions">Radial</label><input id="globalRadialDivisions" type="number" min="2" max="32" step="1" value="' + globalMeshTemplate.radial_divisions + '"></div>' +
         '<div class="mesh-control-field"><label for="globalAxialDivisions">Axial</label><input id="globalAxialDivisions" type="number" min="3" max="64" step="1" value="' + globalMeshTemplate.axial_divisions + '"></div>' +
         '</div>' +
-        '<p class="muted" style="margin:0">' + escapeHtml(helperText) + '</p>' +
+        '<p class="muted" style="margin:0">Global mode keeps node IDs and element connectivity shared across the dataset.</p>' +
         '</div>'
       );
     }
@@ -4985,22 +5000,16 @@ UI_HTML = """<!doctype html>
       });
     }
 
-    function useBushingPocHex(intent) {
-      return Boolean(exactUploadedGeometryContext() && rubberBushingWorkflowActive && isStructuredBushingIntentClient(intent || currentEditIntent || (lastExport && lastExport.intent)));
-    }
-
     function meshRequestOptions(intent) {
       const exactUpload = exactUploadedGeometryContext();
       const options = {
         mesh_mode: meshMode,
         global_template: Object.assign({}, globalMeshTemplate),
       };
-      if (useBushingPocHex(intent)) {
-        options.geometry_source = "bushing_poc_hex";
-      } else if (exactUpload && exactUpload.upload_id) {
+      if (exactUpload && exactUpload.upload_id) {
         options.upload_id = exactUpload.upload_id;
       }
-      if (exactUpload && exactUpload.upload_data_base64 && !useBushingPocHex(intent)) {
+      if (exactUpload && exactUpload.upload_data_base64) {
         options.upload_data_base64 = exactUpload.upload_data_base64;
         options.upload_filename = exactUpload.upload_filename || exactUpload.filename || "uploaded_geometry.stl";
         options.upload_content_type = exactUpload.upload_content_type || "application/octet-stream";
@@ -6188,13 +6197,12 @@ UI_HTML = """<!doctype html>
       const exactUpload = exactUploadedGeometryContext();
       const prompt = (lastExport && lastExport.prompt) || pendingDraftPrompt || (exactUpload ? "Exact uploaded geometry FEM" : "");
       const intent = (lastExport && lastExport.intent) || {};
-      const bushingPocHex = useBushingPocHex(intent);
       if (!exactUpload && !prompt.trim() && !isStructuredBushingIntentClient(intent)) {
         lastFemContour = { status: "error", message: "Send a chat message first, upload STEP/STL geometry, or generate a Rubber bushing before running FEM." };
         renderFemContour(lastFemContour);
         return;
       }
-      if (exactUpload && !bushingPocHex && lastMeshResult && lastMeshResult.status === "preview_only") {
+      if (exactUpload && lastMeshResult && lastMeshResult.status === "preview_only") {
         lastFemContour = {
           status: "error",
           message: "FEM needs a real closed volume mesh. This uploaded STL is preview-only because exact meshing failed; upload a watertight STL/STEP solid before running FEM batch.",
