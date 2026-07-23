@@ -3336,12 +3336,6 @@ UI_HTML = """<!doctype html>
             prompt: "I want a rubber suspension bushing. Outer diameter 60 mm, inner diameter 20 mm, height 40 mm. Material: rubber, Shore A 55. Please ask me anything else needed (chamfer, fillet, load direction).",
           },
           {
-            key: "rubber-upload",
-            title: "Upload image / CAD",
-            desc: "Start from document, image, STEP, STL, SCAD",
-            prompt: "Create a rubber bushing from uploaded engineering context.",
-          },
-          {
             key: "bonded-bushing",
             title: "Bonded bushing",
             desc: "Rubber-metal bonded sleeve",
@@ -3438,14 +3432,6 @@ UI_HTML = """<!doctype html>
       }
       chatInput.value = item.prompt;
       autoResizeChatInput();
-      if (key === "rubber-bushing") {
-        activateRubberBushingWorkflow(item);
-        return;
-      }
-      if (key === "rubber-upload") {
-        activateRubberUploadWorkflow(item);
-        return;
-      }
       chatInput.focus();
       chatInput.setSelectionRange(chatInput.value.length, chatInput.value.length);
     });
@@ -3671,6 +3657,12 @@ UI_HTML = """<!doctype html>
           completeActivity("Rubber bushing loaded");
           return;
         }
+        if (!rubberBushingWorkflowActive) {
+          rubberBushingWorkflowActive = true;
+          rubberBushingTab = "single";
+          designSpaceCases = [];
+          targetStiffnessResult = null;
+        }
 
         const messageParts = [`Extracted file context from ${payload.filename}.`, payload.summary];
         if (meshNote) {
@@ -3699,6 +3691,7 @@ UI_HTML = """<!doctype html>
           lastExport.cadEngine = selectedCadEngine;
           jsonOutput.textContent = JSON.stringify(lastExport.intent, null, 2);
           syncDownloadItems();
+          setParamEditorOpen(true);
           buildParamControls(lastExport.intent);
           if (payload.clientMesh) {
             await generateRubberParametricCad(lastExport.intent);
@@ -4470,6 +4463,7 @@ UI_HTML = """<!doctype html>
       // Identity warp to start (keeps the exact uploaded shape on screen).
       overrideMeshFaces = warpEditableMeshFaces(intent.geometry);
       render3DPreview(intent).catch(() => {});
+      setParamEditorOpen(true);
       buildParamControls(intent);
       appendMsg(
         "bot",
@@ -6082,52 +6076,6 @@ UI_HTML = """<!doctype html>
       if (simShown) {
         renderSimOutput();
       }
-    }
-
-    function activateRubberBushingWorkflow(item) {
-      rubberBushingWorkflowActive = true;
-      rubberBushingTab = "single";
-      designSpaceCases = [];
-      targetStiffnessResult = null;
-      preferParametric = true;
-      meshEditMode = false;
-      overrideMeshFaces = null;
-      editableMesh = null;
-      lastMeshResult = null;
-      lastFemContour = null;
-      simShown = false;
-      stopSimAnimation();
-
-      const intent = normalizeRubberBushingIntent(defaultRubberBushingIntent());
-      currentEditIntent = intent;
-      baseGeometry = Object.assign({}, intent.geometry || {});
-      lastExport.intent = intent;
-      lastExport.prompt = item && item.prompt ? item.prompt : "Rubber bushing parametric design";
-      lastExport.name = "rubber_bushing";
-      lastExport.cadEngine = selectedCadEngine;
-      lastExport.mesh = null;
-      lastExport.canvas = null;
-      downloadBtn.disabled = true;
-      jsonOutput.textContent = JSON.stringify(intent, null, 2);
-
-      setParamEditorOpen(true);
-      buildParamControls(intent);
-      updateSummary(intent);
-      cleanupViewer();
-      preview.innerHTML = '<div class="placeholder"><p class="muted">Edit the rubber-bushing parameters, then click Generate CAD.</p></div>';
-      if (paramHint) paramHint.textContent = "Rubber bushing parametric workflow is ready.";
-    }
-
-    function activateRubberUploadWorkflow(item) {
-      selectedCadEngine = "openscad";
-      activateRubberBushingWorkflow(item || { prompt: "Create a rubber bushing from uploaded engineering context." });
-      setUploadContextOpen(true);
-      setEngineeringChatOpen(false);
-      setParamEditorOpen(true);
-      if (summaryBox) {
-        summaryBox.innerHTML = '<p><strong>Upload workflow ready.</strong> Add an image, document, or CAD model. The extracted context will update the Rubber bushing workflow and keep OpenSCAD selected for parametric generation.</p>';
-      }
-      if (contextFile) contextFile.focus();
     }
 
     function defaultRubberBushingIntent() {
