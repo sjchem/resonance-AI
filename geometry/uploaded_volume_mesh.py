@@ -204,6 +204,7 @@ def _prepare_stl_for_volume_mesh(source_file: Path, work_dir: Path) -> tuple[Pat
         trimesh.repair.fix_normals(mesh)
         trimesh.repair.fix_inversion(mesh)
         filled = bool(mesh.fill_holes())
+        mesh = _union_overlapping_bodies(mesh, trimesh, notes)
         after_faces = int(len(mesh.faces))
         if after_faces != before_faces:
             notes.append(f"cleaned triangles {before_faces}->{after_faces}")
@@ -218,11 +219,45 @@ def _prepare_stl_for_volume_mesh(source_file: Path, work_dir: Path) -> tuple[Pat
 
     repaired_file = work_dir / f"{source_file.stem}_cleaned_for_volume.stl"
     try:
-        mesh.export(repaired_file)
+        # Gmsh 4.15 can reject small binary STLs written by trimesh even when
+        # the surface is valid. Its ASCII reader handles the same triangles
+        # consistently and preserves the exact repaired upload geometry.
+        repaired_file.write_text(
+            trimesh.exchange.stl.export_stl_ascii(mesh),
+            encoding="ascii",
+        )
     except Exception as exc:  # noqa: BLE001
         notes.append(f"cleaned STL export failed: {exc}")
         return source_file, notes
     return repaired_file, notes or ["processed STL surface"]
+
+
+def _union_overlapping_bodies(mesh, trimesh_module, notes: list[str]):
+    """Remove overlapping internal shells with Manifold before Gmsh import."""
+
+    try:
+        bodies = list(mesh.split(only_watertight=False))
+    except Exception as exc:  # noqa: BLE001 - ordinary cleanup can still help
+        notes.append(f"body separation unavailable: {exc}")
+        return mesh
+    if len(bodies) <= 1:
+        return mesh
+
+    try:
+        repaired = trimesh_module.boolean.union(
+            bodies,
+            engine="manifold",
+            check_volume=False,
+        )
+    except Exception as exc:  # noqa: BLE001 - preserve original upload on repair failure
+        notes.append(f"overlapping-shell union unavailable: {exc}")
+        return mesh
+    if repaired is None or not hasattr(repaired, "faces") or len(repaired.faces) == 0:
+        notes.append("overlapping-shell union returned no surface")
+        return mesh
+
+    notes.append(f"boolean-unioned {len(bodies)} STL shell(s)")
+    return repaired
 
 
 def uploaded_geometry_to_tet_mesh(
@@ -273,8 +308,9 @@ def _import_stl_as_volume(gmsh_module, source_file: Path) -> None:
             surfaces = gmsh_module.model.getEntities(2)
             if not surfaces:
                 raise ValueError("No closed STL surfaces were found.")
-            loop = gmsh_module.model.geo.addSurfaceLoop([tag for _, tag in surfaces])
-            gmsh_module.model.geo.addVolume([loop])
+            for component in _surface_components(gmsh_module, [tag for _, tag in surfaces]):
+                loop = gmsh_module.model.geo.addSurfaceLoop(component)
+                gmsh_module.model.geo.addVolume([loop])
             gmsh_module.model.geo.synchronize()
             return
         except Exception as exc:  # noqa: BLE001 - keep trying alternative STL topology modes
@@ -286,6 +322,40 @@ def _import_stl_as_volume(gmsh_module, source_file: Path) -> None:
         "Repair the STL surface, export STEP if possible, or use the editable bushing surrogate. "
         f"Gmsh detail: {detail}"
     )
+
+
+def _surface_components(gmsh_module, surface_tags: list[int]) -> list[list[int]]:
+    """Group classified STL surfaces that share boundary curves."""
+
+    parent = {tag: tag for tag in surface_tags}
+
+    def find(tag: int) -> int:
+        while parent[tag] != tag:
+            parent[tag] = parent[parent[tag]]
+            tag = parent[tag]
+        return tag
+
+    curve_owner: dict[int, int] = {}
+    for surface_tag in surface_tags:
+        boundaries = gmsh_module.model.getBoundary(
+            [(2, surface_tag)],
+            combined=False,
+            oriented=False,
+            recursive=False,
+        )
+        for dimension, curve_tag in boundaries:
+            if dimension != 1:
+                continue
+            owner = curve_owner.setdefault(curve_tag, surface_tag)
+            left = find(surface_tag)
+            right = find(owner)
+            if left != right:
+                parent[right] = left
+
+    components: dict[int, list[int]] = {}
+    for surface_tag in surface_tags:
+        components.setdefault(find(surface_tag), []).append(surface_tag)
+    return list(components.values())
 
 
 def _stl_volume_error(detail: str, repair_notes: list[str]) -> str:

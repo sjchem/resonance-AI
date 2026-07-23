@@ -68,6 +68,22 @@ class SolverRun:
     def ok(self) -> bool:
         return self.returncode == 0 and self.dat_file.exists()
 
+    def failure_summary(self, *, max_lines: int = 14, max_chars: int = 1800) -> str:
+        """Return the useful tail of a failed solver run for an API response."""
+
+        combined = "\n".join(part.strip() for part in (self.stderr, self.stdout) if part.strip())
+        if not combined:
+            return f"CalculiX exited with code {self.returncode} without diagnostic output."
+
+        lines = [line.strip() for line in combined.splitlines() if line.strip()]
+        markers = ("error", "failed", "singular", "negative", "jacobian", "not enough", "fatal")
+        marked = [line for line in lines if any(marker in line.lower() for marker in markers)]
+        selected = marked[-max_lines:] if marked else lines[-max_lines:]
+        summary = "\n".join(selected)
+        if len(summary) > max_chars:
+            summary = summary[-max_chars:]
+        return f"CalculiX exited with code {self.returncode}. {summary}"
+
 
 def find_ccx() -> str | None:
     """Locate the CalculiX executable."""
@@ -210,19 +226,56 @@ def _boundary_nodes(points: np.ndarray, element_blocks: list[ElementBlock], boun
     if boundary == "encastre":
         return used
 
-    axis = 2  # Z
-    coords = points[used, axis]
-    span = float(coords.max() - coords.min())
-    tol = max(span * 0.02, 1e-6)
+    fixed_parts: list[np.ndarray] = []
+    for component in _element_node_components(element_blocks):
+        axis = 2  # Z
+        coords = points[component, axis]
+        span = float(coords.max() - coords.min())
+        tol = max(span * 0.02, 1e-6)
+        if boundary == "fixed_top":
+            target = coords.max()
+            fixed_parts.append(component[coords >= target - tol])
+        else:  # fixed_bottom (default)
+            target = coords.min()
+            fixed_parts.append(component[coords <= target + tol])
+    return np.unique(np.concatenate(fixed_parts)) if fixed_parts else np.empty(0, dtype=int)
 
-    if boundary == "fixed_top":
-        target = coords.max()
-        mask = coords >= target - tol
-    else:  # fixed_bottom (default)
-        target = coords.min()
-        mask = coords <= target + tol
 
-    return used[mask]
+def _element_node_components(element_blocks: list[ElementBlock]) -> list[np.ndarray]:
+    """Group nodes connected by solid elements without an optional graph package."""
+
+    all_cells = [np.asarray(block.connectivity, dtype=int) for block in element_blocks if block.connectivity.size]
+    if not all_cells:
+        return []
+    used = np.unique(np.concatenate([cells.ravel() for cells in all_cells]))
+    parent = {int(node): int(node) for node in used}
+
+    def find(node: int) -> int:
+        root = node
+        while parent[root] != root:
+            root = parent[root]
+        while parent[node] != node:
+            next_node = parent[node]
+            parent[node] = root
+            node = next_node
+        return root
+
+    def union(left: int, right: int) -> None:
+        left_root = find(left)
+        right_root = find(right)
+        if left_root != right_root:
+            parent[right_root] = left_root
+
+    for cells in all_cells:
+        for cell in cells:
+            anchor = int(cell[0])
+            for node in cell[1:]:
+                union(anchor, int(node))
+
+    groups: dict[int, list[int]] = {}
+    for node in used:
+        groups.setdefault(find(int(node)), []).append(int(node))
+    return [np.asarray(nodes, dtype=int) for nodes in groups.values()]
 
 
 def _chunk_ids(ids: np.ndarray, per_line: int = 8) -> list[str]:

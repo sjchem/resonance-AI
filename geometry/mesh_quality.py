@@ -97,11 +97,11 @@ def evaluate_mesh(mesh_file: Path, *, quality_threshold: float = DEFAULT_MIN_QUA
 
     if hex_cells.size:
         hex_points = points[hex_cells]
-        volume = _hex_volume(hex_points)
+        volume, min_jacobian = _hex_volume_and_min_jacobian(hex_points)
         quality = _hex_edge_quality(hex_points)
         quality_parts.append(quality)
         volume_parts.append(volume)
-        inverted_count += int(np.count_nonzero(volume <= 0.0))
+        inverted_count += int(np.count_nonzero(min_jacobian <= 0.0))
 
     all_quality = np.concatenate(quality_parts)
     all_volume = np.concatenate(volume_parts)
@@ -166,8 +166,14 @@ def _tetra_quality(p0, p1, p2, p3, volume) -> np.ndarray:
     return np.clip(quality, 0.0, 1.0)
 
 
-def _hex_volume(points: np.ndarray) -> np.ndarray:
-    """Approximate hex volume by decomposing each corner hex into tetrahedra."""
+def _hex_volume_and_min_jacobian(points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Return approximate volume and the minimum sampled Jacobian per hex.
+
+    Absolute tetrahedral volumes are useful for reporting element size, but
+    they cannot reveal a folded or inverted hexahedron. Sample the trilinear
+    C3D8 Jacobian at the element centre and all eight natural-space corners so
+    invalid cells are rejected before CalculiX starts.
+    """
 
     tet_indices = np.asarray(
         (
@@ -183,7 +189,39 @@ def _hex_volume(points: np.ndarray) -> np.ndarray:
     for a, b, c, d in tet_indices:
         signed = np.einsum("ij,ij->i", np.cross(points[:, b] - points[:, a], points[:, c] - points[:, a]), points[:, d] - points[:, a]) / 6.0
         volume += np.abs(signed)
-    return volume
+
+    natural_nodes = np.asarray(
+        (
+            (-1.0, -1.0, -1.0),
+            (1.0, -1.0, -1.0),
+            (1.0, 1.0, -1.0),
+            (-1.0, 1.0, -1.0),
+            (-1.0, -1.0, 1.0),
+            (1.0, -1.0, 1.0),
+            (1.0, 1.0, 1.0),
+            (-1.0, 1.0, 1.0),
+        ),
+        dtype=float,
+    )
+    sample_points = np.vstack((np.zeros((1, 3), dtype=float), natural_nodes))
+    min_jacobian = np.full(points.shape[0], np.inf, dtype=float)
+    for xi, eta, zeta in sample_points:
+        derivatives = np.column_stack(
+            (
+                natural_nodes[:, 0]
+                * (1.0 + natural_nodes[:, 1] * eta)
+                * (1.0 + natural_nodes[:, 2] * zeta),
+                natural_nodes[:, 1]
+                * (1.0 + natural_nodes[:, 0] * xi)
+                * (1.0 + natural_nodes[:, 2] * zeta),
+                natural_nodes[:, 2]
+                * (1.0 + natural_nodes[:, 0] * xi)
+                * (1.0 + natural_nodes[:, 1] * eta),
+            )
+        ) / 8.0
+        jacobian = np.einsum("ni,enj->eij", derivatives, points)
+        min_jacobian = np.minimum(min_jacobian, np.linalg.det(jacobian))
+    return volume, min_jacobian
 
 
 def _hex_edge_quality(points: np.ndarray) -> np.ndarray:

@@ -888,6 +888,7 @@ async def run_fem(payload: dict) -> dict:
     try:
         from geometry.bushing_hex_mesh import generate_bushing_hex_mesh  # noqa: WPS433
         from geometry.mesh_cleaner import clean_mesh  # noqa: WPS433
+        from geometry.mesh_quality import evaluate_mesh  # noqa: WPS433
         from geometry.uploaded_volume_mesh import uploaded_geometry_to_volume_mesh  # noqa: WPS433
         from simulate.pipeline import PipelineConfig, run_pipeline  # noqa: WPS433
         from simulate.materials import resolve_material  # noqa: WPS433
@@ -934,6 +935,16 @@ async def run_fem(payload: dict) -> dict:
             ),
           ) from exc
         clean_mesh(raw_mesh, clean_mesh_path)
+        quality = evaluate_mesh(clean_mesh_path)
+        if quality.inverted_count:
+          raise HTTPException(
+            status_code=422,
+            detail=(
+              "The uploaded geometry produced "
+              f"{quality.inverted_count} folded or inverted hexahedral element(s). "
+              "Repair the source solid or reduce its geometric defects before FEM."
+            ),
+          )
         setup = ModalSetup(
           mesh_file=clean_mesh_path,
           material=resolve_material(material),
@@ -942,8 +953,10 @@ async def run_fem(payload: dict) -> dict:
         )
         run = run_modal(setup, sim_dir, job_name=name)
         if not run.ok:
-          detail = run.stderr or run.stdout or "CalculiX solve failed."
-          raise HTTPException(status_code=500, detail=f"Uploaded-geometry FEM solve failed: {detail}")
+          raise HTTPException(
+            status_code=500,
+            detail=f"Uploaded-geometry FEM solve failed: {run.failure_summary()}",
+          )
         results = parse_dat(run.dat_file)
         write_report(results, sim_dir / f"{name}_modal.json")
         _try_modal_pca(run.frd_file, sim_dir / f"{name}_pca.json", num_modes)
@@ -968,8 +981,7 @@ async def run_fem(payload: dict) -> dict:
         )
         run = run_modal(setup, sim_dir, job_name=name)
         if not run.ok:
-          detail = run.stderr or run.stdout or "CalculiX solve failed."
-          raise HTTPException(status_code=500, detail=f"FEM solve failed: {detail}")
+          raise HTTPException(status_code=500, detail=f"FEM solve failed: {run.failure_summary()}")
         results = parse_dat(run.dat_file)
         write_report(results, sim_dir / f"{name}_modal.json")
         _try_modal_pca(run.frd_file, sim_dir / f"{name}_pca.json", num_modes)
