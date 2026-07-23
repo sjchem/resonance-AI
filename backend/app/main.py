@@ -3688,7 +3688,7 @@ UI_HTML = """<!doctype html>
         const autoBushingDims = payload.clientMesh ? measureBushingFromMesh(payload.clientMesh) : null;
         if (autoBushingDims && !rubberBushingWorkflowActive) {
           selectedCadEngine = "openscad";
-          meshMode = "global";
+          meshMode = "structured";
           pendingDraftPrompt = pendingDraftPrompt || "Rubber bushing from uploaded STL geometry";
           convertUploadedToBushing();
           renderMeshPanel();
@@ -3718,7 +3718,7 @@ UI_HTML = """<!doctype html>
         messageParts.push(`Proposed short CAD prompt:\\n${pendingDraftPrompt}`);
         if (rubberBushingWorkflowActive) {
           selectedCadEngine = "openscad";
-          meshMode = "global";
+          meshMode = "structured";
           const baseIntent = defaultRubberBushingIntent();
           if (payload.clientMesh) {
             const measuredDims = measureBushingFromMesh(payload.clientMesh);
@@ -5452,7 +5452,7 @@ UI_HTML = """<!doctype html>
         lastShapePcaResult = { status: "error", message: error.message || String(error) };
         renderShapePcaOutputPanel();
       } finally {
-        meshMode = "global";
+        meshMode = priorMode;
         if (priorMode !== "global") renderMeshPanel();
         const nextBtn = document.getElementById("shapePcaBtn");
         if (nextBtn) nextBtn.disabled = false;
