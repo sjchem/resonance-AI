@@ -89,7 +89,12 @@ async def chat_cad(request: CADChatRequest) -> CADChatResponse:
     """Return an interactive chat reply plus the current CAD state."""
 
     try:
-        return await respond_to_cad_chat(request.message, request.prompt, request.history)
+        return await respond_to_cad_chat(
+            request.message,
+            request.prompt,
+            request.history,
+            request.knowledge_sources,
+        )
     except OpenAIConfigurationError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except OpenAIRequestError as exc:
@@ -1591,7 +1596,7 @@ UI_HTML = """<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Resonance AI — Vibracoustic</title>
+  <title>Product Design Studio — Vibracoustic</title>
   <link rel="stylesheet" href="/static/cad-viewer.css">
   <style>
     :root {
@@ -1666,13 +1671,6 @@ UI_HTML = """<!doctype html>
       color: var(--brand);
       white-space: nowrap;
     }
-    .product .tag {
-      font-size: 12px;
-      color: var(--muted);
-      text-transform: uppercase;
-      letter-spacing: 1.4px;
-      margin-top: 2px;
-    }
     h1 {
       margin: 0 0 8px;
       font-size: clamp(30px, 4vw, 54px);
@@ -1722,7 +1720,7 @@ UI_HTML = """<!doctype html>
     }
     .hero-metrics {
       display: grid;
-      grid-template-columns: repeat(3, 1fr);
+      grid-template-columns: repeat(4, 1fr);
       gap: 1px;
       background: rgba(83, 128, 178, 0.24);
       border: 1px solid rgba(83, 128, 178, 0.28);
@@ -2030,6 +2028,79 @@ UI_HTML = """<!doctype html>
       box-shadow: 0 12px 30px rgba(15, 23, 42, 0.05);
     }
     .msg.bot.err { border-color: #fecdca; background: #fff7f6; color: var(--danger); }
+    .knowledge-sources {
+      display: grid;
+      gap: 8px;
+      padding: 12px;
+      border-bottom: 1px solid var(--line);
+      background: #f8fbff;
+    }
+    .knowledge-sources-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .knowledge-sources-head strong {
+      color: var(--ink);
+      font-size: 13px;
+    }
+    .knowledge-source-options {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .knowledge-source {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      padding: 9px 10px;
+      border: 1px solid var(--line);
+      background: #fff;
+    }
+    .knowledge-source.selected {
+      border-color: #79b7aa;
+      background: #eef8f5;
+    }
+    .knowledge-source input {
+      width: 16px;
+      height: 16px;
+      margin: 0;
+      accent-color: var(--cad);
+      flex: 0 0 auto;
+    }
+    .knowledge-source-name {
+      min-width: 0;
+      flex: 1;
+      color: var(--ink);
+      font-size: 12px;
+      font-weight: 800;
+      cursor: pointer;
+    }
+    .knowledge-source .info-dot {
+      width: 17px;
+      height: 17px;
+      flex: 0 0 auto;
+    }
+    .consulted-sources {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      margin-top: 9px;
+      padding-top: 8px;
+      border-top: 1px solid var(--line);
+    }
+    .consulted-source {
+      padding: 3px 7px;
+      border: 1px solid #b6ddd6;
+      background: #eef8f5;
+      color: #17695e;
+      font-size: 10px;
+      font-weight: 800;
+    }
     .chat-composer {
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
@@ -2093,6 +2164,31 @@ UI_HTML = """<!doctype html>
       margin: 0;
       font-size: 12px;
       line-height: 1.45;
+    }
+    .fair-search-button {
+      width: 100%;
+      margin: 0;
+      padding: 10px 12px;
+      border: 1px solid #79b7aa;
+      background: #eef8f5;
+      color: #17695e;
+    }
+    .fair-search-button:hover,
+    .fair-search-button:focus {
+      background: #dff2ed;
+      color: #10564e;
+    }
+    .fair-search-status {
+      margin: -2px 0 0;
+      padding: 8px 10px;
+      border-left: 3px solid var(--cad);
+      background: #f2f7fb;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.45;
+    }
+    .fair-search-status[hidden] {
+      display: none;
     }
     .label-with-info {
       display: inline-flex;
@@ -3485,7 +3581,7 @@ UI_HTML = """<!doctype html>
     }
     @media (max-width: 1080px) {
       .hero-inner, .workspace { grid-template-columns: 1fr; }
-      .hero-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .hero-metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); }
       .sim-compare { grid-template-columns: 1fr; }
       .mesh-compare, .fem-compare { grid-template-columns: 1fr; }
       .stiffness-pca-layout { grid-template-columns: 1fr; }
@@ -3505,6 +3601,7 @@ UI_HTML = """<!doctype html>
       .hero { padding-block: 26px; }
       .hero-metrics { grid-template-columns: 1fr; }
       .grid { grid-template-columns: 1fr; }
+      .knowledge-source-options { grid-template-columns: 1fr; }
       .category-family-grid { grid-template-columns: 1fr; }
       .mesh-viewer-wrap, .sim-fem-frame { grid-template-columns: 1fr; }
       .mesh-compare-card .mesh-viewer-wrap { grid-template-columns: 1fr; }
@@ -3550,8 +3647,7 @@ UI_HTML = """<!doctype html>
           >
         </div>
         <div class="product">
-          <span class="name">Resonance AI</span>
-          <span class="tag">Product Design Studio</span>
+          <span class="name">Product Design Studio</span>
         </div>
       </div>
     </div>
@@ -3561,13 +3657,14 @@ UI_HTML = """<!doctype html>
       <div class="hero-inner">
         <div>
           <p class="eyebrow">NVH Product Engineering</p>
-          <h1>Resonance AI</h1>
+          <h1>Product Design Studio</h1>
           <p class="hero-copy">Design, refine, mesh, and validate vibroacoustic components in one AI-assisted engineering workspace.</p>
         </div>
         <div class="hero-metrics" aria-label="Workflow summary">
           <div class="metric"><strong>01</strong><span>Prompt intake</span></div>
           <div class="metric"><strong>02</strong><span>Parametric editor</span></div>
           <div class="metric"><strong>03</strong><span>Preview review</span></div>
+          <div class="metric"><strong>POC</strong><span>Engineering demonstrator</span></div>
         </div>
       </div>
     </section>
@@ -3580,6 +3677,34 @@ UI_HTML = """<!doctype html>
             <span class="status-pill">Model ready</span>
           </button>
           <div class="rail-card-body" id="engineeringChatBody">
+            <div class="knowledge-sources" aria-label="Engineering knowledge sources">
+              <div class="knowledge-sources-head">
+                <strong>Agent knowledge</strong>
+                <span>Select sources for this answer</span>
+              </div>
+              <div class="knowledge-source-options">
+                <div class="knowledge-source">
+                  <input id="kissAgentSource" type="checkbox" name="knowledgeSource" value="kiss_agent">
+                  <label class="knowledge-source-name" for="kissAgentSource">KISS Agent</label>
+                  <span
+                    class="info-dot"
+                    tabindex="0"
+                    aria-label="KISS Agent information"
+                    data-tooltip="POC source for engineering calculation guidance, sizing rules, and design assumptions."
+                  >i</span>
+                </div>
+                <div class="knowledge-source">
+                  <input id="fairExplorerSource" type="checkbox" name="knowledgeSource" value="fair_explorer">
+                  <label class="knowledge-source-name" for="fairExplorerSource">FAIR Explorer</label>
+                  <span
+                    class="info-dot"
+                    tabindex="0"
+                    aria-label="FAIR Explorer information"
+                    data-tooltip="POC source for traceable engineering datasets, metadata, and prior design evidence."
+                  >i</span>
+                </div>
+              </div>
+            </div>
             <div id="chatShell" class="chat-shell idle">
               <div id="chatLog" class="chat-log">
                 <div class="msg bot intro">Use chat for text instructions, corrections, and engineering decisions. Upload images, documents, or CAD models in the separate Upload Context card.</div>
@@ -3630,6 +3755,12 @@ UI_HTML = """<!doctype html>
                 >
                 <button id="uploadContextButton" type="button">Attach File</button>
               </div>
+              <button id="fairEngineeringSearchButton" class="fair-search-button" type="button">
+                Search from FAIR Engineering Data
+              </button>
+              <p id="fairEngineeringSearchStatus" class="fair-search-status" aria-live="polite" hidden>
+                FAIR Engineering Data search is a POC placeholder. The live data connection will be added later.
+              </p>
               <div id="attachmentList" class="attachment-list"></div>
               <p class="muted upload-context-note">Rubber bushing uploads can drive OpenSCAD CAD, Design Space, Target Stiffness, mesh, and FEM without using chat.</p>
             </div>
@@ -3671,9 +3802,9 @@ UI_HTML = """<!doctype html>
               <strong>Bushing</strong>
               <span>Rubber and bonded bushings</span>
             </button>
-            <button type="button" class="category-chip family-chip" data-family="spring">
-              <strong>Spring</strong>
-              <span>Air and coil spring parts</span>
+            <button type="button" class="category-chip family-chip" data-family="mounts">
+              <strong>Mounts</strong>
+              <span>Powertrain and chassis mounts</span>
             </button>
             <button type="button" class="category-chip family-chip" data-family="anonymous">
               <strong>Anonymous</strong>
@@ -3790,6 +3921,7 @@ UI_HTML = """<!doctype html>
     const chatInput = document.getElementById("chatInput");
     const chatLog = document.getElementById("chatLog");
     const chatSend = document.getElementById("chatSend");
+    const knowledgeSourceInputs = Array.from(document.querySelectorAll('input[name="knowledgeSource"]'));
     const activityPanel = document.getElementById("activityPanel");
     const activityLabel = document.getElementById("activityLabel");
     const activityPhase = document.getElementById("activityPhase");
@@ -3800,6 +3932,8 @@ UI_HTML = """<!doctype html>
     const previewProgressFill = document.getElementById("previewProgressFill");
     const contextFile = document.getElementById("contextFile");
     const uploadContextButton = document.getElementById("uploadContextButton");
+    const fairEngineeringSearchButton = document.getElementById("fairEngineeringSearchButton");
+    const fairEngineeringSearchStatus = document.getElementById("fairEngineeringSearchStatus");
     const attachmentList = document.getElementById("attachmentList");
     const familyGrid = document.getElementById("familyGrid");
     const categoryDetail = document.getElementById("categoryDetail");
@@ -3889,6 +4023,14 @@ UI_HTML = """<!doctype html>
       setEngineeringChatOpen(false);
     }
 
+    for (const input of knowledgeSourceInputs) {
+      const source = input.closest(".knowledge-source");
+      source?.classList.toggle("selected", input.checked);
+      input.addEventListener("change", () => {
+        source?.classList.toggle("selected", input.checked);
+      });
+    }
+
     if (uploadContextToggle) {
       uploadContextToggle.addEventListener("click", () => {
         setUploadContextOpen(!uploadContextOpen);
@@ -3942,6 +4084,9 @@ UI_HTML = """<!doctype html>
     // was renamed), do not block the chat-submit listener registered below.
     try {
       uploadContextButton.addEventListener("click", uploadContextFile);
+      fairEngineeringSearchButton.addEventListener("click", () => {
+        fairEngineeringSearchStatus.hidden = false;
+      });
       contextFile.addEventListener("change", () => {
         if (contextFile.files && contextFile.files.length) {
           uploadContextFile();
@@ -3970,6 +4115,18 @@ UI_HTML = """<!doctype html>
         hint: "Select a bushing type",
         items: [
           {
+            key: "four-arm-bushing",
+            title: "Four Arm Bushing",
+            desc: "Four-arm voided rubber bushing",
+            prompt: "I want a four arm rubber bushing for NVH isolation. Start with outer diameter 76 mm, inner-core diameter 28 mm, inner-core length 45 mm, and outer-core length 40 mm. Use four evenly spaced rubber arms and ask me for target Kx, Ky, Kz, arm thickness, sleeve details, and any missing geometry.",
+          },
+          {
+            key: "optibush",
+            title: "OptiBush",
+            desc: "Target-driven optimized bushing",
+            prompt: "I want an OptiBush design optimized for directional stiffness. Use outer diameter 76 mm and ask me for target Kx, Ky, Kz, inner-core diameter range, inner-core length range, outer-core length range, material, and manufacturing constraints before creating the design.",
+          },
+          {
             key: "rubber-bushing",
             title: "Rubber bushing",
             desc: "Suspension & chassis bushings",
@@ -3977,33 +4134,33 @@ UI_HTML = """<!doctype html>
           },
           {
             key: "bonded-bushing",
-            title: "Bonded bushing",
+            title: "Bonded Bushing",
             desc: "Rubber-metal bonded sleeve",
             prompt: "I want a rubber-metal bonded bushing. Outer diameter 60 mm with a 2 mm outer steel sleeve, inner diameter 20 mm with a 1.5 mm inner steel sleeve, height 40 mm. Rubber Shore A 55 in between. Ask me for any missing details.",
           },
-          {
-            key: "flanged-bushing",
-            title: "Flanged bushing",
-            desc: "Bushing with mounting flange",
-            prompt: "I want a flanged rubber bushing. Outer diameter 50 mm, inner diameter 16 mm, height 35 mm, flange diameter 70 mm, flange thickness 4 mm. Rubber Shore A 60. Ask me for any missing details.",
-          },
         ],
       },
-      spring: {
-        title: "Spring types",
-        hint: "Select a spring type",
+      mounts: {
+        title: "Mount types",
+        hint: "Select a mount type",
         items: [
           {
-            key: "air-spring",
-            title: "Air spring",
-            desc: "Air suspension element",
-            prompt: "I want an air spring element for light-vehicle suspension. Top mounting diameter 120 mm, bellows diameter 150 mm, free height 180 mm, internal pressure 6 bar. Ask me for any missing geometry or mounting details.",
+            key: "engine-mount",
+            title: "Engine mount",
+            desc: "Elastomeric powertrain mount",
+            prompt: "I want an elastomeric engine mount for powertrain isolation. Ask me for the installation envelope, mounting interfaces, supported mass, target stiffness in X, Y, and Z, material hardness, preload, and allowable displacement.",
           },
           {
-            key: "coil-spring",
-            title: "Coil spring",
-            desc: "Helical compression spring",
-            prompt: "I want a steel compression coil spring. Coil diameter 40 mm, free length 80 mm, wire thickness 4 mm, 8 coils, material steel. Ask me for any missing details.",
+            key: "hydraulic-mount",
+            title: "Hydraulic mount",
+            desc: "Fluid-filled NVH mount",
+            prompt: "I want a hydraulic powertrain mount. Ask me for the outer envelope, mounting interfaces, rubber stiffness targets, fluid chamber and inertia-track requirements, supported mass, preload, and operating frequency range.",
+          },
+          {
+            key: "strut-mount",
+            title: "Strut mount",
+            desc: "Suspension top mount",
+            prompt: "I want a suspension strut top mount. Ask me for the body and bearing diameters, total height, mounting-hole pattern, rubber hardness, axial and radial stiffness targets, maximum load, and allowable travel.",
           },
         ],
       },
@@ -4128,7 +4285,12 @@ UI_HTML = """<!doctype html>
         const response = await fetch("/chat-cad", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({message: text, prompt, history: chatHistory.slice(0, -1)})
+          body: JSON.stringify({
+            message: text,
+            prompt,
+            history: chatHistory.slice(0, -1),
+            knowledge_sources: selectedKnowledgeSources(),
+          })
         });
         const payload = await response.json();
         if (!response.ok) {
@@ -4169,6 +4331,7 @@ UI_HTML = """<!doctype html>
         }
         updateSummary(intent);
         thinking.textContent = payload.assistant_message || formatChatSummary(intent);
+        renderConsultedSources(thinking, payload.consulted_sources || []);
         chatHistory.push({role: "assistant", content: thinking.textContent});
         completeActivity(previewReady ? "Preview updated" : "More detail needed");
       } catch (error) {
@@ -4507,6 +4670,28 @@ UI_HTML = """<!doctype html>
       syncChatState();
       chatLog.scrollTop = chatLog.scrollHeight;
       return el;
+    }
+
+    function selectedKnowledgeSources() {
+      return knowledgeSourceInputs
+        .filter((input) => input.checked)
+        .map((input) => input.value);
+    }
+
+    function renderConsultedSources(message, sourceNames) {
+      if (!message || !Array.isArray(sourceNames) || !sourceNames.length) {
+        return;
+      }
+      const container = document.createElement("div");
+      container.className = "consulted-sources";
+      container.setAttribute("aria-label", "Knowledge sources used for this answer");
+      for (const sourceName of sourceNames) {
+        const badge = document.createElement("span");
+        badge.className = "consulted-source";
+        badge.textContent = `Source: ${sourceName}`;
+        container.appendChild(badge);
+      }
+      message.appendChild(container);
     }
 
     function autoResizeChatInput() {

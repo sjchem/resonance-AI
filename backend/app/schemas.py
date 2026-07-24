@@ -6,6 +6,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.knowledge_sources import KnowledgeSourceId
+
 
 class BushingArm(BaseModel):
     """A small arm / tab / lug attached to the outside of a bushing."""
@@ -114,6 +116,7 @@ class CADChatRequest(BaseModel):
     message: str = Field(min_length=1)
     prompt: str = Field(min_length=1)
     history: list[ChatMessage] = Field(default_factory=list)
+    knowledge_sources: list[KnowledgeSourceId] = Field(default_factory=list)
 
 
 class CADChatResponse(BaseModel):
@@ -125,3 +128,4 @@ class CADChatResponse(BaseModel):
     cad_intent: CADPromptOutput
     preview_ready: bool
     preview_svg: str | None = None
+    consulted_sources: list[str] = Field(default_factory=list)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from app.cad_preview import build_preview_svg
+from app.knowledge_sources import KnowledgeSourceId, build_knowledge_context
 from app.openai_client import (
     OpenAIConfigurationError,
     OpenAIRequestError,
@@ -16,20 +17,28 @@ async def respond_to_cad_chat(
     message: str,
     prompt: str,
     history: list[ChatMessage] | None = None,
+    knowledge_sources: list[KnowledgeSourceId] | None = None,
 ) -> CADChatResponse:
     """Return a conversational reply plus the current CAD intent state."""
 
     history = history or []
     parsed = await parse_cad_prompt(prompt)
     preview_ready = parsed.part_type != "unknown"
+    source_context, consulted_sources = build_knowledge_context(knowledge_sources or [])
 
-    assistant_message = await _build_conversational_message(parsed, message, history)
+    assistant_message = await _build_conversational_message(
+        parsed,
+        message,
+        history,
+        source_context,
+    )
     preview_svg = build_preview_svg(parsed) if preview_ready else None
     return CADChatResponse(
         assistant_message=assistant_message,
         cad_intent=parsed,
         preview_ready=preview_ready,
         preview_svg=preview_svg,
+        consulted_sources=consulted_sources,
     )
 
 
@@ -37,6 +46,7 @@ async def _build_conversational_message(
     parsed: CADPromptOutput,
     message: str,
     history: list[ChatMessage],
+    source_context: str = "",
 ) -> str:
     """Generate a natural chat reply, falling back to a templated one on failure."""
 
@@ -45,7 +55,11 @@ async def _build_conversational_message(
         turns.append({"role": "user", "content": message})
 
     try:
-        reply = await chat_reply(turns, parsed.model_dump_json(indent=2))
+        reply = await chat_reply(
+            turns,
+            parsed.model_dump_json(indent=2),
+            source_context=source_context,
+        )
     except (OpenAIConfigurationError, OpenAIRequestError):
         reply = None
 

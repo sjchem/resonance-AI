@@ -282,6 +282,7 @@ def _normalize_arms(parsed: "CADPromptOutput", prompt: str) -> None:
 async def chat_reply(
     history: list[dict[str, str]],
     cad_intent_json: str,
+    source_context: str = "",
 ) -> str | None:
     """Generate a natural, conversational assistant reply for the chat panel.
 
@@ -302,6 +303,11 @@ async def chat_reply(
     messages = [
         {"role": "system", "content": CHAT_SYSTEM_PROMPT},
         context_message,
+        *(
+            [{"role": "system", "content": source_context}]
+            if source_context
+            else []
+        ),
         *history,
     ]
 
