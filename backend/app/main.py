@@ -1718,9 +1718,25 @@ UI_HTML = """<!doctype html>
       font-size: 16px;
       line-height: 1.6;
     }
+    .hero-workflow {
+      display: grid;
+      gap: 8px;
+    }
+    .poc-badge {
+      justify-self: end;
+      min-width: 112px;
+      padding: 10px 18px;
+      border: 1px solid rgba(83, 128, 178, 0.34);
+      background: rgba(245, 250, 255, 0.82);
+      color: #0f2a49;
+      font-size: 18px;
+      font-weight: 800;
+      line-height: 1;
+      text-align: center;
+    }
     .hero-metrics {
       display: grid;
-      grid-template-columns: repeat(4, 1fr);
+      grid-template-columns: repeat(3, 1fr);
       gap: 1px;
       background: rgba(83, 128, 178, 0.24);
       border: 1px solid rgba(83, 128, 178, 0.28);
@@ -3581,7 +3597,7 @@ UI_HTML = """<!doctype html>
     }
     @media (max-width: 1080px) {
       .hero-inner, .workspace { grid-template-columns: 1fr; }
-      .hero-metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+      .hero-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
       .sim-compare { grid-template-columns: 1fr; }
       .mesh-compare, .fem-compare { grid-template-columns: 1fr; }
       .stiffness-pca-layout { grid-template-columns: 1fr; }
@@ -3660,11 +3676,13 @@ UI_HTML = """<!doctype html>
           <h1>Product Design Studio</h1>
           <p class="hero-copy">Design, refine, mesh, and validate vibroacoustic components in one AI-assisted engineering workspace.</p>
         </div>
-        <div class="hero-metrics" aria-label="Workflow summary">
-          <div class="metric"><strong>01</strong><span>Prompt intake</span></div>
-          <div class="metric"><strong>02</strong><span>Parametric editor</span></div>
-          <div class="metric"><strong>03</strong><span>Preview review</span></div>
-          <div class="metric"><strong>POC</strong><span>Engineering demonstrator</span></div>
+        <div class="hero-workflow">
+          <div class="poc-badge" aria-label="Proof of concept">POC</div>
+          <div class="hero-metrics" aria-label="Workflow summary">
+            <div class="metric"><strong>01</strong><span>Prompt intake</span></div>
+            <div class="metric"><strong>02</strong><span>Parametric editor</span></div>
+            <div class="metric"><strong>03</strong><span>Preview review</span></div>
+          </div>
         </div>
       </div>
     </section>
