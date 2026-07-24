@@ -2727,6 +2727,69 @@ UI_HTML = """<!doctype html>
       padding: 7px 9px;
       font-size: 13px;
     }
+    .sim-pca {
+      border: 1px solid var(--line);
+      border-radius: 3px;
+      background: #fff;
+      overflow: hidden;
+    }
+    .sim-pca-summary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      padding: 12px 14px;
+      background: #f8fbff;
+      color: var(--brand);
+      cursor: pointer;
+      list-style: none;
+      user-select: none;
+    }
+    .sim-pca-summary::-webkit-details-marker {
+      display: none;
+    }
+    .sim-pca-summary-copy {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      min-width: 0;
+    }
+    .sim-pca-summary-copy strong {
+      font-size: 14px;
+    }
+    .sim-pca-summary-copy small,
+    .sim-pca-summary-meta {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 500;
+    }
+    .sim-pca-summary-meta {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      white-space: nowrap;
+    }
+    .sim-pca-summary-meta::after {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-right: 2px solid currentColor;
+      border-bottom: 2px solid currentColor;
+      transform: rotate(45deg);
+      transition: transform 160ms ease;
+    }
+    .sim-pca[open] .sim-pca-summary-meta::after {
+      transform: rotate(225deg);
+    }
+    .sim-pca-summary:hover,
+    .sim-pca-summary:focus-visible {
+      background: #eef4fb;
+      outline: none;
+    }
+    .sim-pca-content {
+      padding: 12px;
+      border-top: 1px solid var(--line);
+    }
     .sim-pca-layout {
       display: grid;
       grid-template-columns: minmax(0, 1.05fr) minmax(320px, 0.95fr);
@@ -2735,10 +2798,11 @@ UI_HTML = """<!doctype html>
       margin-top: 10px;
     }
     .sim-pca-plot {
+      position: relative;
       min-height: 340px;
       border: 1px solid var(--line);
       border-radius: 3px;
-      background: #fff;
+      background: #fbfdff;
       overflow: hidden;
     }
     .sim-pca-toolbar {
@@ -2748,9 +2812,22 @@ UI_HTML = """<!doctype html>
       gap: 10px;
       padding: 8px 10px;
       border-bottom: 1px solid var(--line);
-      background: #f8fbff;
+      background: #fff;
       font-size: 12px;
       color: var(--muted);
+    }
+    .sim-pca-toolbar-copy {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .sim-pca-toolbar-copy strong {
+      color: var(--brand);
+      font-size: 12px;
+    }
+    .sim-pca-toolbar-copy small {
+      color: var(--muted);
+      font-size: 11px;
     }
     .sim-pca-toggle {
       display: inline-flex;
@@ -2776,8 +2853,49 @@ UI_HTML = """<!doctype html>
     }
     .sim-pca-canvas {
       width: 100%;
-      height: 300px;
+      height: 320px;
       display: block;
+    }
+    .sim-pca-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 14px;
+      padding: 8px 12px 10px;
+      border-top: 1px solid var(--line);
+      background: #fff;
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .sim-pca-legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .sim-pca-legend-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      box-shadow: 0 0 0 2px #fff, 0 0 0 3px rgba(16, 36, 63, 0.12);
+    }
+    .sim-pca-tooltip {
+      position: absolute;
+      z-index: 2;
+      display: none;
+      min-width: 150px;
+      padding: 8px 10px;
+      border: 1px solid #cbd7e5;
+      border-radius: 3px;
+      background: rgba(16, 36, 63, 0.96);
+      color: #fff;
+      box-shadow: 0 6px 18px rgba(16, 36, 63, 0.16);
+      font-size: 11px;
+      line-height: 1.45;
+      pointer-events: none;
+    }
+    .sim-pca-tooltip strong {
+      display: block;
+      margin-bottom: 2px;
+      font-size: 12px;
     }
     .sim-pca-features {
       min-width: 0;
@@ -2793,6 +2911,14 @@ UI_HTML = """<!doctype html>
       color: var(--brand);
       font-size: 11px;
       font-weight: 800;
+    }
+    @media (max-width: 980px) {
+      .sim-pca-layout {
+        grid-template-columns: minmax(0, 1fr);
+      }
+      .sim-pca-summary {
+        align-items: flex-start;
+      }
     }
     .mesh-block {
       margin-top: 14px;
@@ -6526,14 +6652,32 @@ UI_HTML = """<!doctype html>
         );
       }).join("");
       const has3d = components.length >= 3 && (pca.mode_scores || []).some((entry) => (entry.scores || []).length >= 3);
+      const legend = (pca.mode_scores || []).map((entry) => {
+        const modeNo = Number(entry.mode_number) || 0;
+        return (
+          '<span class="sim-pca-legend-item">' +
+          '<span class="sim-pca-legend-dot" style="background:' + pcaPointColor(modeNo) + '"></span>' +
+          'Mode ' + modeNo + ' \u00b7 ' + formatHz(entry.frequency_hz) +
+          '</span>'
+        );
+      }).join("");
       return (
-        '<div class="sim-pca" style="margin-top:10px">' +
-        '<div class="category-subhead" style="margin:0 0 2px"><strong>Mode-shape PCA</strong><span>' +
-        pca.mode_count + ' modes \u00b7 ' + pca.node_count + ' nodes</span></div>' +
+        '<details class="sim-pca" id="simPcaDetails" style="margin-top:10px">' +
+        '<summary class="sim-pca-summary">' +
+        '<span class="sim-pca-summary-copy"><strong>Advanced analysis</strong>' +
+        '<small>Mode-shape PCA for comparing deformation patterns across solved modes</small></span>' +
+        '<span class="sim-pca-summary-meta">' + pca.mode_count + ' modes \u00b7 ' + pca.node_count + ' nodes</span>' +
+        '</summary>' +
+        '<div class="sim-pca-content">' +
+        '<div class="category-subhead" style="margin:0 0 2px"><strong>Mode-shape PCA</strong><span>Hover over a point for its modal score details</span></div>' +
         '<div class="sim-pca-layout">' +
         '<div class="sim-pca-plot">' +
-        '<div class="sim-pca-toolbar"><span>PC score map</span><span class="sim-pca-toggle"><button type="button" class="active" data-pca-view="2d">2D</button><button type="button" data-pca-view="3d"' + (has3d ? '' : ' disabled') + '>3D</button></span></div>' +
+        '<div class="sim-pca-toolbar"><span class="sim-pca-toolbar-copy"><strong>Mode score map</strong>' +
+        '<small>Distance indicates deformation-pattern difference</small></span>' +
+        '<span class="sim-pca-toggle"><button type="button" class="active" data-pca-view="2d">2D</button><button type="button" data-pca-view="3d"' + (has3d ? '' : ' disabled') + '>3D</button></span></div>' +
         '<canvas class="sim-pca-canvas" id="simPcaCanvas" aria-label="PCA mode score plot"></canvas>' +
+        '<div class="sim-pca-tooltip" id="simPcaTooltip" role="status"></div>' +
+        '<div class="sim-pca-legend">' + legend + '</div>' +
         '</div>' +
         '<div class="sim-pca-features">' +
         '<table class="sim-table sim-table-rows"><tr><th>PC</th><th style="text-align:right">Variance</th><th style="text-align:right">Cumulative</th><th>Characteristic feature</th><th>Dominant mode</th><th style="text-align:right">Axis energy</th></tr>' +
@@ -6541,7 +6685,8 @@ UI_HTML = """<!doctype html>
         '</table>' +
         '</div>' +
         '</div>' +
-        '</div>'
+        '</div>' +
+        '</details>'
       );
     }
 
@@ -6553,18 +6698,60 @@ UI_HTML = """<!doctype html>
     function bindFemPcaPlot(pca) {
       const canvas = document.getElementById("simPcaCanvas");
       if (!canvas || !pca || !Array.isArray(pca.mode_scores)) return;
+      const details = document.getElementById("simPcaDetails");
+      const tooltip = document.getElementById("simPcaTooltip");
+      const plot = canvas.closest(".sim-pca-plot");
       let view = "2d";
       const buttons = Array.from(document.querySelectorAll("[data-pca-view]"));
+      const render = () => {
+        if (details && !details.open) return;
+        window.requestAnimationFrame(() => drawPcaPlot(canvas, pca, view));
+      };
       buttons.forEach((button) => {
         button.addEventListener("click", () => {
           if (button.disabled) return;
           view = button.getAttribute("data-pca-view") || "2d";
           buttons.forEach((item) => item.classList.toggle("active", item === button));
-          drawPcaPlot(canvas, pca, view);
+          render();
         });
       });
-      drawPcaPlot(canvas, pca, view);
-      const resizeObserver = new ResizeObserver(() => drawPcaPlot(canvas, pca, view));
+      if (details) {
+        details.addEventListener("toggle", render);
+      } else {
+        render();
+      }
+      canvas.addEventListener("pointermove", (event) => {
+        const points = canvas._pcaHitPoints || [];
+        const canvasRect = canvas.getBoundingClientRect();
+        const pointerX = event.clientX - canvasRect.left;
+        const pointerY = event.clientY - canvasRect.top;
+        let nearest = null;
+        points.forEach((point) => {
+          const distance = Math.hypot(point.x - pointerX, point.y - pointerY);
+          if (distance <= 18 && (!nearest || distance < nearest.distance)) {
+            nearest = { point, distance };
+          }
+        });
+        canvas.style.cursor = nearest ? "pointer" : "default";
+        if (!tooltip || !plot || !nearest) {
+          if (tooltip) tooltip.style.display = "none";
+          return;
+        }
+        const item = nearest.point;
+        const scoreLabels = item.scores.map((score, index) => "PC" + (index + 1) + " " + formatPcaScore(score)).join(" \u00b7 ");
+        tooltip.innerHTML =
+          '<strong>Mode ' + item.modeNumber + ' \u00b7 ' + formatHz(item.frequencyHz) + '</strong>' +
+          escapeHtml(scoreLabels);
+        const plotRect = plot.getBoundingClientRect();
+        tooltip.style.left = clamp(event.clientX - plotRect.left + 12, 8, Math.max(plotRect.width - 174, 8)) + "px";
+        tooltip.style.top = clamp(event.clientY - plotRect.top + 12, 48, Math.max(plotRect.height - 66, 48)) + "px";
+        tooltip.style.display = "block";
+      });
+      canvas.addEventListener("pointerleave", () => {
+        canvas.style.cursor = "default";
+        if (tooltip) tooltip.style.display = "none";
+      });
+      const resizeObserver = new ResizeObserver(render);
       resizeObserver.observe(canvas.parentElement || canvas);
     }
 
@@ -6579,11 +6766,14 @@ UI_HTML = """<!doctype html>
       canvas.height = Math.floor(height * pixelRatio);
       context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
       context.clearRect(0, 0, width, height);
-      context.fillStyle = "#ffffff";
+      context.fillStyle = "#fbfdff";
       context.fillRect(0, 0, width, height);
 
       const entries = (pca.mode_scores || []).filter((entry) => Array.isArray(entry.scores) && entry.scores.length >= 2);
-      if (!entries.length) return;
+      if (!entries.length) {
+        canvas._pcaHitPoints = [];
+        return;
+      }
       const projected = entries.map((entry) => {
         const scores = entry.scores || [];
         const x = Number(scores[0]) || 0;
@@ -6593,11 +6783,13 @@ UI_HTML = """<!doctype html>
       });
       const xs = projected.map((p) => p.x);
       const ys = projected.map((p) => p.y);
-      const padding = { left: 48, right: 24, top: 28, bottom: 42 };
-      const minX = Math.min(...xs, 0);
-      const maxX = Math.max(...xs, 0);
-      const minY = Math.min(...ys, 0);
-      const maxY = Math.max(...ys, 0);
+      const padding = { left: 64, right: 32, top: 28, bottom: 52 };
+      const extentX = Math.max(...xs.map((value) => Math.abs(value)), 1e-6) * 1.18;
+      const extentY = Math.max(...ys.map((value) => Math.abs(value)), 1e-6) * 1.18;
+      const minX = -extentX;
+      const maxX = extentX;
+      const minY = -extentY;
+      const maxY = extentY;
       const spanX = Math.max(maxX - minX, 1e-9);
       const spanY = Math.max(maxY - minY, 1e-9);
       const plotW = width - padding.left - padding.right;
@@ -6605,52 +6797,95 @@ UI_HTML = """<!doctype html>
       const mapX = (value) => padding.left + ((value - minX) / spanX) * plotW;
       const mapY = (value) => padding.top + (1 - (value - minY) / spanY) * plotH;
 
-      drawPcaGrid(context, width, height, padding, mapX(0), mapY(0), view);
+      const components = Array.isArray(pca.components) ? pca.components : [];
+      const varianceX = components[0] ? Number(components[0].explained_variance_ratio || 0) * 100 : 0;
+      const varianceY = components[1] ? Number(components[1].explained_variance_ratio || 0) * 100 : 0;
+      drawPcaGrid(context, width, height, padding, { minX, maxX, minY, maxY, mapX, mapY, view, varianceX, varianceY });
+      const hitPoints = [];
       projected.sort((a, b) => a.z - b.z).forEach((point) => {
         const modeNo = Number(point.entry.mode_number) || 0;
-        const radius = view === "3d" ? clamp(5 + Math.abs(point.z) * 8, 5, 12) : 6;
+        const radius = view === "3d" ? clamp(6 + Math.abs(point.z) * 3, 6, 11) : 7;
         const x = mapX(point.x);
         const y = mapY(point.y);
+        context.save();
+        context.shadowColor = "rgba(16, 36, 63, 0.18)";
+        context.shadowBlur = 8;
+        context.shadowOffsetY = 2;
         context.beginPath();
         context.arc(x, y, radius, 0, Math.PI * 2);
         context.fillStyle = pcaPointColor(modeNo);
         context.fill();
+        context.restore();
         context.strokeStyle = "#ffffff";
         context.lineWidth = 2;
         context.stroke();
         context.fillStyle = "#10243f";
-        context.font = "11px Inter, system-ui, sans-serif";
-        context.fillText("M" + modeNo, x + radius + 3, y - radius - 2);
+        context.font = "600 11px Inter, system-ui, sans-serif";
+        context.textAlign = point.x > 0 ? "right" : "left";
+        context.fillText("M" + modeNo, x + (point.x > 0 ? -radius - 4 : radius + 4), y - radius - 3);
+        hitPoints.push({
+          x,
+          y,
+          modeNumber: modeNo,
+          frequencyHz: Number(point.entry.frequency_hz) || 0,
+          scores: (point.entry.scores || []).slice(0, view === "3d" ? 3 : 2),
+        });
       });
-      context.fillStyle = "#4f5d75";
-      context.font = "12px Inter, system-ui, sans-serif";
-      context.fillText(view === "3d" ? "PC1 / PC2 / PC3 projected" : "PC1 vs PC2", padding.left, height - 12);
+      canvas._pcaHitPoints = hitPoints;
     }
 
-    function drawPcaGrid(context, width, height, padding, zeroX, zeroY, view) {
+    function drawPcaGrid(context, width, height, padding, axes) {
+      const plotWidth = width - padding.left - padding.right;
+      const plotHeight = height - padding.top - padding.bottom;
+      context.fillStyle = "#ffffff";
+      context.fillRect(padding.left, padding.top, plotWidth, plotHeight);
       context.strokeStyle = "#e4ebf3";
       context.lineWidth = 1;
       for (let i = 0; i <= 4; i++) {
-        const x = padding.left + ((width - padding.left - padding.right) * i) / 4;
-        const y = padding.top + ((height - padding.top - padding.bottom) * i) / 4;
+        const x = padding.left + (plotWidth * i) / 4;
+        const y = padding.top + (plotHeight * i) / 4;
         context.beginPath(); context.moveTo(x, padding.top); context.lineTo(x, height - padding.bottom); context.stroke();
         context.beginPath(); context.moveTo(padding.left, y); context.lineTo(width - padding.right, y); context.stroke();
+        const tickX = axes.minX + ((axes.maxX - axes.minX) * i) / 4;
+        const tickY = axes.maxY - ((axes.maxY - axes.minY) * i) / 4;
+        context.fillStyle = "#738196";
+        context.font = "10px Inter, system-ui, sans-serif";
+        context.textAlign = "center";
+        context.fillText(formatPcaScore(tickX), x, height - padding.bottom + 17);
+        context.textAlign = "right";
+        context.fillText(formatPcaScore(tickY), padding.left - 9, y + 3);
       }
       context.strokeStyle = "#9aa8ba";
-      context.beginPath(); context.moveTo(zeroX, padding.top); context.lineTo(zeroX, height - padding.bottom); context.stroke();
-      context.beginPath(); context.moveTo(padding.left, zeroY); context.lineTo(width - padding.right, zeroY); context.stroke();
+      context.lineWidth = 1.2;
+      context.beginPath(); context.moveTo(axes.mapX(0), padding.top); context.lineTo(axes.mapX(0), height - padding.bottom); context.stroke();
+      context.beginPath(); context.moveTo(padding.left, axes.mapY(0)); context.lineTo(width - padding.right, axes.mapY(0)); context.stroke();
       context.fillStyle = "#233b5f";
-      context.font = "12px Inter, system-ui, sans-serif";
-      context.fillText("PC2", 10, padding.top + 12);
-      context.fillText("PC1", width - padding.right - 28, height - padding.bottom + 24);
-      if (view === "3d") {
-        context.fillText("PC3 depth", width - padding.right - 72, padding.top + 12);
+      context.font = "600 11px Inter, system-ui, sans-serif";
+      context.textAlign = "center";
+      context.fillText("PC1 (" + axes.varianceX.toFixed(1) + "% variance)", padding.left + plotWidth / 2, height - 8);
+      context.save();
+      context.translate(15, padding.top + plotHeight / 2);
+      context.rotate(-Math.PI / 2);
+      context.fillText("PC2 (" + axes.varianceY.toFixed(1) + "% variance)", 0, 0);
+      context.restore();
+      if (axes.view === "3d") {
+        context.textAlign = "right";
+        context.fillStyle = "#738196";
+        context.fillText("PC3 shown as projected depth and marker size", width - padding.right, padding.top - 10);
       }
+    }
+
+    function formatPcaScore(value) {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric) || Math.abs(numeric) < 1e-10) return "0";
+      if (Math.abs(numeric) >= 100) return numeric.toFixed(0);
+      if (Math.abs(numeric) >= 10) return numeric.toFixed(1);
+      return numeric.toFixed(2);
     }
 
     function pcaPointColor(modeNo) {
       const colors = ["#2166ac", "#1a9850", "#fdae61", "#d7191c", "#7b3294", "#008c8c", "#b35806"];
-      return colors[Math.abs(modeNo || 0) % colors.length];
+      return colors[Math.abs((modeNo || 1) - 1) % colors.length];
     }
 
     function femLegendHtml(mesh) {
