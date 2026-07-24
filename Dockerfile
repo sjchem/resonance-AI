@@ -57,6 +57,7 @@ COPY cad_backends/ ./cad_backends/
 COPY text_to_cad/ ./text_to_cad/
 COPY simulate/ ./simulate/
 COPY geometry/ ./geometry/
+COPY models/ ./models/
 COPY skills/ ./skills/
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh

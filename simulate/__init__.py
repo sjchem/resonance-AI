@@ -9,6 +9,9 @@ Pipeline stages:
 5. :mod:`simulate.modal_solver`  - CalculiX modal (eigenfrequency) analysis
 6. :mod:`simulate.results`       - parse and report natural frequencies
 7. :mod:`simulate.pca`           - PCA over modal displacement shapes
+8. :mod:`simulate.static_stiffness` - directional Kx/Ky/Kz static analysis
+9. :mod:`simulate.stiffness_dataset` - offline design/FEM dataset generation
+10. :mod:`simulate.stiffness_surrogate` - geometry-to-stiffness neural surrogate
 
 The :mod:`simulate.pipeline` module ties these together into one command.
 """

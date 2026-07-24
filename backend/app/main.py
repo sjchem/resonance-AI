@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import re
 import shutil
 import sys
@@ -551,6 +552,241 @@ async def run_shape_pca(payload: dict) -> dict:
         raise HTTPException(status_code=500, detail=f"Shape PCA failed: {exc}") from exc
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
+
+
+@app.post("/run-static-stiffness")
+async def run_static_stiffness_api(payload: dict) -> dict:
+    """Run directional Kx/Ky/Kz static FEM for a structured rubber bushing."""
+
+    intent = payload.get("intent") if isinstance(payload.get("intent"), dict) else {}
+    if not _is_structured_bushing_intent(intent):
+        raise HTTPException(
+            status_code=400,
+            detail="Directional stiffness currently requires structured Rubber bushing geometry.",
+        )
+    geometry = intent.get("geometry") if isinstance(intent.get("geometry"), dict) else {}
+    material_value = payload.get("material")
+    if not material_value:
+        intent_material = intent.get("material")
+        material_value = intent_material.get("name") if isinstance(intent_material, dict) else intent_material
+    material_name = str(material_value or "rubber")
+    try:
+        displacement_mm = float(payload.get("displacement_mm", 1.0) or 1.0)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="Displacement must be numeric.") from exc
+    if displacement_mm <= 0 or displacement_mm > 5:
+        raise HTTPException(status_code=422, detail="Displacement must be greater than 0 and no more than 5 mm.")
+
+    inner_length = _float_value(
+        geometry.get("inner_core_length_mm"),
+        _float_value(geometry.get("height_mm"), 40.0),
+    )
+    outer_length = _float_value(
+        geometry.get("outer_core_length_mm"),
+        _float_value(geometry.get("height_mm"), 40.0),
+    )
+    global_template = payload.get("global_template") if isinstance(payload.get("global_template"), dict) else {}
+    name = _safe_export_name(str(payload.get("name", "bushing")))
+    repo_root = Path(__file__).resolve().parents[2]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+
+    try:
+        from geometry.bushing_hex_mesh import generate_bushing_hex_mesh  # noqa: WPS433
+        from simulate.materials import resolve_material  # noqa: WPS433
+        from simulate.static_stiffness import StaticStiffnessSetup, run_static_stiffness  # noqa: WPS433
+    except ModuleNotFoundError as exc:
+        raise HTTPException(
+            status_code=501,
+            detail="Static stiffness requires the deployed meshio, NumPy, and CalculiX dependencies.",
+        ) from exc
+    if shutil.which("ccx") is None:
+        raise HTTPException(status_code=501, detail="Static stiffness requires CalculiX ('ccx').")
+
+    work_dir = Path(tempfile.mkdtemp(prefix="resonance_static_stiffness_"))
+    try:
+        mesh_file = work_dir / f"{name}_global.vtk"
+        mesh_result = generate_bushing_hex_mesh(
+            intent,
+            mesh_file,
+            mesh_mode="global",
+            template=global_template,
+        )
+        result = run_static_stiffness(
+            StaticStiffnessSetup(
+                mesh_file=mesh_file,
+                material=resolve_material(material_name),
+                displacement_mm=displacement_mm,
+                inner_interface_length_mm=inner_length,
+                outer_interface_length_mm=outer_length,
+            ),
+            work_dir / "solve",
+            job_name=name,
+        )
+        response = result.as_dict()
+        response.update(
+            {
+                "status": "ok",
+                "mesh": _global_mesh_payload(mesh_result),
+                "design": {
+                    "outer_diameter_mm": _float_value(geometry.get("outer_diameter_mm"), 76.0),
+                    "inner_diameter_mm": _float_value(geometry.get("inner_diameter_mm"), 28.0),
+                    "inner_core_length_mm": inner_length,
+                    "outer_core_length_mm": outer_length,
+                },
+                "model_limitations": (
+                    "Linear-elastic isotropic POC. Validate material calibration, interface assumptions, "
+                    "and large-strain rubber behavior before engineering release."
+                ),
+            }
+        )
+        return response
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Static stiffness FEM failed: {exc}") from exc
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+@app.get("/stiffness-model")
+async def stiffness_model_status() -> dict:
+    """Report whether a trained geometry-to-stiffness surrogate is available."""
+
+    model_path = _stiffness_model_path()
+    if not model_path.exists():
+        return {
+            "status": "not_trained",
+            "model_file": str(model_path),
+            "message": "Run python -m simulate.stiffness_dataset to build the FEM dataset and model.",
+        }
+    try:
+        from simulate.stiffness_surrogate import load_stiffness_surrogate  # noqa: WPS433
+
+        model = load_stiffness_surrogate(model_path)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Could not load stiffness model: {exc}") from exc
+    return {"status": "ready", "model_file": str(model_path), "metadata": model.metadata}
+
+
+@app.get("/stiffness-dashboard-data")
+async def stiffness_dashboard_data() -> dict:
+    """Return PCA/design/stiffness points from the generated training dataset."""
+
+    dataset_path = _stiffness_dataset_path()
+    if not dataset_path.exists():
+        raise HTTPException(status_code=404, detail="No stiffness training dataset is installed.")
+    try:
+        payload = json.loads(dataset_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=500, detail=f"Could not read stiffness dataset: {exc}") from exc
+    samples = [
+        {
+            "case_id": item.get("case_id"),
+            "design": item.get("design"),
+            "stiffness": item.get("stiffness"),
+            "shape_codes": item.get("shape_codes", []),
+        }
+        for item in payload.get("samples", [])
+        if item.get("status") == "ok"
+    ]
+    return {
+        "status": "ready",
+        "sample_count": len(samples),
+        "samples": samples[:5000],
+        "surrogate_metrics": payload.get("surrogate_metrics"),
+        "axis_assumption": payload.get("axis_assumption"),
+        "boundary_assumption": payload.get("boundary_assumption"),
+    }
+
+
+@app.post("/search-stiffness")
+async def search_stiffness(payload: dict) -> dict:
+    """Search client design bounds with the trained neural surrogate."""
+
+    model_path = _stiffness_model_path()
+    if not model_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="No trained stiffness model is installed. Build the offline FEM dataset first.",
+        )
+    try:
+        from simulate.stiffness_dataset import DesignBounds, design_intent, design_samples  # noqa: WPS433
+        from simulate.stiffness_surrogate import FEATURE_NAMES, load_stiffness_surrogate  # noqa: WPS433
+
+        model = load_stiffness_surrogate(model_path)
+        targets = payload.get("targets") if isinstance(payload.get("targets"), dict) else {}
+        target = [
+            float(targets.get("kx_n_per_mm", 88.4)),
+            float(targets.get("ky_n_per_mm", 294.5)),
+            float(targets.get("kz_n_per_mm", 294.5)),
+        ]
+        bounds_payload = payload.get("bounds") if isinstance(payload.get("bounds"), dict) else {}
+        bounds = DesignBounds(
+            inner_diameter_min_mm=float(bounds_payload.get("inner_diameter_min_mm", 21.0)),
+            inner_diameter_max_mm=float(bounds_payload.get("inner_diameter_max_mm", 35.0)),
+            inner_core_length_min_mm=float(bounds_payload.get("inner_core_length_min_mm", 20.0)),
+            inner_core_length_max_mm=float(bounds_payload.get("inner_core_length_max_mm", 71.0)),
+            outer_core_length_min_mm=float(bounds_payload.get("outer_core_length_min_mm", 20.0)),
+            outer_core_length_max_mm=float(bounds_payload.get("outer_core_length_max_mm", 55.0)),
+            outer_diameter_mm=76.0,
+            swaging_value_mm=3.0,
+            decking_value_mm=0.0,
+        )
+        sample_count = max(50, min(5000, int(payload.get("samples", 2000) or 2000)))
+        candidates = design_samples(sample_count, bounds)
+        import numpy as np
+
+        feature_values = np.asarray(
+            [[float(candidate[name]) for name in FEATURE_NAMES] for candidate in candidates],
+            dtype=float,
+        )
+        predictions = model.predict(feature_values)
+        target_values = np.asarray(target, dtype=float)
+        relative_errors = np.abs(predictions - target_values) / np.maximum(np.abs(target_values), 1.0)
+        scores = np.mean(relative_errors * relative_errors, axis=1)
+        best_index = int(np.argmin(scores))
+        best_design = candidates[best_index]
+        best_prediction = predictions[best_index]
+        best_errors = relative_errors[best_index]
+        best_intent = design_intent(best_design, bounds)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid stiffness search input: {exc}") from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Stiffness model search failed: {exc}") from exc
+
+    return {
+        "status": "ok",
+        "source": "trained_static_fem_surrogate",
+        "case_id": f"NN-{best_index + 1:04d}",
+        "intent": best_intent,
+        "design": best_design,
+        "predicted_stiffness": {
+            "kx_n_per_mm": float(best_prediction[0]),
+            "ky_n_per_mm": float(best_prediction[1]),
+            "kz_n_per_mm": float(best_prediction[2]),
+        },
+        "max_relative_error": float(best_errors.max()),
+        "rms_relative_error": float(np.sqrt(np.mean(best_errors * best_errors))),
+        "within_tolerance": bool(float(best_errors.max()) <= 0.1),
+        "sample_count": sample_count,
+        "model_metadata": model.metadata,
+    }
+
+
+def _stiffness_artifact_dir() -> Path:
+    configured = os.getenv("STIFFNESS_MODEL_DIR", "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return Path(__file__).resolve().parents[2] / "models" / "stiffness"
+
+
+def _stiffness_model_path() -> Path:
+    return _stiffness_artifact_dir() / "stiffness_model.npz"
+
+
+def _stiffness_dataset_path() -> Path:
+    return _stiffness_artifact_dir() / "stiffness_dataset.json"
 
 
 def _should_try_structured_hex(prompt: str, intent: dict) -> bool:
@@ -2765,6 +3001,52 @@ UI_HTML = """<!doctype html>
       padding: 16px;
       overflow: auto;
     }
+    .stiffness-pca-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 300px;
+      gap: 16px;
+      align-items: stretch;
+    }
+    .stiffness-pca-plot {
+      min-height: 480px;
+      border: 1px solid var(--line);
+      background: #f3f7fc;
+    }
+    .stiffness-pca-plot canvas {
+      width: 100%;
+      height: 100%;
+      min-height: 480px;
+      display: block;
+    }
+    .stiffness-pca-conditions {
+      padding: 14px;
+      border-left: 3px solid var(--cad);
+      background: #f8fbff;
+    }
+    .stiffness-pca-conditions strong {
+      display: block;
+      margin-bottom: 10px;
+    }
+    .stiffness-pca-conditions span {
+      display: block;
+      margin: 7px 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .stiffness-pca-legend {
+      display: flex;
+      gap: 16px;
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .stiffness-pca-legend i {
+      display: inline-block;
+      width: 9px;
+      height: 9px;
+      margin-right: 5px;
+      border-radius: 50%;
+    }
     .sim-contour {
       min-height: 100%;
       padding: 10px;
@@ -2964,6 +3246,11 @@ UI_HTML = """<!doctype html>
       .hero-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
       .sim-compare { grid-template-columns: 1fr; }
       .mesh-compare, .fem-compare { grid-template-columns: 1fr; }
+      .stiffness-pca-layout { grid-template-columns: 1fr; }
+      .stiffness-pca-conditions {
+        border-left-width: 1px;
+        border-top: 3px solid var(--cad);
+      }
       .mesh-viewer, .sim-fem-viewer {
         height: 440px;
         min-height: 440px;
@@ -3351,6 +3638,7 @@ UI_HTML = """<!doctype html>
     let lastFemContour = null;
     let femBatchCount = 6;
     let femContourMode = 1;
+    let lastStaticStiffness = null;
 
     if (engineeringChatToggle) {
       engineeringChatToggle.addEventListener("click", () => {
@@ -3617,6 +3905,7 @@ UI_HTML = """<!doctype html>
         overrideMeshFaces = null;
         rubberBushingWorkflowActive = false;
         lastMeshResult = null;
+        lastStaticStiffness = null;
         simShown = false;
         simSelectedMode = "b1";
         stopSimAnimation();
@@ -3675,6 +3964,7 @@ UI_HTML = """<!doctype html>
       lastExport.name = "model";
       lastMeshResult = null;
       lastShapePcaResult = null;
+      lastStaticStiffness = null;
       designSpaceCases = [];
       targetStiffnessResult = null;
       uploadNeedsParametricConfirmation = false;
@@ -4759,6 +5049,7 @@ UI_HTML = """<!doctype html>
           '<div class="sim-block analysis-result-block">' +
           '<div class="sim-head"><strong>Simulation result</strong><span class="muted">Below CAD preview</span></div>' +
           '<div id="simOutput"></div>' +
+          '<div id="staticStiffnessContainer"></div>' +
           '<div id="simFemContainer"></div>' +
           '</div>';
       }
@@ -4897,6 +5188,7 @@ UI_HTML = """<!doctype html>
         '<div class="sim-head"><strong>Simulation</strong>' +
         '<span class="sim-head-actions">' +
         '<button type="button" class="sim-btn" id="simRunBtn">Simulate</button>' +
+        '<button type="button" class="sim-btn secondary" id="simStaticBtn" title="Run three static CalculiX load cases and calculate Kx, Ky, and Kz">Static K</button>' +
         '<button type="button" class="sim-btn secondary" id="simFemBtn" title="Run one multi-mode FEM batch and render the selected contour">FEM batch</button>' +
         '<button type="button" class="sim-info-btn" aria-label="Simulation batch information" title="One CAD mesh is generated, then CalculiX solves up to 100 modal results. Larger batches can take several minutes on Azure.">i</button>' +
         '</span></div>' +
@@ -4914,12 +5206,19 @@ UI_HTML = """<!doctype html>
       if (femBtn) {
         femBtn.addEventListener("click", runFemContour);
       }
+      const staticBtn = document.getElementById("simStaticBtn");
+      if (staticBtn) {
+        staticBtn.addEventListener("click", runStaticStiffness);
+      }
       bindSimBatchControls();
       if (simShown) {
         renderSimOutput();
       }
       if (lastFemContour) {
         renderFemContour(lastFemContour);
+      }
+      if (lastStaticStiffness) {
+        renderStaticStiffness(lastStaticStiffness);
       }
     }
 
@@ -5038,6 +5337,7 @@ UI_HTML = """<!doctype html>
           meshMode = modeSelect.value === "global" ? "global" : "structured";
           lastMeshResult = null;
           lastShapePcaResult = null;
+          lastStaticStiffness = null;
           renderMeshPanel();
         });
       }
@@ -5053,6 +5353,7 @@ UI_HTML = """<!doctype html>
           globalMeshTemplate[key] = readClampedInput(input, min, max, fallback);
           lastMeshResult = null;
           lastShapePcaResult = null;
+          lastStaticStiffness = null;
           renderMeshOutputPanel();
           renderShapePcaOutputPanel();
         });
@@ -5749,6 +6050,102 @@ UI_HTML = """<!doctype html>
       // fundamental. We expose 1..4 for the four analytical entries.
       const map = { b1: 1, b2: 2, b3: 3, a1: 4 };
       return map[simSelectedMode] || 1;
+    }
+
+    function renderStaticStiffness(state) {
+      ensureSimOutputPanel();
+      const container = document.getElementById("staticStiffnessContainer");
+      if (!container) return;
+      if (!state) {
+        container.innerHTML = "";
+        return;
+      }
+      if (state.status === "loading") {
+        container.innerHTML =
+          '<div class="sim-contour">' +
+          '<p class="sim-fem-msg">Running directional static FEM: fixing the outer core and translating the inner core in X, Y, and Z...</p>' +
+          '<div class="sim-fem-progress" aria-hidden="true"><span></span></div>' +
+          '</div>';
+        return;
+      }
+      if (state.status === "error") {
+        container.innerHTML =
+          '<div class="sim-contour"><p class="sim-fem-msg sim-fem-error">Static stiffness failed: ' +
+          escapeHtml(state.message) + '</p></div>';
+        return;
+      }
+      const data = state.data;
+      if (!data) return;
+      const directions = Array.isArray(data.directions) ? data.directions : [];
+      const directionRows = directions.map((item) =>
+        '<tr><td>K' + escapeHtml(item.engineering_axis) + '</td>' +
+        '<td>mesh ' + escapeHtml(item.mesh_axis) + '</td>' +
+        '<td class="sim-value">' + formatNumber(item.reaction_force_n, 2) + ' N</td>' +
+        '<td class="sim-value">' + formatNumber(item.stiffness_n_per_mm, 2) + ' N/mm</td></tr>'
+      ).join("");
+      container.innerHTML =
+        '<div class="sim-contour">' +
+        '<p class="sim-fem-msg"><strong>Directional static stiffness</strong> \u00b7 CalculiX linear-static solve \u00b7 material ' +
+        escapeHtml(data.material || "rubber") + '</p>' +
+        '<div class="sim-kpi-grid">' +
+        '<div class="sim-kpi"><span>Kx axial</span><strong>' + formatNumber(data.kx_n_per_mm, 2) + ' N/mm</strong></div>' +
+        '<div class="sim-kpi"><span>Ky radial</span><strong>' + formatNumber(data.ky_n_per_mm, 2) + ' N/mm</strong></div>' +
+        '<div class="sim-kpi"><span>Kz radial</span><strong>' + formatNumber(data.kz_n_per_mm, 2) + ' N/mm</strong></div>' +
+        '<div class="sim-kpi"><span>Prescribed motion</span><strong>' + formatNumber(directions[0] && directions[0].displacement_mm, 2) + ' mm</strong></div>' +
+        '</div>' +
+        '<table class="sim-table sim-table-rows" style="margin-top:10px"><tr><th>Client axis</th><th>Solver axis</th><th style="text-align:right">Reaction</th><th style="text-align:right">Stiffness</th></tr>' +
+        directionRows + '</table>' +
+        '<div class="sim-dashboard-detail" style="margin-top:10px">' +
+        '<div class="sim-detail-item"><span>Centerline</span><strong>' + escapeHtml(data.centerline_axis || "X") + '</strong></div>' +
+        '<div class="sim-detail-item"><span>Fixed interface</span><strong>' + escapeHtml(data.fixed_interface || "outer core") + '</strong></div>' +
+        '<div class="sim-detail-item"><span>Interface nodes</span><strong>' + Number(data.inner_node_count || 0) + ' inner / ' + Number(data.outer_node_count || 0) + ' outer</strong></div>' +
+        '</div>' +
+        '<p class="muted" style="margin:10px 0 0">' + escapeHtml(data.model_limitations || "") + '</p>' +
+        '</div>';
+    }
+
+    async function runStaticStiffness() {
+      const button = document.getElementById("simStaticBtn");
+      const intent = (lastExport && lastExport.intent) || currentEditIntent || {};
+      if (!isStructuredBushingIntentClient(intent)) {
+        lastStaticStiffness = {
+          status: "error",
+          message: "Static K currently requires structured Rubber bushing geometry with OD, ID, and core lengths.",
+        };
+        renderStaticStiffness(lastStaticStiffness);
+        return;
+      }
+      if (button) button.disabled = true;
+      lastStaticStiffness = { status: "loading" };
+      renderStaticStiffness(lastStaticStiffness);
+      try {
+        const response = await fetch("/run-static-stiffness", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: (lastExport && lastExport.name) || "bushing",
+            intent: intent,
+            material: intent.material && intent.material.name,
+            displacement_mm: 1,
+            global_template: globalMeshTemplate,
+          }),
+        });
+        if (!response.ok) {
+          let detail = "Static stiffness failed (HTTP " + response.status + ").";
+          try {
+            const payload = await response.json();
+            detail = payload.detail || detail;
+          } catch (error) {}
+          lastStaticStiffness = { status: "error", message: detail };
+        } else {
+          lastStaticStiffness = { status: "ok", data: await response.json() };
+        }
+      } catch (error) {
+        lastStaticStiffness = { status: "error", message: (error && error.message) || "Network error" };
+      } finally {
+        renderStaticStiffness(lastStaticStiffness);
+        if (button) button.disabled = false;
+      }
     }
 
     function renderFemContour(state) {
@@ -6526,6 +6923,7 @@ UI_HTML = """<!doctype html>
         : "Closest screened geometry - outside 10% tolerance";
       const resultHtml = targetStiffnessResult ? '<div class="best-geometry">' +
         '<strong>' + resultTitle + ': ' + escapeHtml(targetStiffnessResult.case_id) + '</strong>' +
+        '<span>Source: ' + escapeHtml(targetStiffnessResult.source || "analytical screening fallback") + '</span>' +
         '<span>OD ' + formatNumber(targetStiffnessResult.geometry.outer_diameter_mm, 1) + ' mm, ID ' + formatNumber(targetStiffnessResult.geometry.inner_diameter_mm, 1) + ' mm, inner core ' + formatNumber(targetStiffnessResult.geometry.inner_core_length_mm, 1) + ' mm, outer core ' + formatNumber(targetStiffnessResult.geometry.outer_core_length_mm, 1) + ' mm</span>' +
         '<span>Kx ' + formatTargetStiffness(targetStiffnessResult.kx) + ', Ky ' + formatTargetStiffness(targetStiffnessResult.ky) + ', Kz ' + formatTargetStiffness(targetStiffnessResult.kz) + '</span>' +
         '<span>Maximum target error ' + formatNumber(targetStiffnessResult.maxRelativeError * 100, 1) + '%; RMS target error ' + formatNumber(targetStiffnessResult.rmsRelativeError * 100, 1) + '%</span>' +
@@ -6546,7 +6944,7 @@ UI_HTML = """<!doctype html>
         '<div class="param-form-field full"><label for="ts_sample_count">Sample count</label><select id="ts_sample_count" data-target-input><option value="50"' + (targetSearchInputs.samples === 50 ? ' selected' : '') + '>50</option><option value="100"' + (targetSearchInputs.samples === 100 ? ' selected' : '') + '>100</option><option value="200"' + (targetSearchInputs.samples === 200 ? ' selected' : '') + '>200</option></select></div>' +
         '</div>' +
         bushingConditionsHtml() +
-        '<div class="param-actions"><button type="button" class="param-primary" id="findBestGeometryBtn">Find Best Geometry</button></div>' +
+        '<div class="param-actions"><button type="button" class="param-primary" id="findBestGeometryBtn">Find Best Geometry</button><button type="button" class="param-reset" id="openStiffnessPcaBtn">PCA Dataset</button></div>' +
         resultHtml +
         '</div>';
     }
@@ -6563,6 +6961,8 @@ UI_HTML = """<!doctype html>
       if (variants) variants.addEventListener("click", generateDesignSpaceVariants);
       const best = document.getElementById("findBestGeometryBtn");
       if (best) best.addEventListener("click", findBestGeometry);
+      const pcaDataset = document.getElementById("openStiffnessPcaBtn");
+      if (pcaDataset) pcaDataset.addEventListener("click", openStiffnessPcaDashboard);
       for (const control of paramControls.querySelectorAll("[data-target-input], #ts_inner_diameter_min, #ts_inner_diameter_max, #ts_inner_core_length_min, #ts_inner_core_length_max, #ts_outer_core_length_min, #ts_outer_core_length_max")) {
         control.addEventListener("change", captureTargetSearchInputs);
       }
@@ -6620,6 +7020,7 @@ UI_HTML = """<!doctype html>
         overrideMeshFaces = null;
         meshEditMode = false;
         lastMeshResult = null;
+        lastStaticStiffness = null;
         await render3DPreview(currentEditIntent);
         updateSummary(currentEditIntent);
         renderMeshPanel();
@@ -6720,6 +7121,7 @@ UI_HTML = """<!doctype html>
       updateSummary(currentEditIntent);
       lastMeshResult = null;
       lastShapePcaResult = null;
+      lastStaticStiffness = null;
       if (meshEditMode && editableMesh) {
         preferParametric = false;
         overrideMeshFaces = warpEditableMeshFaces(currentEditIntent.geometry);
@@ -6756,6 +7158,65 @@ UI_HTML = """<!doctype html>
 
     async function findBestGeometry() {
       const search = captureTargetSearchInputs();
+      try {
+        const response = await fetch("/search-stiffness", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            targets: {
+              kx_n_per_mm: search.kx,
+              ky_n_per_mm: search.ky,
+              kz_n_per_mm: search.kz,
+            },
+            bounds: {
+              inner_diameter_min_mm: search.idMin,
+              inner_diameter_max_mm: search.idMax,
+              inner_core_length_min_mm: search.innerLengthMin,
+              inner_core_length_max_mm: search.innerLengthMax,
+              outer_core_length_min_mm: search.outerLengthMin,
+              outer_core_length_max_mm: search.outerLengthMax,
+            },
+            samples: Math.max(2000, search.samples),
+          }),
+        });
+        if (response.ok) {
+          const payload = await response.json();
+          const predicted = payload.predicted_stiffness || {};
+          const best = {
+            case_id: payload.case_id || "NN-BEST",
+            source: "trained static-FEM neural surrogate",
+            intent: payload.intent,
+            geometry: payload.design,
+            kx: predicted.kx_n_per_mm,
+            ky: predicted.ky_n_per_mm,
+            kz: predicted.kz_n_per_mm,
+            maxRelativeError: payload.max_relative_error,
+            rmsRelativeError: payload.rms_relative_error,
+            withinTolerance: Boolean(payload.within_tolerance),
+          };
+          targetStiffnessResult = best;
+          if (!best.withinTolerance) {
+            appendMsg("bot", "The trained static-FEM surrogate did not find a candidate inside the 10% tolerance. The closest prediction is shown and should be verified with Static K.");
+          }
+          const keptUploadedMesh = applyRubberDesignIntent(best.intent);
+          if (!keptUploadedMesh) {
+            await generateRubberParametricCad(currentEditIntent);
+          }
+          rubberBushingTab = "target";
+          buildParamControls(currentEditIntent);
+          return;
+        }
+        if (response.status !== 404) {
+          let detail = "Surrogate search was unavailable.";
+          try {
+            const payload = await response.json();
+            detail = payload.detail || detail;
+          } catch (error) {}
+          appendMsg("bot", detail + " Using the analytical screening fallback.");
+        }
+      } catch (error) {
+        appendMsg("bot", "The trained surrogate could not be reached. Using the analytical screening fallback.");
+      }
       let best = null;
       makeRubberCandidates(search.samples, search.idMin, search.idMax, search.innerLengthMin, search.innerLengthMax, search.outerLengthMin, search.outerLengthMax).forEach((intent, index) => {
         const est = estimateBushingModal(intent.geometry, intent.material && intent.material.name);
@@ -6772,6 +7233,7 @@ UI_HTML = """<!doctype html>
         if (!best || score < best.score) {
           best = {
             case_id: "BEST-" + String(index + 1).padStart(3, "0"),
+            source: "analytical screening fallback",
             intent,
             geometry: intent.geometry,
             kx,
@@ -6803,6 +7265,128 @@ UI_HTML = """<!doctype html>
     function relativeErrorMagnitude(value, target) {
       const scale = Math.max(Math.abs(target), 1);
       return Math.abs(value - target) / scale;
+    }
+
+    async function openStiffnessPcaDashboard() {
+      let payload;
+      try {
+        const response = await fetch("/stiffness-dashboard-data");
+        if (!response.ok) {
+          let detail = "No trained PCA stiffness dataset is installed.";
+          try {
+            const body = await response.json();
+            detail = body.detail || detail;
+          } catch (error) {}
+          appendMsg("bot", detail + " Generate the offline FEM dataset, validate it, and install its artifacts first.");
+          return;
+        }
+        payload = await response.json();
+      } catch (error) {
+        appendMsg("bot", "The PCA stiffness dataset could not be loaded.");
+        return;
+      }
+      const samples = (payload.samples || []).filter((item) => Array.isArray(item.shape_codes) && item.shape_codes.length >= 3);
+      if (!samples.length) {
+        appendMsg("bot", "The installed dataset has no three-component shape PCA encoding.");
+        return;
+      }
+      const existing = document.getElementById("stiffnessPcaModal");
+      if (existing) existing.remove();
+      const overlay = document.createElement("div");
+      overlay.id = "stiffnessPcaModal";
+      overlay.className = "sim-modal-backdrop";
+      overlay.innerHTML =
+        '<div class="sim-modal" role="dialog" aria-modal="true" aria-label="Shape PCA stiffness dataset">' +
+        '<div class="sim-modal-head"><strong>Shape-code design space</strong><button type="button" class="sim-modal-close" aria-label="Close">×</button></div>' +
+        '<div class="sim-modal-body">' +
+        '<div class="stiffness-pca-layout">' +
+        '<div><div class="stiffness-pca-plot"><canvas id="stiffnessPcaCanvas" aria-label="First three PCA shape codes"></canvas></div>' +
+        '<div class="stiffness-pca-legend"><span><i style="background:#15803d"></i>FEM training designs</span><span><i style="background:#e52d2f"></i>Target-near designs</span></div></div>' +
+        '<div class="stiffness-pca-conditions"><strong>Client design conditions</strong>' +
+        '<span>Inner-core diameter: ' + CLIENT_BUSHING_SPEC.inner_diameter_min_mm + ' to ' + CLIENT_BUSHING_SPEC.inner_diameter_max_mm + ' mm</span>' +
+        '<span>Inner-core length: ' + CLIENT_BUSHING_SPEC.inner_core_length_min_mm + ' to ' + CLIENT_BUSHING_SPEC.inner_core_length_max_mm + ' mm</span>' +
+        '<span>Outer-core length: ' + CLIENT_BUSHING_SPEC.outer_core_length_min_mm + ' to ' + CLIENT_BUSHING_SPEC.outer_core_length_max_mm + ' mm</span>' +
+        '<span>Outer diameter: ' + CLIENT_BUSHING_SPEC.outer_diameter_mm + ' mm</span>' +
+        '<span>Kx target: ' + formatTargetStiffness(targetSearchInputs.kx) + '</span>' +
+        '<span>Ky target: ' + formatTargetStiffness(targetSearchInputs.ky) + '</span>' +
+        '<span>Kz target: ' + formatTargetStiffness(targetSearchInputs.kz) + '</span>' +
+        '<span>Samples displayed: ' + samples.length + '</span>' +
+        '<span>Axes: PC1, PC2, PC3 shape coefficients</span>' +
+        '</div></div></div></div>';
+      document.body.appendChild(overlay);
+      const close = () => overlay.remove();
+      overlay.addEventListener("click", (event) => {
+        if (event.target === overlay) close();
+      });
+      const closeButton = overlay.querySelector(".sim-modal-close");
+      if (closeButton) closeButton.addEventListener("click", close);
+      drawStiffnessPcaPlot(document.getElementById("stiffnessPcaCanvas"), samples);
+    }
+
+    function drawStiffnessPcaPlot(canvas, samples) {
+      if (!canvas || !samples.length) return;
+      const host = canvas.parentElement;
+      const ratio = Math.min(window.devicePixelRatio || 1, 2);
+      const width = Math.max(520, host.clientWidth || 620);
+      const height = Math.max(480, host.clientHeight || 480);
+      canvas.width = Math.round(width * ratio);
+      canvas.height = Math.round(height * ratio);
+      const context = canvas.getContext("2d");
+      context.scale(ratio, ratio);
+      context.clearRect(0, 0, width, height);
+      const codes = samples.map((item) => item.shape_codes.slice(0, 3).map(Number));
+      const scales = [0, 1, 2].map((axis) => Math.max(...codes.map((row) => Math.abs(row[axis]) || 0), 1e-6));
+      const centerX = width * 0.49;
+      const centerY = height * 0.53;
+      const radius = Math.min(width * 0.34, height * 0.37);
+      const project = (code) => {
+        const x = code[0] / scales[0];
+        const y = code[1] / scales[1];
+        const z = code[2] / scales[2];
+        return [
+          centerX + radius * (0.72 * x - 0.58 * y),
+          centerY + radius * (0.32 * x + 0.30 * y - 0.86 * z),
+        ];
+      };
+      context.strokeStyle = "#aebfd3";
+      context.lineWidth = 1;
+      const axes = [
+        { code: [1, 0, 0], label: "PC1" },
+        { code: [0, 1, 0], label: "PC2" },
+        { code: [0, 0, 1], label: "PC3" },
+      ];
+      context.font = "12px Arial, sans-serif";
+      context.fillStyle = "#53657d";
+      axes.forEach((axis) => {
+        const endpoint = project(axis.code);
+        context.beginPath();
+        context.moveTo(centerX, centerY);
+        context.lineTo(endpoint[0], endpoint[1]);
+        context.stroke();
+        context.fillText(axis.label, endpoint[0] + 5, endpoint[1] - 4);
+      });
+      const target = [targetSearchInputs.kx, targetSearchInputs.ky, targetSearchInputs.kz];
+      const scored = samples.map((item, index) => {
+        const stiffness = item.stiffness || {};
+        const values = [stiffness.kx_n_per_mm, stiffness.ky_n_per_mm, stiffness.kz_n_per_mm].map(Number);
+        const errors = values.map((value, axis) => relativeErrorMagnitude(value, target[axis]));
+        return { index, score: Math.max(...errors), near: Math.max(...errors) <= CLIENT_BUSHING_SPEC.match_tolerance };
+      });
+      if (!scored.some((item) => item.near)) {
+        scored.sort((left, right) => left.score - right.score);
+        scored.slice(0, Math.min(8, scored.length)).forEach((item) => { item.near = true; });
+      }
+      const nearIndices = new Set(scored.filter((item) => item.near).map((item) => item.index));
+      samples.forEach((item, index) => {
+        const point = project(codes[index]);
+        context.beginPath();
+        context.arc(point[0], point[1], nearIndices.has(index) ? 4 : 2.6, 0, Math.PI * 2);
+        context.fillStyle = nearIndices.has(index) ? "#e52d2f" : "rgba(21,128,61,0.72)";
+        context.fill();
+      });
+      context.fillStyle = "#102548";
+      context.font = "600 13px Arial, sans-serif";
+      context.fillText("Distribution of first three shape codes", 18, 24);
     }
 
     function cadEngineSelectorHtml() {
@@ -6952,6 +7536,7 @@ UI_HTML = """<!doctype html>
             overrideMeshFaces = warpEditableMeshFaces(currentEditIntent.geometry);
           }
           lastMeshResult = null;
+          lastStaticStiffness = null;
           buildParamControls(currentEditIntent);
           scheduleParamRender();
         });
@@ -6963,6 +7548,7 @@ UI_HTML = """<!doctype html>
       const geom = currentEditIntent.geometry || (currentEditIntent.geometry = {});
       geom[key] = key === "coil_count" ? Math.max(1, Math.round(value)) : value;
       lastMeshResult = null;
+      lastStaticStiffness = null;
 
       // Keep the inner diameter strictly inside the outer diameter.
       const od = Number(geom.outer_diameter_mm);

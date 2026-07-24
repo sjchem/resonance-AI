@@ -15,9 +15,12 @@ springs, with deterministic fallback paths where possible.
 - Validated structured CAD JSON using Pydantic schemas.
 - Interactive browser CAD preview with downloadable STL, GLB, DXF, PNG, PDF, and JSON.
 - Server-side STEP export through the CadQuery CAD pipeline.
-- Gmsh mesh generation with structured hex/swept mesh attempted first for suitable axisymmetric parts, then tetra fallback.
+- Gmsh mesh generation with structured/global hexahedral workflows for suitable axisymmetric parts.
 - Mesh quality summary and interactive mesh preview.
 - FEM modal batch runs through CalculiX with interactive von Mises contour preview and color scale.
+- Directional static FEM for bushing `Kx`, `Ky`, and `Kz` in `N/mm`.
+- Checkpointed design-of-experiments dataset generation with shared-connectivity shape PCA.
+- Lightweight neural geometry-to-stiffness surrogate and target-driven design search.
 - Azure App Service deployment through GitHub Actions and GHCR container images.
 
 ## Web UI
@@ -41,8 +44,9 @@ The main workflow is:
 3. Inspect the interactive CAD preview.
 4. Open the Parametric Editor only when dimensions need live editing.
 5. Generate a Gmsh mesh.
-6. Run simulation or FEM batch and inspect the contour result.
-7. Download CAD, mesh-friendly formats, images, PDF, or JSON.
+6. Run `Static K` to validate directional stiffness or `FEM batch` for modal contours.
+7. Use Design Space, Target Stiffness, and the PCA Dataset dashboard for bushing studies.
+8. Download CAD, mesh-friendly formats, images, PDF, or JSON.
 
 ## Repository Layout
 
@@ -51,6 +55,8 @@ backend/app/             FastAPI app, schemas, OpenAI client, upload handling, U
 text_to_cad/             Prompt-to-CAD agent, deterministic fallback, CadQuery export
 geometry/                STEP-to-mesh, mesh cleaning, mesh quality, hex/swept meshing
 simulate/                Gmsh/CalculiX modal pipeline and contour visualization
+models/stiffness/        Installed, reviewed stiffness-model artifacts for the web API
+tests/                   Static FEM and surrogate regression tests
 examples/                Example prompts
 outputs/                 Local generated outputs
 Dockerfile               FEM-capable Azure container image
@@ -164,6 +170,10 @@ http://localhost:8000/generate
 | `POST` | `/export/step` | Generate a real STEP file through CadQuery |
 | `POST` | `/generate-mesh` | Generate and evaluate a Gmsh volume mesh |
 | `POST` | `/run-fem` | Run modal FEM batch and return contour data |
+| `POST` | `/run-static-stiffness` | Run three directional static FEM load cases |
+| `GET` | `/stiffness-model` | Report trained surrogate availability and metadata |
+| `GET` | `/stiffness-dashboard-data` | Return shape-PCA/FEM training points |
+| `POST` | `/search-stiffness` | Search design bounds with the trained surrogate |
 
 Example prompt parse:
 
@@ -328,6 +338,73 @@ Notes:
 - Natural frequencies are reported in Hz.
 - Rubber materials are treated as linear-elastic first-pass approximations.
 - Modal stress contours show useful spatial patterns; absolute stress magnitude is relative for eigenmodes.
+
+## Static Stiffness And Training Dataset
+
+The static bushing workflow uses these explicit POC assumptions:
+
+- Client `X` is the bushing centerline.
+- The generated mesh centerline is geometric `Z`, so mesh `Z -> Kx`.
+- Mesh `X/Y -> Ky/Kz`.
+- The outer-core interface is fixed.
+- The inner-core interface is translated by `1 mm`.
+- Stiffness is the summed interface reaction divided by displacement, in `N/mm`.
+- Rubber is currently linear-elastic and isotropic; production use requires material and test calibration.
+
+Run one structured-mesh stiffness validation:
+
+```bash
+python -m simulate.static_stiffness \
+  outputs/stiffness_dataset/meshes/rb-0001.vtk \
+  --material rubber \
+  --inner-length 40 \
+  --outer-length 40 \
+  --output-dir outputs/static_stiffness/rb-0001
+```
+
+Build the complete offline design dataset, shape PCA, and neural surrogate:
+
+```bash
+python -m simulate.stiffness_dataset \
+  --output-dir outputs/stiffness_dataset \
+  --samples 200 \
+  --material rubber \
+  --circumferential 48 \
+  --radial 4 \
+  --axial 8 \
+  --shape-components 6
+```
+
+Each design runs three CalculiX solves. The command checkpoints
+`stiffness_dataset.json` after every case, writes a CSV summary, fits shape PCA,
+and saves validation metrics beside `stiffness_model.npz`.
+
+Review the validation `MAE`, `MAPE`, and `R²` before installing the model. A
+successful training run does not by itself establish engineering accuracy.
+
+Install reviewed artifacts for the web application:
+
+```bash
+cp outputs/stiffness_dataset/stiffness_model.npz models/stiffness/
+cp outputs/stiffness_dataset/stiffness_dataset.json models/stiffness/
+```
+
+The web Target Stiffness search uses the installed neural model. When no model
+is installed, it clearly reports the analytical screening fallback. The PCA
+Dataset dashboard plots the first three geometry shape codes, with solved
+training designs in green and target-near designs in red.
+
+Use a mounted artifact location in Azure by setting:
+
+```text
+STIFFNESS_MODEL_DIR=/path/to/reviewed/model/artifacts
+```
+
+Run focused verification:
+
+```bash
+python -m unittest discover -s tests -v
+```
 
 ## MCP Server
 
