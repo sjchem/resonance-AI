@@ -13,6 +13,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.cad_preview import build_preview_svg
 from app.chat_logic import respond_to_cad_chat
@@ -35,6 +36,8 @@ from cad_backends.openscad_backend import (
 
 
 app = FastAPI(title="Resonance AI", version="0.1.0")
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 MAX_FEM_MODES = 100
 
@@ -1558,6 +1561,7 @@ UI_HTML = """<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Resonance AI — Vibracoustic</title>
+  <link rel="stylesheet" href="/static/cad-viewer.css">
   <style>
     :root {
       --bg: #eef5ff;
@@ -4421,8 +4425,40 @@ UI_HTML = """<!doctype html>
 
     async function render3DPreview(cadIntent) {
       cleanupViewer();
+      const uploaded = (preferParametric || overrideMeshFaces) ? null : pickUploadedMesh();
+      const mesh = overrideMeshFaces
+        ? { faces: overrideMeshFaces }
+        : (uploaded ? { faces: uploaded.faces } : createPreviewMesh(cadIntent || {}));
+      lastExport.mesh = mesh;
+      lastExport.intent = cadIntent || {};
+
       const container = document.createElement("div");
       container.className = "viewer3d";
+      preview.innerHTML = "";
+      preview.appendChild(container);
+
+      try {
+        const viewerModule = await import("/static/cad-viewer.js");
+        const material = cadIntent && cadIntent.material;
+        activeViewer = viewerModule.createCadViewer({
+          container,
+          faces: mesh.faces,
+          cameraState: viewerCamera,
+          materialName: typeof material === "string" ? material : (material && material.name),
+        });
+        lastExport.canvas = activeViewer.canvas;
+        return;
+      } catch (error) {
+        console.warn("Three.js CAD preview unavailable; using Canvas fallback.", error);
+        container.remove();
+        renderCanvas3DPreview(cadIntent, mesh);
+      }
+    }
+
+    function renderCanvas3DPreview(cadIntent, mesh) {
+      const container = document.createElement("div");
+      container.className = "viewer3d";
+      container.dataset.renderer = "canvas";
       const canvas = document.createElement("canvas");
       canvas.setAttribute("aria-label", "Interactive CAD preview");
       container.appendChild(canvas);
@@ -4434,13 +4470,7 @@ UI_HTML = """<!doctype html>
         throw new Error("Canvas rendering is not available in this browser.");
       }
 
-      const uploaded = (preferParametric || overrideMeshFaces) ? null : pickUploadedMesh();
-      const mesh = overrideMeshFaces
-        ? { faces: overrideMeshFaces }
-        : (uploaded ? { faces: uploaded.faces } : createPreviewMesh(cadIntent || {}));
-      lastExport.mesh = mesh;
       lastExport.canvas = canvas;
-      lastExport.intent = cadIntent || {};
       const bounds = computeMeshBounds(mesh.faces);
       const size = bounds.size;
       const extent = Math.max(size.x, size.y, size.z, 40);

@@ -1,0 +1,102 @@
+.viewer3d.viewer3d-webgl {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  background: #f3f5f7;
+  cursor: grab;
+  touch-action: none;
+}
+
+.viewer3d.viewer3d-webgl:active {
+  cursor: grabbing;
+}
+
+.viewer3d-webgl canvas {
+  position: absolute;
+  inset: 0;
+  outline: none;
+}
+
+.cad-viewer-hint {
+  position: absolute;
+  right: 16px;
+  bottom: 14px;
+  z-index: 2;
+  padding: 5px 8px;
+  border: 1px solid rgba(125, 139, 155, 0.24);
+  background: rgba(255, 255, 255, 0.78);
+  color: #657184;
+  font-size: 11px;
+  line-height: 1;
+  pointer-events: none;
+  backdrop-filter: blur(5px);
+}
+
+.cad-viewer-axis {
+  position: absolute;
+  left: 15px;
+  bottom: 14px;
+  z-index: 2;
+  width: 58px;
+  height: 58px;
+  pointer-events: none;
+}
+
+.cad-viewer-axis-line {
+  position: absolute;
+  left: 26px;
+  bottom: 25px;
+  width: 25px;
+  height: 2px;
+  border-radius: 1px;
+  background: currentColor;
+  transform-origin: left center;
+}
+
+.cad-viewer-axis-label {
+  position: absolute;
+  left: 44px;
+  top: 21px;
+  display: grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--axis-color);
+  color: #fff;
+  font: 700 9px/1 "Segoe UI", sans-serif;
+}
+
+.cad-viewer-axis-x {
+  --axis-color: #db3d42;
+  color: #db3d42;
+  transform: rotate(25deg);
+}
+
+.cad-viewer-axis-y {
+  --axis-color: #2b9f57;
+  color: #2b9f57;
+  transform: rotate(155deg);
+}
+
+.cad-viewer-axis-z {
+  --axis-color: #3977e8;
+  color: #3977e8;
+  transform: rotate(-90deg);
+}
+
+.cad-viewer-axis-x .cad-viewer-axis-label,
+.cad-viewer-axis-y .cad-viewer-axis-label,
+.cad-viewer-axis-z .cad-viewer-axis-label {
+  transform: rotate(var(--label-rotation));
+}
+
+.cad-viewer-axis-x { --label-rotation: -25deg; }
+.cad-viewer-axis-y { --label-rotation: -155deg; }
+.cad-viewer-axis-z { --label-rotation: 90deg; }
+
+@media (max-width: 720px) {
+  .cad-viewer-hint {
+    display: none;
+  }
+}
