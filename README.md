@@ -349,7 +349,10 @@ The static bushing workflow uses these explicit POC assumptions:
 - The outer-core interface is fixed.
 - The inner-core interface is translated by `1 mm`.
 - Stiffness is the summed interface reaction divided by displacement, in `N/mm`.
-- Rubber is currently linear-elastic and isotropic; production use requires material and test calibration.
+- Directional static rubber uses a client-calibrated effective modulus of `1.10 MPa`; this places the POC
+  on the supplied `Kx/Ky/Kz` scale without changing the axis mapping.
+- The calibration is specific to this test setup. Production use still requires measured material curves,
+  fixture validation, and a suitable nearly-incompressible or hyperelastic formulation.
 
 Run one structured-mesh stiffness validation:
 
@@ -393,6 +396,11 @@ The web Target Stiffness search uses the installed neural model. When no model
 is installed, it clearly reports the analytical screening fallback. The PCA
 Dataset dashboard plots the first three geometry shape codes, with solved
 training designs in green and target-near designs in red.
+
+Legacy stiffness artifacts trained with the previous `10 MPa` rubber basis are
+scaled to the `1.10 MPa` client-calibrated basis when loaded. Regenerate and
+reinstall the dataset when practical so the artifact metadata records the
+calibration directly.
 
 Use a mounted artifact location in Azure by setting:
 

@@ -635,8 +635,9 @@ async def run_static_stiffness_api(payload: dict) -> dict:
                     "outer_core_length_mm": outer_length,
                 },
                 "model_limitations": (
-                    "Linear-elastic isotropic POC. Validate material calibration, interface assumptions, "
-                    "and large-strain rubber behavior before engineering release."
+                    "Client-calibrated linear-elastic isotropic POC. The effective rubber modulus matches the "
+                    "supplied stiffness scale; validate interface assumptions and large-strain behavior before "
+                    "engineering release."
                 ),
             }
         )
@@ -666,7 +667,9 @@ async def stiffness_model_status() -> dict:
         model = load_stiffness_surrogate(model_path)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"Could not load stiffness model: {exc}") from exc
-    return {"status": "ready", "model_file": str(model_path), "metadata": model.metadata}
+    metadata = dict(model.metadata)
+    metadata.setdefault("stiffness_calibration", _legacy_stiffness_calibration())
+    return {"status": "ready", "model_file": str(model_path), "metadata": metadata}
 
 
 @app.get("/stiffness-dashboard-data")
@@ -680,11 +683,12 @@ async def stiffness_dashboard_data() -> dict:
         payload = json.loads(dataset_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise HTTPException(status_code=500, detail=f"Could not read stiffness dataset: {exc}") from exc
+    artifact_scale = _stiffness_artifact_scale(payload.get("stiffness_calibration"))
     samples = [
         {
             "case_id": item.get("case_id"),
             "design": item.get("design"),
-            "stiffness": item.get("stiffness"),
+            "stiffness": _scaled_stiffness(item.get("stiffness"), artifact_scale),
             "shape_codes": item.get("shape_codes", []),
         }
         for item in payload.get("samples", [])
@@ -694,9 +698,10 @@ async def stiffness_dashboard_data() -> dict:
         "status": "ready",
         "sample_count": len(samples),
         "samples": samples[:5000],
-        "surrogate_metrics": payload.get("surrogate_metrics"),
+        "surrogate_metrics": _scaled_surrogate_metrics(payload.get("surrogate_metrics"), artifact_scale),
         "axis_assumption": payload.get("axis_assumption"),
         "boundary_assumption": payload.get("boundary_assumption"),
+        "stiffness_calibration": payload.get("stiffness_calibration") or _legacy_stiffness_calibration(),
     }
 
 
@@ -742,6 +747,8 @@ async def search_stiffness(payload: dict) -> dict:
             dtype=float,
         )
         predictions = model.predict(feature_values)
+        artifact_scale = _stiffness_artifact_scale(model.metadata.get("stiffness_calibration"))
+        predictions = predictions * artifact_scale
         target_values = np.asarray(target, dtype=float)
         relative_errors = np.abs(predictions - target_values) / np.maximum(np.abs(target_values), 1.0)
         scores = np.mean(relative_errors * relative_errors, axis=1)
@@ -770,7 +777,13 @@ async def search_stiffness(payload: dict) -> dict:
         "rms_relative_error": float(np.sqrt(np.mean(best_errors * best_errors))),
         "within_tolerance": bool(float(best_errors.max()) <= 0.1),
         "sample_count": sample_count,
-        "model_metadata": model.metadata,
+        "model_metadata": {
+            **model.metadata,
+            "stiffness_calibration": (
+                model.metadata.get("stiffness_calibration") or _legacy_stiffness_calibration()
+            ),
+        },
+        "stiffness_calibration": model.metadata.get("stiffness_calibration") or _legacy_stiffness_calibration(),
     }
 
 
@@ -787,6 +800,53 @@ def _stiffness_model_path() -> Path:
 
 def _stiffness_dataset_path() -> Path:
     return _stiffness_artifact_dir() / "stiffness_dataset.json"
+
+
+def _legacy_stiffness_calibration() -> dict:
+    from simulate.static_stiffness import (  # noqa: WPS433
+        CLIENT_CALIBRATED_RUBBER_E_MPA,
+        CLIENT_CALIBRATION_ID,
+        CLIENT_REFERENCE_TARGETS_N_PER_MM,
+    )
+
+    return {
+        "id": CLIENT_CALIBRATION_ID,
+        "status": "legacy_artifact_scaled",
+        "youngs_modulus_mpa": CLIENT_CALIBRATED_RUBBER_E_MPA,
+        "reference_targets_n_per_mm": CLIENT_REFERENCE_TARGETS_N_PER_MM,
+        "note": "Legacy 10 MPa artifact scaled to the client-calibrated 1.10 MPa stiffness basis.",
+    }
+
+
+def _stiffness_artifact_scale(calibration: object) -> float:
+    from simulate.static_stiffness import (  # noqa: WPS433
+        CLIENT_CALIBRATED_RUBBER_E_MPA,
+        CLIENT_CALIBRATION_ID,
+        LEGACY_RUBBER_E_MPA,
+    )
+
+    if isinstance(calibration, dict) and calibration.get("id") == CLIENT_CALIBRATION_ID:
+        return 1.0
+    return CLIENT_CALIBRATED_RUBBER_E_MPA / LEGACY_RUBBER_E_MPA
+
+
+def _scaled_stiffness(stiffness: object, scale: float) -> object:
+    if not isinstance(stiffness, dict) or scale == 1.0:
+        return stiffness
+    return {
+        key: float(value) * scale if key in {"kx_n_per_mm", "ky_n_per_mm", "kz_n_per_mm"} else value
+        for key, value in stiffness.items()
+    }
+
+
+def _scaled_surrogate_metrics(metrics: object, scale: float) -> object:
+    if not isinstance(metrics, dict) or scale == 1.0:
+        return metrics
+    scaled = dict(metrics)
+    mae = metrics.get("mae_n_per_mm")
+    if isinstance(mae, dict):
+        scaled["mae_n_per_mm"] = {key: float(value) * scale for key, value in mae.items()}
+    return scaled
 
 
 def _should_try_structured_hex(prompt: str, intent: dict) -> bool:
@@ -3132,6 +3192,10 @@ UI_HTML = """<!doctype html>
       border-collapse: collapse;
       font-size: 13px;
     }
+    .sim-table-scroll {
+      width: 100%;
+      overflow-x: auto;
+    }
     .sim-table th, .sim-table td {
       text-align: left;
       padding: 4px 6px;
@@ -3145,6 +3209,23 @@ UI_HTML = """<!doctype html>
       text-align: right;
       font-variant-numeric: tabular-nums;
       color: var(--brand);
+    }
+    .stiffness-error-cell {
+      text-align: right !important;
+      font-variant-numeric: tabular-nums;
+      font-weight: 700;
+    }
+    .stiffness-error-good {
+      background: #e9f7ef;
+      color: #137a45;
+    }
+    .stiffness-error-warning {
+      background: #fff7d6;
+      color: #8a6500;
+    }
+    .stiffness-error-bad {
+      background: #fff0ef;
+      color: #b42318;
     }
     .sim-dashboard {
       margin-top: 10px;
@@ -5441,11 +5522,30 @@ UI_HTML = """<!doctype html>
         updateAnalysisResultsVisibility();
         return;
       }
-      shapePcaOutputPanel.innerHTML =
-        '<div class="mesh-block analysis-result-block shape-pca-block">' +
-        '<div class="sim-head"><strong>Shape PCA encoding</strong><span class="muted">Global mesh geometry</span></div>' +
-        shapePcaHtml(lastShapePcaResult) +
-        '</div>';
+      if (lastShapePcaResult.status === "ok") {
+        const reconstruction = lastShapePcaResult.reconstruction || {};
+        shapePcaOutputPanel.innerHTML =
+          '<div class="mesh-block analysis-result-block shape-pca-block">' +
+          '<button type="button" class="sim-estimate-card" id="openShapePcaResultBtn">' +
+          '<span><strong>Shape PCA complete</strong><small>Open the encoding and reconstruction report</small></span>' +
+          '<span class="sim-estimate-kpis">' +
+          '<span>Samples <strong>' + formatInt(lastShapePcaResult.sample_count) + '</strong></span>' +
+          '<span>Components <strong>' + formatInt(lastShapePcaResult.component_count) + '</strong></span>' +
+          '<span>Precision <strong>' + formatNumber(reconstruction.precision_percent, 2) + '%</strong></span>' +
+          '</span>' +
+          '</button>' +
+          '</div>';
+        const openButton = document.getElementById("openShapePcaResultBtn");
+        if (openButton) {
+          openButton.addEventListener("click", () => openShapePcaResultWindow(lastShapePcaResult));
+        }
+      } else {
+        shapePcaOutputPanel.innerHTML =
+          '<div class="mesh-block analysis-result-block shape-pca-block">' +
+          '<div class="sim-head"><strong>Shape PCA encoding</strong><span class="muted">Global mesh geometry</span></div>' +
+          shapePcaHtml(lastShapePcaResult) +
+          '</div>';
+      }
       updateAnalysisResultsVisibility();
     }
 
@@ -5482,6 +5582,40 @@ UI_HTML = """<!doctype html>
         '<p class="muted" style="margin:8px 0 0">Model artifact: ' + escapeHtml(result.model_file || "") + ' · Reconstruction: ' + escapeHtml(result.reconstructed_mesh_file || "") + '</p>' +
         '</div>'
       );
+    }
+
+    function openShapePcaResultWindow(result) {
+      if (!result || result.status !== "ok") return;
+      const existing = document.getElementById("shapePcaResultModal");
+      if (existing) existing.remove();
+      const overlay = document.createElement("div");
+      overlay.id = "shapePcaResultModal";
+      overlay.className = "sim-modal-backdrop";
+      overlay.innerHTML =
+        '<div class="sim-modal" role="dialog" aria-modal="true" aria-labelledby="shapePcaResultTitle">' +
+        '<div class="sim-modal-head"><strong id="shapePcaResultTitle">Shape PCA encoding</strong>' +
+        '<button type="button" class="sim-modal-close" aria-label="Close Shape PCA result">×</button></div>' +
+        '<div class="sim-modal-body">' +
+        '<div class="sim-head" style="margin-bottom:10px"><strong>Global mesh geometry</strong><span class="muted">Encoding and reconstruction report</span></div>' +
+        shapePcaHtml(result) +
+        '</div></div>';
+      document.body.appendChild(overlay);
+      const closeButton = overlay.querySelector(".sim-modal-close");
+      const close = () => {
+        document.removeEventListener("keydown", onKeyDown);
+        overlay.remove();
+      };
+      const onKeyDown = (event) => {
+        if (event.key === "Escape") close();
+      };
+      overlay.addEventListener("click", (event) => {
+        if (event.target === overlay) close();
+      });
+      if (closeButton) {
+        closeButton.addEventListener("click", close);
+        closeButton.focus();
+      }
+      document.addEventListener("keydown", onKeyDown);
     }
 
     function meshResultHtml(result, displayMesh) {
@@ -6076,28 +6210,50 @@ UI_HTML = """<!doctype html>
       }
       const data = state.data;
       if (!data) return;
+      const calibration = data.calibration || {};
+      const referenceTargets = calibration.reference_targets_n_per_mm || {};
       const directions = Array.isArray(data.directions) ? data.directions : [];
-      const directionRows = directions.map((item) =>
-        '<tr><td>K' + escapeHtml(item.engineering_axis) + '</td>' +
-        '<td>mesh ' + escapeHtml(item.mesh_axis) + '</td>' +
-        '<td class="sim-value">' + formatNumber(item.reaction_force_n, 2) + ' N</td>' +
-        '<td class="sim-value">' + formatNumber(item.stiffness_n_per_mm, 2) + ' N/mm</td></tr>'
-      ).join("");
+      const directionRows = directions.map((item) => {
+        const axis = String(item.engineering_axis || "").toLowerCase();
+        const fallbackTargets = {
+          x: CLIENT_BUSHING_SPEC.target_kx_n_mm,
+          y: CLIENT_BUSHING_SPEC.target_ky_n_mm,
+          z: CLIENT_BUSHING_SPEC.target_kz_n_mm,
+        };
+        const target = Number(referenceTargets["k" + axis] || fallbackTargets[axis] || 0);
+        const stiffness = Number(item.stiffness_n_per_mm || 0);
+        const errorPercent = target > 0 ? Math.abs(stiffness - target) / target * 100 : Number.NaN;
+        const errorClass = errorPercent < 5
+          ? "stiffness-error-good"
+          : (errorPercent <= 10 ? "stiffness-error-warning" : "stiffness-error-bad");
+        return (
+          '<tr><td>K' + escapeHtml(axis) + '</td>' +
+          '<td class="sim-value">' + formatNumber(target, 2) + ' N/mm</td>' +
+          '<td>mesh ' + escapeHtml(item.mesh_axis) + '</td>' +
+          '<td class="sim-value">' + formatNumber(item.reaction_force_n, 2) + ' N</td>' +
+          '<td class="sim-value">' + formatNumber(stiffness, 2) + ' N/mm</td>' +
+          '<td class="stiffness-error-cell ' + errorClass + '">' +
+          (Number.isFinite(errorPercent) ? formatNumber(errorPercent, 2) + '%' : '\u2014') +
+          '</td></tr>'
+        );
+      }).join("");
       container.innerHTML =
         '<div class="sim-contour">' +
         '<p class="sim-fem-msg"><strong>Directional static stiffness</strong> \u00b7 CalculiX linear-static solve \u00b7 material ' +
-        escapeHtml(data.material || "rubber") + '</p>' +
+        escapeHtml(data.material || "rubber") + ' \u00b7 ' +
+        escapeHtml(calibration.status === "client_calibrated" ? "client calibrated" : "uncalibrated") + '</p>' +
         '<div class="sim-kpi-grid">' +
         '<div class="sim-kpi"><span>Kx axial</span><strong>' + formatNumber(data.kx_n_per_mm, 2) + ' N/mm</strong></div>' +
         '<div class="sim-kpi"><span>Ky radial</span><strong>' + formatNumber(data.ky_n_per_mm, 2) + ' N/mm</strong></div>' +
         '<div class="sim-kpi"><span>Kz radial</span><strong>' + formatNumber(data.kz_n_per_mm, 2) + ' N/mm</strong></div>' +
         '<div class="sim-kpi"><span>Prescribed motion</span><strong>' + formatNumber(directions[0] && directions[0].displacement_mm, 2) + ' mm</strong></div>' +
         '</div>' +
-        '<table class="sim-table sim-table-rows" style="margin-top:10px"><tr><th>Client axis</th><th>Solver axis</th><th style="text-align:right">Reaction</th><th style="text-align:right">Stiffness</th></tr>' +
-        directionRows + '</table>' +
+        '<div class="sim-table-scroll"><table class="sim-table sim-table-rows" style="margin-top:10px;min-width:720px"><tr><th>Client axis</th><th style="text-align:right">Client target</th><th>Solver axis</th><th style="text-align:right">Reaction</th><th style="text-align:right">Stiffness</th><th style="text-align:right">Error</th></tr>' +
+        directionRows + '</table></div>' +
         '<div class="sim-dashboard-detail" style="margin-top:10px">' +
         '<div class="sim-detail-item"><span>Centerline</span><strong>' + escapeHtml(data.centerline_axis || "X") + '</strong></div>' +
         '<div class="sim-detail-item"><span>Fixed interface</span><strong>' + escapeHtml(data.fixed_interface || "outer core") + '</strong></div>' +
+        '<div class="sim-detail-item"><span>Effective modulus</span><strong>' + formatNumber(data.youngs_modulus_mpa, 2) + ' MPa</strong></div>' +
         '<div class="sim-detail-item"><span>Interface nodes</span><strong>' + Number(data.inner_node_count || 0) + ' inner / ' + Number(data.outer_node_count || 0) + ' outer</strong></div>' +
         '</div>' +
         '<p class="muted" style="margin:10px 0 0">' + escapeHtml(data.model_limitations || "") + '</p>' +

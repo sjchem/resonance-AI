@@ -11,7 +11,9 @@ from geometry.bushing_hex_mesh import generate_bushing_hex_mesh
 from simulate.materials import resolve_material
 from simulate.modal_solver import _extract_solid_elements
 from simulate.static_stiffness import (
+    CLIENT_CALIBRATED_RUBBER_E_MPA,
     StaticStiffnessSetup,
+    effective_static_youngs_modulus_mpa,
     parse_reaction_forces,
     radial_interface_nodes,
     run_static_stiffness,
@@ -19,6 +21,13 @@ from simulate.static_stiffness import (
 
 
 class StaticStiffnessTests(unittest.TestCase):
+    def test_rubber_uses_client_calibrated_static_modulus(self) -> None:
+        setup = StaticStiffnessSetup(
+            mesh_file=Path("unused.vtk"),
+            material=resolve_material("rubber"),
+        )
+        self.assertEqual(effective_static_youngs_modulus_mpa(setup), CLIENT_CALIBRATED_RUBBER_E_MPA)
+
     def test_parse_reaction_force_table(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             dat_file = Path(directory) / "case.dat"
@@ -81,6 +90,12 @@ class StaticStiffnessTests(unittest.TestCase):
         self.assertGreater(result.kx_n_per_mm, 0.0)
         self.assertGreater(result.ky_n_per_mm, 0.0)
         self.assertGreater(result.kz_n_per_mm, 0.0)
+        self.assertEqual(result.youngs_modulus_mpa, CLIENT_CALIBRATED_RUBBER_E_MPA)
+        self.assertEqual(result.calibration["status"], "client_calibrated")
+        self.assertEqual(
+            result.calibration["reference_targets_n_per_mm"],
+            {"kx": 88.4, "ky": 294.5, "kz": 294.5},
+        )
         self.assertAlmostEqual(result.ky_n_per_mm, result.kz_n_per_mm, delta=result.ky_n_per_mm * 0.03)
 
 

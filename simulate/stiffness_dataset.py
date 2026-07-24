@@ -21,7 +21,12 @@ try:
     from geometry.bushing_hex_mesh import generate_bushing_hex_mesh
     from simulate.materials import resolve_material
     from simulate.shape_pca import encode_shape, fit_shape_pca, shape_pca_summary, write_shape_pca_model
-    from simulate.static_stiffness import StaticStiffnessSetup, run_static_stiffness
+    from simulate.static_stiffness import (
+        StaticStiffnessSetup,
+        effective_static_youngs_modulus_mpa,
+        run_static_stiffness,
+        static_stiffness_calibration,
+    )
     from simulate.stiffness_surrogate import (
         FEATURE_NAMES,
         TARGET_NAMES,
@@ -33,7 +38,12 @@ except ModuleNotFoundError:  # pragma: no cover - allow direct execution
     from geometry.bushing_hex_mesh import generate_bushing_hex_mesh
     from simulate.materials import resolve_material
     from simulate.shape_pca import encode_shape, fit_shape_pca, shape_pca_summary, write_shape_pca_model
-    from simulate.static_stiffness import StaticStiffnessSetup, run_static_stiffness
+    from simulate.static_stiffness import (
+        StaticStiffnessSetup,
+        effective_static_youngs_modulus_mpa,
+        run_static_stiffness,
+        static_stiffness_calibration,
+    )
     from simulate.stiffness_surrogate import (
         FEATURE_NAMES,
         TARGET_NAMES,
@@ -84,7 +94,19 @@ def build_stiffness_dataset(config: DatasetConfig) -> dict[str, Any]:
     }
     samples = design_samples(config.sample_count, config.bounds)
     existing = _load_checkpoint(checkpoint_path)
-    completed = {str(item.get("case_id")): item for item in existing.get("samples", []) if item.get("status") == "ok"}
+    material = resolve_material(config.material)
+    calibration = static_stiffness_calibration(
+        material.name,
+        effective_static_youngs_modulus_mpa(
+            StaticStiffnessSetup(mesh_file=Path("calibration.vtk"), material=material)
+        ),
+    )
+    compatible_checkpoint = existing.get("stiffness_calibration") == calibration
+    completed = {
+        str(item.get("case_id")): item
+        for item in existing.get("samples", [])
+        if compatible_checkpoint and item.get("status") == "ok"
+    }
     records: list[dict[str, Any]] = []
 
     for index, design in enumerate(samples, start=1):
@@ -100,7 +122,7 @@ def build_stiffness_dataset(config: DatasetConfig) -> dict[str, Any]:
             stiffness = run_static_stiffness(
                 StaticStiffnessSetup(
                     mesh_file=mesh_file,
-                    material=resolve_material(config.material),
+                    material=material,
                     displacement_mm=config.displacement_mm,
                     inner_interface_length_mm=design["inner_core_length_mm"],
                     outer_interface_length_mm=design["outer_core_length_mm"],
@@ -137,6 +159,7 @@ def build_stiffness_dataset(config: DatasetConfig) -> dict[str, Any]:
     _attach_shape_codes(successful, output_dir, config)
     features, targets = dataset_arrays(successful)
     model, metrics = train_stiffness_surrogate(features, targets)
+    model.metadata["stiffness_calibration"] = calibration
     model_path = save_stiffness_surrogate(model, output_dir / "stiffness_model.npz")
     metrics_path = output_dir / "stiffness_model_metrics.json"
     metrics_path.write_text(json.dumps(metrics, indent=2) + "\n", encoding="utf-8")
@@ -153,6 +176,7 @@ def build_stiffness_dataset(config: DatasetConfig) -> dict[str, Any]:
             "target_names": list(TARGET_NAMES),
             "axis_assumption": "Client X is bushing centerline; mesh Z maps to Kx.",
             "boundary_assumption": "Outer core fixed; inner core translated by 1 mm.",
+            "stiffness_calibration": calibration,
         }
     )
     checkpoint_path.write_text(json.dumps(final, indent=2) + "\n", encoding="utf-8")
@@ -255,8 +279,15 @@ def _checkpoint_payload(
             "output_dir": str(config.output_dir),
         },
         "global_mesh_template": template,
+        "stiffness_calibration": _dataset_calibration(config.material),
         "samples": records,
     }
+
+
+def _dataset_calibration(material_name: str) -> dict[str, Any]:
+    material = resolve_material(material_name)
+    setup = StaticStiffnessSetup(mesh_file=Path("calibration.vtk"), material=material)
+    return static_stiffness_calibration(material.name, effective_static_youngs_modulus_mpa(setup))
 
 
 def _write_checkpoint(

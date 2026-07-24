@@ -35,6 +35,10 @@ except ModuleNotFoundError:  # pragma: no cover - allow direct execution
 
 
 ENGINEERING_TO_MESH_AXIS = {"x": 2, "y": 0, "z": 1}
+CLIENT_CALIBRATION_ID = "client-rubber-static-e1.10-v1"
+CLIENT_CALIBRATED_RUBBER_E_MPA = 1.10
+LEGACY_RUBBER_E_MPA = 10.0
+CLIENT_REFERENCE_TARGETS_N_PER_MM = {"kx": 88.4, "ky": 294.5, "kz": 294.5}
 _FLOAT = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[EeDd][+-]?\d+)?"
 _REACTION_ROW = re.compile(rf"^\s*(\d+)\s+({_FLOAT})\s+({_FLOAT})\s+({_FLOAT})\s*$")
 
@@ -48,6 +52,7 @@ class StaticStiffnessSetup:
     displacement_mm: float = 1.0
     inner_interface_length_mm: float | None = None
     outer_interface_length_mm: float | None = None
+    youngs_modulus_override_mpa: float | None = None
 
 
 @dataclass(frozen=True)
@@ -69,6 +74,8 @@ class StaticStiffnessResult:
     """Combined Kx/Ky/Kz result and test assumptions."""
 
     material: str
+    youngs_modulus_mpa: float
+    calibration: dict[str, Any]
     inner_node_count: int
     outer_node_count: int
     centerline_axis: str
@@ -118,6 +125,8 @@ def run_static_stiffness(
     if setup.displacement_mm <= 0:
         raise ValueError("Static stiffness displacement must be positive.")
 
+    youngs_modulus_mpa = effective_static_youngs_modulus_mpa(setup)
+    calibration = static_stiffness_calibration(setup.material.name, youngs_modulus_mpa)
     points, element_blocks = _read_solid_mesh(setup.mesh_file)
     inner_nodes, outer_nodes = radial_interface_nodes(
         points,
@@ -143,6 +152,7 @@ def run_static_stiffness(
             inner_nodes=inner_nodes,
             outer_nodes=outer_nodes,
             displacement_axis=mesh_axis,
+            youngs_modulus_mpa=youngs_modulus_mpa,
         )
         run = _run_ccx(ccx, output_dir, case_name, inp_file)
         if not run.ok:
@@ -165,6 +175,8 @@ def run_static_stiffness(
 
     result = StaticStiffnessResult(
         material=setup.material.name,
+        youngs_modulus_mpa=youngs_modulus_mpa,
+        calibration=calibration,
         inner_node_count=int(inner_nodes.size),
         outer_node_count=int(outer_nodes.size),
         centerline_axis="X",
@@ -177,6 +189,39 @@ def run_static_stiffness(
     return result
 
 
+def effective_static_youngs_modulus_mpa(setup: StaticStiffnessSetup) -> float:
+    """Return the modulus used by the client-calibrated static POC."""
+
+    if setup.youngs_modulus_override_mpa is not None:
+        value = float(setup.youngs_modulus_override_mpa)
+        if value <= 0:
+            raise ValueError("Static stiffness Young's modulus override must be positive.")
+        return value
+    if setup.material.name.lower() == "rubber":
+        return CLIENT_CALIBRATED_RUBBER_E_MPA
+    return float(setup.material.youngs_modulus_mpa)
+
+
+def static_stiffness_calibration(material_name: str, youngs_modulus_mpa: float) -> dict[str, Any]:
+    """Describe the calibration attached to stiffness results and datasets."""
+
+    calibrated = (
+        material_name.lower() == "rubber"
+        and abs(float(youngs_modulus_mpa) - CLIENT_CALIBRATED_RUBBER_E_MPA) <= 1e-9
+    )
+    return {
+        "id": CLIENT_CALIBRATION_ID if calibrated else "none",
+        "status": "client_calibrated" if calibrated else "uncalibrated",
+        "youngs_modulus_mpa": float(youngs_modulus_mpa),
+        "reference_targets_n_per_mm": CLIENT_REFERENCE_TARGETS_N_PER_MM if calibrated else None,
+        "note": (
+            "Effective linear-static rubber modulus calibrated to the supplied client stiffness scale."
+            if calibrated
+            else "No client stiffness calibration applied."
+        ),
+    }
+
+
 def write_static_deck(
     setup: StaticStiffnessSetup,
     inp_file: Path,
@@ -186,6 +231,7 @@ def write_static_deck(
     inner_nodes: np.ndarray,
     outer_nodes: np.ndarray,
     displacement_axis: int,
+    youngs_modulus_mpa: float,
 ) -> None:
     """Write one CalculiX static displacement load case."""
 
@@ -211,7 +257,7 @@ def write_static_deck(
         [
             f"*MATERIAL, NAME={material.name.upper()}",
             "*ELASTIC",
-            f"{material.youngs_modulus_mpa:.9g}, {material.poisson_ratio:.9g}",
+            f"{youngs_modulus_mpa:.9g}, {material.poisson_ratio:.9g}",
             f"*SOLID SECTION, ELSET=EALL, MATERIAL={material.name.upper()}",
             "*NSET, NSET=NOUTER",
             *_chunk_ids(outer_nodes + 1),
