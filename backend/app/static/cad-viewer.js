@@ -70,21 +70,75 @@ function cameraDirection(cameraState) {
   ).normalize();
 }
 
-function addOrientationBadge(container) {
-  const badge = document.createElement("div");
-  badge.className = "cad-viewer-axis";
-  badge.setAttribute("aria-hidden", "true");
-  badge.innerHTML = `
-    <span class="cad-viewer-axis-line cad-viewer-axis-x"><span class="cad-viewer-axis-label">X</span></span>
-    <span class="cad-viewer-axis-line cad-viewer-axis-y"><span class="cad-viewer-axis-label">Y</span></span>
-    <span class="cad-viewer-axis-line cad-viewer-axis-z"><span class="cad-viewer-axis-label">Z</span></span>
-  `;
-  container.appendChild(badge);
-
+function addViewerHint(container) {
   const hint = document.createElement("div");
   hint.className = "cad-viewer-hint";
   hint.textContent = "Drag to orbit · Scroll to zoom";
   container.appendChild(hint);
+}
+
+function createViewCube(container, camera, target, radius, controls) {
+  const host = document.createElement("div");
+  host.className = "cad-view-cube-scene";
+  host.setAttribute("aria-label", "Standard CAD views");
+  host.innerHTML = `
+    <div class="cad-view-cube">
+      <button type="button" class="cad-view-cube-face cad-view-cube-back" data-view="back">BACK</button>
+      <button type="button" class="cad-view-cube-face cad-view-cube-front" data-view="front">FRONT</button>
+      <button type="button" class="cad-view-cube-face cad-view-cube-right" data-view="right">RIGHT</button>
+      <button type="button" class="cad-view-cube-face cad-view-cube-left" data-view="left">LEFT</button>
+      <button type="button" class="cad-view-cube-face cad-view-cube-top" data-view="top">TOP</button>
+      <button type="button" class="cad-view-cube-face cad-view-cube-bottom" data-view="bottom">BOTTOM</button>
+    </div>
+  `;
+  container.appendChild(host);
+
+  const cube = host.querySelector(".cad-view-cube");
+  const worldToView = new THREE.Matrix4();
+  const directions = {
+    back: new THREE.Vector3(0, 0, 1),
+    front: new THREE.Vector3(0, 0, -1),
+    right: new THREE.Vector3(1, 0, 0),
+    left: new THREE.Vector3(-1, 0, 0),
+    top: new THREE.Vector3(0, 1, 0),
+    bottom: new THREE.Vector3(0, -1, 0),
+  };
+
+  function update() {
+    camera.updateMatrixWorld();
+    worldToView.extractRotation(camera.matrixWorldInverse);
+    cube.style.transform = `matrix3d(${worldToView.elements.join(",")})`;
+  }
+
+  function selectView(event) {
+    const face = event.target.closest("[data-view]");
+    const direction = face ? directions[face.dataset.view] : null;
+    if (!direction) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    camera.position.copy(target).addScaledVector(direction, radius * 4.2);
+    camera.up.set(
+      0,
+      Math.abs(direction.y) > 0.9 ? 0 : 1,
+      direction.y > 0.9 ? -1 : (direction.y < -0.9 ? 1 : 0),
+    );
+    camera.lookAt(target);
+    controls.target.copy(target);
+    controls.update();
+    update();
+  }
+
+  host.addEventListener("click", selectView);
+  update();
+  return {
+    update,
+    dispose() {
+      host.removeEventListener("click", selectView);
+      host.remove();
+    },
+  };
 }
 
 function updateCameraState(camera, target, cameraState) {
@@ -124,7 +178,7 @@ function createContactShadow(radius) {
   const material = new THREE.MeshBasicMaterial({
     map: texture,
     transparent: true,
-    opacity: 0.52,
+    opacity: 0.24,
     depthWrite: false,
   });
   const mesh = new THREE.Mesh(geometry, material);
@@ -163,7 +217,7 @@ export function createCadViewer({
   container.classList.add("viewer3d-webgl");
   container.dataset.renderer = "three";
   container.appendChild(renderer.domElement);
-  addOrientationBadge(container);
+  addViewerHint(container);
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(BACKGROUND);
@@ -220,6 +274,7 @@ export function createCadViewer({
   keyLight.intensity = 2.35;
   keyLight.castShadow = true;
   keyLight.shadow.mapSize.set(2048, 2048);
+  keyLight.shadow.radius = 5;
   keyLight.shadow.bias = -0.00015;
   keyLight.shadow.normalBias = 0.025;
   const shadowExtent = radius * 2.2;
@@ -240,7 +295,7 @@ export function createCadViewer({
   const groundMaterial = new THREE.ShadowMaterial({
     color: 0x15202e,
     transparent: true,
-    opacity: 0.24,
+    opacity: 0.09,
   });
   const ground = new THREE.Mesh(groundGeometry, groundMaterial);
   ground.rotation.x = -Math.PI / 2;
@@ -271,7 +326,11 @@ export function createCadViewer({
   controls.mouseButtons.LEFT = THREE.MOUSE.ROTATE;
   controls.mouseButtons.MIDDLE = THREE.MOUSE.DOLLY;
   controls.mouseButtons.RIGHT = THREE.MOUSE.PAN;
-  controls.addEventListener("change", () => updateCameraState(camera, target, cameraState));
+  const viewCube = createViewCube(container, camera, target, radius, controls);
+  controls.addEventListener("change", () => {
+    updateCameraState(camera, target, cameraState);
+    viewCube.update();
+  });
 
   let width = 0;
   let height = 0;
@@ -319,6 +378,7 @@ export function createCadViewer({
       window.cancelAnimationFrame(frameId);
       resizeObserver.disconnect();
       controls.dispose();
+      viewCube.dispose();
       scene.environment?.dispose();
       geometry.dispose();
       material.dispose();
