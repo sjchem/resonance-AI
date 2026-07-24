@@ -15,6 +15,7 @@ pydantic
 matplotlib
 numpy
 pandas
+openpyxl==3.1.5
 scikit-learn
 jupyterlab
 

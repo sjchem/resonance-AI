@@ -19,6 +19,7 @@ springs, with deterministic fallback paths where possible.
 - Mesh quality summary and interactive mesh preview.
 - FEM modal batch runs through CalculiX with interactive von Mises contour preview and color scale.
 - Directional static FEM for bushing `Kx`, `Ky`, and `Kz` in `N/mm`.
+- Simulation results can export the selected/optimized CAD as STL and a multi-sheet Excel report.
 - Checkpointed design-of-experiments dataset generation with shared-connectivity shape PCA.
 - Lightweight neural geometry-to-stiffness surrogate and target-driven design search.
 - Azure App Service deployment through GitHub Actions and GHCR container images.
@@ -46,7 +47,7 @@ The main workflow is:
 5. Generate a Gmsh mesh.
 6. Run `Static K` to validate directional stiffness or `FEM batch` for modal contours.
 7. Use Design Space, Target Stiffness, and the PCA Dataset dashboard for bushing studies.
-8. Download CAD, mesh-friendly formats, images, PDF, or JSON.
+8. Download CAD, mesh-friendly formats, images, PDF, JSON, or the complete simulation Excel report.
 
 ## Repository Layout
 
@@ -171,6 +172,7 @@ http://localhost:8000/generate
 | `POST` | `/generate-mesh` | Generate and evaluate a Gmsh volume mesh |
 | `POST` | `/run-fem` | Run modal FEM batch and return contour data |
 | `POST` | `/run-static-stiffness` | Run three directional static FEM load cases |
+| `POST` | `/export/simulation-report` | Download design, mesh, stiffness, modal, PCA, and optimization results as XLSX |
 | `GET` | `/stiffness-model` | Report trained surrogate availability and metadata |
 | `GET` | `/stiffness-dashboard-data` | Return shape-PCA/FEM training points |
 | `POST` | `/search-stiffness` | Search design bounds with the trained surrogate |

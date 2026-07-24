@@ -12,7 +12,7 @@ import tempfile
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.cad_preview import build_preview_svg
@@ -224,6 +224,37 @@ async def export_step(payload: dict) -> FileResponse:
         raise HTTPException(status_code=500, detail="STEP generation did not produce a file.")
 
     return FileResponse(step_path, media_type="application/step", filename=f"{name}.step")
+
+
+@app.post("/export/simulation-report")
+async def export_simulation_report(payload: dict) -> StreamingResponse:
+    """Create an Excel workbook containing compact CAD and simulation results."""
+
+    name = _safe_export_name(str(payload.get("name", "model")))
+    try:
+        from app.simulation_export import build_simulation_workbook
+    except ModuleNotFoundError as exc:
+        raise HTTPException(
+            status_code=501,
+            detail="Excel report export requires the openpyxl package in the deployed web image.",
+        ) from exc
+
+    try:
+        workbook = build_simulation_workbook(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - return a useful POC export error
+        raise HTTPException(status_code=500, detail=f"Simulation report generation failed: {exc}") from exc
+
+    filename = f"{name}_simulation_report.xlsx"
+    return StreamingResponse(
+        workbook,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @app.post("/export/openscad")
@@ -5284,14 +5315,184 @@ UI_HTML = """<!doctype html>
       if (!simOutputPanel.querySelector("#simOutput")) {
         simOutputPanel.innerHTML =
           '<div class="sim-block analysis-result-block">' +
-          '<div class="sim-head"><strong>Simulation result</strong><span class="muted">Below CAD preview</span></div>' +
+          '<div class="sim-head"><strong>Simulation result</strong>' +
+          '<div class="sim-head-actions">' +
+          '<button type="button" class="sim-btn" id="downloadBestCadStlBtn" disabled>Best CAD (.STL)</button>' +
+          '<button type="button" class="sim-btn secondary" id="downloadSimulationExcelBtn" disabled>Simulation Excel</button>' +
+          '</div></div>' +
           '<div id="simOutput"></div>' +
           '<div id="staticStiffnessContainer"></div>' +
           '<div id="simFemContainer"></div>' +
           '</div>';
       }
+      bindSimulationDownloadActions();
+      updateSimulationDownloadActions();
       updateAnalysisResultsVisibility();
       return document.getElementById("simOutput");
+    }
+
+    function bindSimulationDownloadActions() {
+      const stlButton = document.getElementById("downloadBestCadStlBtn");
+      const excelButton = document.getElementById("downloadSimulationExcelBtn");
+      if (stlButton && !stlButton.dataset.bound) {
+        stlButton.dataset.bound = "true";
+        stlButton.addEventListener("click", downloadBestSimulationCad);
+      }
+      if (excelButton && !excelButton.dataset.bound) {
+        excelButton.dataset.bound = "true";
+        excelButton.addEventListener("click", downloadSimulationExcel);
+      }
+    }
+
+    function updateSimulationDownloadActions() {
+      const stlButton = document.getElementById("downloadBestCadStlBtn");
+      const excelButton = document.getElementById("downloadSimulationExcelBtn");
+      const intent = simulationDesignIntent();
+      const hasCad = Boolean((lastExport && lastExport.mesh) || (intent && intent.geometry));
+      const hasResults = Boolean(
+        (lastStaticStiffness && lastStaticStiffness.status === "ok") ||
+        (lastFemContour && lastFemContour.status === "ok")
+      );
+      if (stlButton) stlButton.disabled = !hasCad || !hasResults;
+      if (excelButton) excelButton.disabled = !hasResults;
+    }
+
+    function simulationDesignIntent() {
+      return (targetStiffnessResult && targetStiffnessResult.intent) ||
+        (lastExport && lastExport.intent) ||
+        currentEditIntent ||
+        null;
+    }
+
+    function downloadBestSimulationCad() {
+      try {
+        const intent = simulationDesignIntent();
+        let mesh = null;
+        if (targetStiffnessResult && targetStiffnessResult.intent) {
+          mesh = createPreviewMesh(targetStiffnessResult.intent);
+        } else if (lastExport && lastExport.mesh) {
+          mesh = lastExport.mesh;
+        } else if (intent) {
+          mesh = createPreviewMesh(intent);
+        }
+        if (!mesh || !Array.isArray(mesh.faces) || !mesh.faces.length) {
+          throw new Error("No CAD surface is available for STL export.");
+        }
+        const caseName = targetStiffnessResult && targetStiffnessResult.case_id
+          ? String(targetStiffnessResult.case_id).toLowerCase().replace(/[^a-z0-9_-]+/g, "_")
+          : ((lastExport && lastExport.name) || exportBaseName(intent || {}) || "best_model");
+        downloadBlob(stlBlob(mesh, caseName), caseName + "_best.stl");
+      } catch (error) {
+        appendMsg("bot", "STL export failed: " + ((error && error.message) || error));
+      }
+    }
+
+    async function downloadSimulationExcel() {
+      const button = document.getElementById("downloadSimulationExcelBtn");
+      if (button) {
+        button.disabled = true;
+        button.textContent = "Preparing Excel...";
+      }
+      try {
+        const payload = simulationReportPayload();
+        const response = await fetch("/export/simulation-report", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+          let detail = "Excel report export failed (HTTP " + response.status + ").";
+          try {
+            const body = await response.json();
+            detail = body.detail || detail;
+          } catch (error) {}
+          throw new Error(detail);
+        }
+        const blob = await response.blob();
+        downloadBlob(blob, payload.name + "_simulation_report.xlsx");
+      } catch (error) {
+        appendMsg("bot", "Excel export failed: " + ((error && error.message) || error));
+      } finally {
+        if (button) button.textContent = "Simulation Excel";
+        updateSimulationDownloadActions();
+      }
+    }
+
+    function simulationReportPayload() {
+      const intent = simulationDesignIntent() || {};
+      const src = simSourceDims();
+      const analytical = src ? estimateBushingModal(src.geom, src.material) : null;
+      const nameSource = (targetStiffnessResult && targetStiffnessResult.case_id) ||
+        (lastExport && lastExport.name) ||
+        exportBaseName(intent) ||
+        "model";
+      const name = String(nameSource).toLowerCase().replace(/[^a-z0-9_-]+/g, "_") || "model";
+      return {
+        name,
+        generated_at: new Date().toISOString(),
+        design_intent: compactReportValue(intent),
+        best_design: compactReportValue(targetStiffnessResult),
+        client_targets: {
+          target_kx_n_mm: targetSearchInputs.kx,
+          target_ky_n_mm: targetSearchInputs.ky,
+          target_kz_n_mm: targetSearchInputs.kz,
+          tolerance_fraction: CLIENT_BUSHING_SPEC.match_tolerance,
+          inner_diameter_min_mm: targetSearchInputs.idMin,
+          inner_diameter_max_mm: targetSearchInputs.idMax,
+          inner_core_length_min_mm: targetSearchInputs.innerLengthMin,
+          inner_core_length_max_mm: targetSearchInputs.innerLengthMax,
+          outer_core_length_min_mm: targetSearchInputs.outerLengthMin,
+          outer_core_length_max_mm: targetSearchInputs.outerLengthMax,
+          outer_diameter_mm: CLIENT_BUSHING_SPEC.outer_diameter_mm,
+          swaging_value_mm: CLIENT_BUSHING_SPEC.swaging_value_mm,
+          decking_value_mm: CLIENT_BUSHING_SPEC.decking_value_mm,
+          internal_teeth: CLIENT_BUSHING_SPEC.internal_teeth,
+        },
+        simulation_settings: {
+          requested_modes: femBatchCount,
+          selected_contour_mode: femContourMode,
+          mesh_mode: meshMode,
+          centerline_axis: "X",
+          fixed_interface: "outer core",
+          prescribed_displacement_mm: 1,
+        },
+        global_mesh_template: compactReportValue(globalMeshTemplate),
+        mesh_summary: compactReportValue(lastMeshResult),
+        static_stiffness: lastStaticStiffness && lastStaticStiffness.status === "ok"
+          ? compactReportValue(lastStaticStiffness.data)
+          : null,
+        modal_fem: lastFemContour && lastFemContour.status === "ok"
+          ? compactReportValue(lastFemContour.data)
+          : null,
+        shape_pca: compactReportValue(lastShapePcaResult),
+        analytical_estimate: compactReportValue(analytical),
+        design_space_cases: designSpaceCases.map((item) => ({
+          case_id: item.case_id,
+          geometry: compactReportValue(item.geometry),
+        })),
+      };
+    }
+
+    function compactReportValue(value, depth = 0) {
+      if (value == null || depth > 7) return value == null ? null : "[nested data omitted]";
+      if (Array.isArray(value)) {
+        return value.slice(0, 5000).map((item) => compactReportValue(item, depth + 1));
+      }
+      if (typeof value !== "object") return value;
+      const excluded = new Set([
+        "contour_png_base64",
+        "fem_mesh",
+        "surface_mesh",
+        "comparison",
+        "uploaded_surface",
+        "faces",
+        "points",
+      ]);
+      const compact = {};
+      Object.entries(value).forEach(([key, item]) => {
+        if (!excluded.has(key)) compact[key] = compactReportValue(item, depth + 1);
+      });
+      return compact;
     }
 
     function clearSimOutputPanel() {
