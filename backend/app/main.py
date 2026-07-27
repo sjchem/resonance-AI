@@ -1596,7 +1596,7 @@ UI_HTML = """<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Product Design Studio — Vibracoustic</title>
+  <title>Product Engineering Studio — Vibracoustic</title>
   <link rel="stylesheet" href="/static/cad-viewer.css">
   <style>
     :root {
@@ -3655,7 +3655,7 @@ UI_HTML = """<!doctype html>
           >
         </div>
         <div class="product">
-          <span class="name">Product Design Studio</span>
+          <span class="name">Product Engineering Studio</span>
         </div>
       </div>
     </div>
@@ -3664,8 +3664,8 @@ UI_HTML = """<!doctype html>
     <section class="hero">
       <div class="hero-inner">
         <div>
-          <h1>Product Design Studio</h1>
-          <p class="hero-copy">Generate, optimize, simulate, and validate vibroacoustic components in one integrated AI-assisted engineering workspace.</p>
+          <h1>Product Engineering Studio</h1>
+          <p class="hero-copy">Generate, optimize, simulate, and validate Vibracoustic components in one integrated AI-assisted engineering workspace.</p>
         </div>
         <div class="hero-workflow">
           <div class="poc-badge" aria-label="Proof of concept">POC</div>
