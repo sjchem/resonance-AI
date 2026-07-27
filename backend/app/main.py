@@ -1721,7 +1721,7 @@ UI_HTML = """<!doctype html>
       border: 1px solid var(--brand);
       background: var(--brand);
       color: #fff;
-      font-size: 18px;
+      font-size: 22px;
       font-weight: 800;
       line-height: 1;
       text-align: center;
