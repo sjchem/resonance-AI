@@ -1703,14 +1703,6 @@ UI_HTML = """<!doctype html>
       gap: 28px;
       align-items: end;
     }
-    .eyebrow {
-      margin: 0 0 14px;
-      color: #3d658f;
-      font-size: 12px;
-      font-weight: 800;
-      letter-spacing: 1.6px;
-      text-transform: uppercase;
-    }
     .hero-copy {
       margin: 0;
       max-width: 660px;
@@ -1726,9 +1718,9 @@ UI_HTML = """<!doctype html>
       justify-self: end;
       min-width: 112px;
       padding: 10px 18px;
-      border: 1px solid rgba(83, 128, 178, 0.34);
-      background: rgba(245, 250, 255, 0.82);
-      color: #0f2a49;
+      border: 1px solid var(--brand);
+      background: var(--brand);
+      color: #fff;
       font-size: 18px;
       font-weight: 800;
       line-height: 1;
@@ -3672,9 +3664,8 @@ UI_HTML = """<!doctype html>
     <section class="hero">
       <div class="hero-inner">
         <div>
-          <p class="eyebrow">NVH Product Engineering</p>
           <h1>Product Design Studio</h1>
-          <p class="hero-copy">Design, refine, mesh, and validate vibroacoustic components in one AI-assisted engineering workspace.</p>
+          <p class="hero-copy">Generate, optimize, simulate, and validate vibroacoustic components in one integrated AI-assisted engineering workspace.</p>
         </div>
         <div class="hero-workflow">
           <div class="poc-badge" aria-label="Proof of concept">POC</div>
