@@ -3848,7 +3848,7 @@ UI_HTML = """<!doctype html>
           </div>
           <div id="paramControls" class="param-controls">
             <div class="cad-engine-row">
-              <label for="cadEngineSelect">CAD Engine</label>
+              <label for="cadEngineSelect">CAD Editor</label>
               <select id="cadEngineSelect">
                 <option value="cadquery" selected>CadQuery</option>
                 <option value="openscad">OpenSCAD</option>
@@ -5577,7 +5577,7 @@ UI_HTML = """<!doctype html>
           '<button type="button" class="sim-btn simulation-action-trigger" id="bestCadActionBtn" aria-haspopup="menu" aria-expanded="false" disabled>Best CAD (.STL)<span class="menu-caret" aria-hidden="true">&#9662;</span></button>' +
           '<div class="simulation-action-options" id="bestCadActionMenu" role="menu">' +
           '<button type="button" class="simulation-action-option" id="downloadBestCadStlBtn" role="menuitem" disabled>Download</button>' +
-          '<button type="button" class="simulation-action-option" id="sendBestCadFairBtn" role="menuitem" disabled>FAIR</button>' +
+          '<button type="button" class="simulation-action-option" id="sendBestCadFairBtn" role="menuitem" disabled>FAIR Publisher</button>' +
           '</div></div>' +
           '<div class="simulation-action-menu">' +
           '<button type="button" class="sim-btn secondary simulation-action-trigger" id="simulationExcelActionBtn" aria-haspopup="menu" aria-expanded="false" disabled>Simulation Excel<span class="menu-caret" aria-hidden="true">&#9662;</span></button>' +
@@ -5627,7 +5627,7 @@ UI_HTML = """<!doctype html>
         fairButton.dataset.bound = "true";
         fairButton.addEventListener("click", () => {
           closeSimulationActionMenus();
-          showSimulationActionStatus("FAIR export is a POC placeholder. The live FAIR connection will be added later.");
+          showSimulationActionStatus("FAIR Publisher is a POC placeholder. The live FAIR connection will be added later.");
         });
       }
       if (syneraButton && !syneraButton.dataset.bound) {
@@ -8356,7 +8356,7 @@ UI_HTML = """<!doctype html>
       const openscadSelected = selectedCadEngine === "openscad" ? " selected" : "";
       return `
         <div class="cad-engine-row">
-          <label for="cadEngineSelect">CAD Engine</label>
+          <label for="cadEngineSelect">CAD Editor</label>
           <select id="cadEngineSelect">
             <option value="cadquery"${cadquerySelected}>CadQuery</option>
             <option value="openscad"${openscadSelected}>OpenSCAD</option>
