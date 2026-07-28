@@ -2825,6 +2825,68 @@ UI_HTML = """<!doctype html>
       align-items: center;
       flex-wrap: wrap;
     }
+    .simulation-action-menu {
+      position: relative;
+    }
+    .simulation-action-trigger {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .simulation-action-trigger .menu-caret {
+      font-size: 10px;
+      line-height: 1;
+    }
+    .simulation-action-options {
+      position: absolute;
+      top: calc(100% + 6px);
+      right: 0;
+      z-index: 20;
+      display: none;
+      min-width: 168px;
+      padding: 5px;
+      border: 1px solid var(--line);
+      border-radius: 3px;
+      background: #fff;
+      box-shadow: 0 12px 28px rgba(15, 23, 42, 0.16);
+    }
+    .simulation-action-options.open {
+      display: grid;
+      gap: 3px;
+    }
+    .simulation-action-option {
+      width: 100%;
+      margin: 0;
+      padding: 9px 10px;
+      border: 0;
+      border-radius: 2px;
+      background: #fff;
+      color: var(--brand);
+      font-size: 12px;
+      font-weight: 700;
+      text-align: left;
+    }
+    .simulation-action-option:hover,
+    .simulation-action-option:focus {
+      background: #eef3f9;
+      color: var(--brand);
+    }
+    .simulation-action-option[disabled] {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .simulation-action-status {
+      margin: 10px 0 0;
+      padding: 8px 10px;
+      border-left: 3px solid var(--cad);
+      background: #f2f7fb;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .simulation-action-status[hidden] {
+      display: none;
+    }
     .sim-info-btn {
       width: 26px;
       height: 26px;
@@ -5511,9 +5573,20 @@ UI_HTML = """<!doctype html>
           '<div class="sim-block analysis-result-block">' +
           '<div class="sim-head"><strong>Simulation result</strong>' +
           '<div class="sim-head-actions">' +
-          '<button type="button" class="sim-btn" id="downloadBestCadStlBtn" disabled>Best CAD (.STL)</button>' +
-          '<button type="button" class="sim-btn secondary" id="downloadSimulationExcelBtn" disabled>Simulation Excel</button>' +
+          '<div class="simulation-action-menu">' +
+          '<button type="button" class="sim-btn simulation-action-trigger" id="bestCadActionBtn" aria-haspopup="menu" aria-expanded="false" disabled>Best CAD (.STL)<span class="menu-caret" aria-hidden="true">&#9662;</span></button>' +
+          '<div class="simulation-action-options" id="bestCadActionMenu" role="menu">' +
+          '<button type="button" class="simulation-action-option" id="downloadBestCadStlBtn" role="menuitem" disabled>Download</button>' +
+          '<button type="button" class="simulation-action-option" id="sendBestCadFairBtn" role="menuitem" disabled>FAIR</button>' +
           '</div></div>' +
+          '<div class="simulation-action-menu">' +
+          '<button type="button" class="sim-btn secondary simulation-action-trigger" id="simulationExcelActionBtn" aria-haspopup="menu" aria-expanded="false" disabled>Simulation Excel<span class="menu-caret" aria-hidden="true">&#9662;</span></button>' +
+          '<div class="simulation-action-options" id="simulationExcelActionMenu" role="menu">' +
+          '<button type="button" class="simulation-action-option" id="downloadSimulationExcelBtn" role="menuitem" disabled>Download</button>' +
+          '<button type="button" class="simulation-action-option" id="runSimulationSyneraBtn" role="menuitem" disabled>Synera Run</button>' +
+          '</div></div>' +
+          '</div></div>' +
+          '<p class="simulation-action-status" id="simulationActionStatus" aria-live="polite" hidden></p>' +
           '<div id="simOutput"></div>' +
           '<div id="staticStiffnessContainer"></div>' +
           '<div id="simFemContainer"></div>' +
@@ -5526,29 +5599,110 @@ UI_HTML = """<!doctype html>
     }
 
     function bindSimulationDownloadActions() {
+      const bestCadTrigger = document.getElementById("bestCadActionBtn");
+      const bestCadMenu = document.getElementById("bestCadActionMenu");
+      const excelTrigger = document.getElementById("simulationExcelActionBtn");
+      const excelMenu = document.getElementById("simulationExcelActionMenu");
       const stlButton = document.getElementById("downloadBestCadStlBtn");
       const excelButton = document.getElementById("downloadSimulationExcelBtn");
+      const fairButton = document.getElementById("sendBestCadFairBtn");
+      const syneraButton = document.getElementById("runSimulationSyneraBtn");
+      bindSimulationActionMenu(bestCadTrigger, bestCadMenu);
+      bindSimulationActionMenu(excelTrigger, excelMenu);
       if (stlButton && !stlButton.dataset.bound) {
         stlButton.dataset.bound = "true";
-        stlButton.addEventListener("click", downloadBestSimulationCad);
+        stlButton.addEventListener("click", () => {
+          closeSimulationActionMenus();
+          downloadBestSimulationCad();
+        });
       }
       if (excelButton && !excelButton.dataset.bound) {
         excelButton.dataset.bound = "true";
-        excelButton.addEventListener("click", downloadSimulationExcel);
+        excelButton.addEventListener("click", () => {
+          closeSimulationActionMenus();
+          downloadSimulationExcel();
+        });
+      }
+      if (fairButton && !fairButton.dataset.bound) {
+        fairButton.dataset.bound = "true";
+        fairButton.addEventListener("click", () => {
+          closeSimulationActionMenus();
+          showSimulationActionStatus("FAIR export is a POC placeholder. The live FAIR connection will be added later.");
+        });
+      }
+      if (syneraButton && !syneraButton.dataset.bound) {
+        syneraButton.dataset.bound = "true";
+        syneraButton.addEventListener("click", () => {
+          closeSimulationActionMenus();
+          showSimulationActionStatus("Synera Run is a POC placeholder. The live Synera workflow connection will be added later.");
+        });
+      }
+      if (!document.documentElement.dataset.simulationMenusBound) {
+        document.documentElement.dataset.simulationMenusBound = "true";
+        document.addEventListener("click", (event) => {
+          if (!event.target.closest(".simulation-action-menu")) {
+            closeSimulationActionMenus();
+          }
+        });
       }
     }
 
+    function bindSimulationActionMenu(trigger, menu) {
+      if (!trigger || !menu || trigger.dataset.bound) return;
+      trigger.dataset.bound = "true";
+      trigger.addEventListener("click", (event) => {
+        event.stopPropagation();
+        if (trigger.disabled) return;
+        const open = !menu.classList.contains("open");
+        closeSimulationActionMenus();
+        menu.classList.toggle("open", open);
+        trigger.setAttribute("aria-expanded", open ? "true" : "false");
+      });
+    }
+
+    function closeSimulationActionMenus() {
+      document.querySelectorAll(".simulation-action-options.open").forEach((menu) => {
+        menu.classList.remove("open");
+      });
+      document.querySelectorAll(".simulation-action-trigger[aria-expanded='true']").forEach((trigger) => {
+        trigger.setAttribute("aria-expanded", "false");
+      });
+    }
+
+    function showSimulationActionStatus(message) {
+      const status = document.getElementById("simulationActionStatus");
+      if (!status) return;
+      status.textContent = message;
+      status.hidden = false;
+    }
+
     function updateSimulationDownloadActions() {
+      const bestCadTrigger = document.getElementById("bestCadActionBtn");
+      const excelTrigger = document.getElementById("simulationExcelActionBtn");
       const stlButton = document.getElementById("downloadBestCadStlBtn");
       const excelButton = document.getElementById("downloadSimulationExcelBtn");
+      const fairButton = document.getElementById("sendBestCadFairBtn");
+      const syneraButton = document.getElementById("runSimulationSyneraBtn");
       const intent = simulationDesignIntent();
       const hasCad = Boolean((lastExport && lastExport.mesh) || (intent && intent.geometry));
       const hasResults = Boolean(
         (lastStaticStiffness && lastStaticStiffness.status === "ok") ||
         (lastFemContour && lastFemContour.status === "ok")
       );
+      if (bestCadTrigger) bestCadTrigger.disabled = !hasCad || !hasResults;
+      if (excelTrigger) excelTrigger.disabled = !hasResults;
       if (stlButton) stlButton.disabled = !hasCad || !hasResults;
       if (excelButton) excelButton.disabled = !hasResults;
+      if (fairButton) fairButton.disabled = !hasCad || !hasResults;
+      if (syneraButton) syneraButton.disabled = !hasResults;
+      if ((!hasCad || !hasResults) && bestCadTrigger) {
+        document.getElementById("bestCadActionMenu")?.classList.remove("open");
+        bestCadTrigger.setAttribute("aria-expanded", "false");
+      }
+      if (!hasResults && excelTrigger) {
+        document.getElementById("simulationExcelActionMenu")?.classList.remove("open");
+        excelTrigger.setAttribute("aria-expanded", "false");
+      }
     }
 
     function simulationDesignIntent() {
@@ -5607,7 +5761,7 @@ UI_HTML = """<!doctype html>
       } catch (error) {
         appendMsg("bot", "Excel export failed: " + ((error && error.message) || error));
       } finally {
-        if (button) button.textContent = "Simulation Excel";
+        if (button) button.textContent = "Download";
         updateSimulationDownloadActions();
       }
     }
@@ -5819,7 +5973,6 @@ UI_HTML = """<!doctype html>
         '<div class="sim-block">' +
         '<div class="sim-head"><strong>Simulation</strong>' +
         '<span class="sim-head-actions">' +
-        '<button type="button" class="sim-btn" id="simRunBtn">Simulate</button>' +
         '<button type="button" class="sim-btn secondary" id="simStaticBtn" title="Run three static CalculiX load cases and calculate Kx, Ky, and Kz">Static K</button>' +
         '<button type="button" class="sim-btn secondary" id="simFemBtn" title="Run one multi-mode FEM batch and render the selected contour">FEM batch</button>' +
         '<button type="button" class="sim-info-btn" aria-label="Simulation batch information" title="One CAD mesh is generated, then CalculiX solves up to 100 modal results. Larger batches can take several minutes on Azure.">i</button>' +
@@ -5827,13 +5980,6 @@ UI_HTML = """<!doctype html>
         simBatchControlsHtml() +
         '<p class="muted" style="margin:10px 0 0">Results appear below the CAD model preview.</p>' +
         '</div>';
-      const btn = document.getElementById("simRunBtn");
-      if (btn) {
-        btn.addEventListener("click", () => {
-          simShown = true;
-          renderSimOutput();
-        });
-      }
       const femBtn = document.getElementById("simFemBtn");
       if (femBtn) {
         femBtn.addEventListener("click", runFemContour);
