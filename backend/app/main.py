@@ -3865,7 +3865,7 @@ UI_HTML = """<!doctype html>
       <section class="stack">
         <div class="panel" id="categoryPanel">
           <div class="section-title">
-            <strong>Product family</strong>
+            <strong>Product Family</strong>
             <span class="muted">Pick a family, then a component</span>
           </div>
           <div class="category-family-grid" id="familyGrid">
@@ -4196,6 +4196,12 @@ UI_HTML = """<!doctype html>
             title: "OptiBush",
             desc: "Target-driven optimized bushing",
             prompt: "I want an OptiBush design optimized for directional stiffness. Use outer diameter 76 mm and ask me for target Kx, Ky, Kz, inner-core diameter range, inner-core length range, outer-core length range, material, and manufacturing constraints before creating the design.",
+          },
+          {
+            key: "byd-bush",
+            title: "BYD Bush",
+            desc: "Customer-specific bushing concept",
+            prompt: "I want to design a BYD Bush. Ask me for the reference geometry or drawing, installation envelope, inner and outer interfaces, target Kx, Ky, Kz, material, preload, allowable displacement, and manufacturing constraints before creating the design.",
           },
           {
             key: "rubber-bushing",
