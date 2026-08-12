@@ -3804,7 +3804,7 @@ UI_HTML = """<!doctype html>
 
         <section class="rail-card upload-context-card collapsed" id="uploadContextPanel">
           <button type="button" class="rail-card-header" id="uploadContextToggle" aria-expanded="false" aria-controls="uploadContextBody">
-            <span class="rail-card-title">Upload context</span>
+            <span class="rail-card-title" id="uploadContextTitle">Upload your design</span>
             <span class="status-pill upload-pill">Image / CAD</span>
           </button>
           <div class="rail-card-body" id="uploadContextBody">
@@ -3987,6 +3987,7 @@ UI_HTML = """<!doctype html>
     const engineeringChatToggle = document.getElementById("engineeringChatToggle");
     const uploadContextPanel = document.getElementById("uploadContextPanel");
     const uploadContextToggle = document.getElementById("uploadContextToggle");
+    const uploadContextTitle = document.getElementById("uploadContextTitle");
     const chatShell = document.getElementById("chatShell");
     const chatForm = document.getElementById("chatForm");
     const chatInput = document.getElementById("chatInput");
@@ -4257,8 +4258,16 @@ UI_HTML = """<!doctype html>
 
     let activeFamily = "";
 
+    function updateUploadContextTitle(componentKey = "") {
+      if (!uploadContextTitle) return;
+      uploadContextTitle.textContent = componentKey === "four-arm-bushing"
+        ? "Upload Four Arm Bush design"
+        : "Upload your design";
+    }
+
     function renderCategoryFamily(familyKey) {
       const resolvedKey = categoryFamilies[familyKey] ? familyKey : "";
+      updateUploadContextTitle();
       if (!resolvedKey) {
         activeFamily = "";
         if (categoryDetail) categoryDetail.classList.remove("open");
@@ -4301,6 +4310,7 @@ UI_HTML = """<!doctype html>
       const key = button.dataset.category;
       const item = findCategoryItem(key);
       if (!item) return;
+      updateUploadContextTitle(key);
       for (const chip of categoryGrid.querySelectorAll(".category-chip")) {
         chip.classList.toggle("active", chip === button);
       }

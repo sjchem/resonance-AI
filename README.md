@@ -1,109 +1,166 @@
-# Resonance AI
+# Resonance AI Product Design Studio
 
-Resonance AI is a proof-of-concept CAD and FEM assistant for vibroacoustic and
-mechanical components. It turns an engineering request into validated CAD JSON,
-shows an interactive 3D preview, exports CAD files, generates a Gmsh mesh, and
-runs first-pass modal FEM results in the web app.
+Resonance AI is a proof-of-concept engineering workspace for generating,
+optimizing, meshing, simulating, and reviewing Vibracoustic components.
 
-The current POC is focused on bushings, rubber mounts, brackets, plates, and
-springs, with deterministic fallback paths where possible.
+The application combines conversational CAD intent capture, uploaded engineering
+context, browser-based 3D visualization, CadQuery/OpenSCAD export, Gmsh meshing,
+CalculiX finite-element analysis, and bushing stiffness optimization in one
+FastAPI web application.
 
-## What The App Does
+> **POC status:** Results are intended for engineering exploration and workflow
+> demonstration. They are not production design releases. Material calibration,
+> boundary conditions, mesh convergence, solver settings, and generated geometry
+> must be reviewed by a qualified engineer.
 
-- Chat-style CAD intent capture with Azure OpenAI or OpenAI.
-- Upload context from documents, images, JSON, and CAD-like files.
-- Validated structured CAD JSON using Pydantic schemas.
-- Interactive browser CAD preview with downloadable STL, GLB, DXF, PNG, PDF, and JSON.
-- Server-side STEP export through the CadQuery CAD pipeline.
-- Gmsh mesh generation with structured/global hexahedral workflows for suitable axisymmetric parts.
-- Mesh quality summary and interactive mesh preview.
-- FEM modal batch runs through CalculiX with interactive von Mises contour preview and color scale.
-- Directional static FEM for bushing `Kx`, `Ky`, and `Kz` in `N/mm`.
-- Simulation results can export the selected/optimized CAD as STL and a multi-sheet Excel report.
-- Checkpointed design-of-experiments dataset generation with shared-connectivity shape PCA.
-- Lightweight neural geometry-to-stiffness surrogate and target-driven design search.
-- Azure App Service deployment through GitHub Actions and GHCR container images.
+## Current Capabilities
 
-## Web UI
+### Product Design Studio
 
-Run the app and open:
+- Product families for **Bushing**, **Mounts**, and **Anonymous** components.
+- Bushing starters for Four Arm Bushing, OptiBush, BYD Bush, Rubber bushing,
+  and Bonded Bushing.
+- Mount starters for engine, hydraulic, and strut mounts.
+- Interactive Engineering Chat backed by Azure OpenAI or the public OpenAI API.
+- Structured CAD intent validated with Pydantic before it reaches the CAD path.
+- Optional KISS Agent and FAIR Explorer source selectors for demonstrating
+  source-aware answers.
 
-```text
-http://localhost:8000/generate
-```
+### Upload And CAD
 
-The same UI is also available at:
+- Upload PDF, image, JSON, text, STEP/STP, IGES/IGS, STL, OBJ, DXF, SCAD, or
+  FreeCAD files up to 8 MB.
+- Extract text and metadata from supported files and add it to the chat context.
+- Persist STEP/STP and STL uploads for exact mesh and FEM workflows.
+- Generate an interactive Three.js CAD preview with orbit, zoom, a view cube,
+  floor lighting, and soft shadows.
+- Edit supported dimensions through the collapsible CAD Editor.
+- Generate CadQuery or OpenSCAD geometry and export STEP/STL where supported.
 
-```text
-http://localhost:8000/ui
-```
+### Mesh And Simulation
 
-The main workflow is:
+- Generate Gmsh volume meshes from supported generated or uploaded geometry.
+- Use structured/global hexahedral bushing templates for compatible parametric
+  bushing geometry.
+- Use body-fitted uploaded-geometry meshing when the STEP/STL is a valid closed
+  solid; invalid or open files remain preview-only.
+- Inspect mesh statistics, element edges, quality information, and interactive
+  3D mesh views.
+- Run **Static K** for directional `Kx`, `Ky`, and `Kz` stiffness in `N/mm`.
+- Run a **FEM batch** for up to 100 CalculiX modes and inspect the selected
+  interactive von Mises contour.
+- Export the best CAD result as STL and simulation results as a multi-sheet
+  Excel workbook.
 
-1. Add a CAD request in Engineering Chat, or attach a supported file.
-2. Review the assistant summary and type `proceed` when ready.
-3. Inspect the interactive CAD preview.
-4. Open the Parametric Editor only when dimensions need live editing.
-5. Generate a Gmsh mesh.
-6. Run `Static K` to validate directional stiffness or `FEM batch` for modal contours.
-7. Use Design Space, Target Stiffness, and the PCA Dataset dashboard for bushing studies.
-8. Download CAD, mesh-friendly formats, images, PDF, JSON, or the complete simulation Excel report.
+### Design Exploration
+
+- Explore bushing design ranges for inner diameter and inner/outer core lengths.
+- Search target stiffness values with an installed geometry-to-stiffness
+  surrogate model.
+- Generate checkpointed FEM training datasets.
+- Fit shared-connectivity Shape PCA and inspect PCA dashboards.
+- Train and validate a lightweight neural stiffness surrogate.
+
+## POC Placeholders
+
+The following controls are visible to demonstrate the intended integration
+architecture, but they do not call live external systems yet:
+
+- KISS Agent knowledge retrieval.
+- FAIR Explorer knowledge retrieval.
+- Search from FAIR Engineering Data.
+- FAIR Publisher for CAD output.
+- Synera Run for simulation workbooks.
+
+The application labels these actions as placeholders and does not claim that a
+record, dataset, or workflow was retrieved or published.
+
+Image uploads currently provide filename and image-size context only. Visual
+feature extraction/OCR is not enabled, so dimensions must be supplied in chat
+or through structured data.
+
+## Web Workflow
+
+1. Open Product Design Studio at `/generate`.
+2. Select a product family and starter component, or write a request directly
+   in Engineering Chat.
+3. Optionally attach an engineering document, image, JSON file, or CAD model.
+4. Review and refine the generated structured CAD intent.
+5. Inspect the interactive 3D model and use the CAD Editor when needed.
+6. Generate and inspect the Gmsh mesh.
+7. Run **Static K** for directional stiffness or **FEM batch** for modal results.
+8. Download the best CAD as STL or the complete simulation report as Excel.
 
 ## Repository Layout
 
 ```text
-backend/app/             FastAPI app, schemas, OpenAI client, upload handling, UI
-text_to_cad/             Prompt-to-CAD agent, deterministic fallback, CadQuery export
-geometry/                STEP-to-mesh, mesh cleaning, mesh quality, hex/swept meshing
-simulate/                Gmsh/CalculiX modal pipeline and contour visualization
-models/stiffness/        Installed, reviewed stiffness-model artifacts for the web API
-tests/                   Static FEM and surrogate regression tests
-examples/                Example prompts
-outputs/                 Local generated outputs
-Dockerfile               FEM-capable Azure container image
-Dockerfile.web           Lighter web image kept for quick web-only iteration
-requirements-web-fem.txt Container Python stack for CAD + FEM
-backend/requirements.txt Lightweight web/API requirements
-main.py                  Azure/root entrypoint that imports backend/app/main.py
-startup.sh               Non-container App Service startup script
+backend/app/                  FastAPI API, chat, schemas, uploads, exports, and UI
+backend/app/static/           Three.js CAD viewer and vendored browser modules
+cad_backends/                 OpenSCAD generation and export
+text_to_cad/                  Phase A/B CAD CLIs, CadQuery renderer, and MCP server
+geometry/                     Uploaded-volume, Gmsh, quality, and hex mesh pipelines
+simulate/                     CalculiX modal/static FEM, PCA, datasets, and surrogate
+models/stiffness/             Reviewed stiffness artifacts loaded by the web app
+tests/                        Unit and solver smoke tests
+examples/                     Example natural-language prompts
+outputs/                      Local generated artifacts; not application source
+main.py                       Root ASGI entrypoint
+Dockerfile                    Active FEM-capable production container
+Dockerfile.web                Alternate web/FEM image for local iteration
+docker-entrypoint.sh          Xvfb and gunicorn container startup
+startup.sh                    Non-container Azure App Service startup
+requirements-web-fem.txt      Production Python dependency set
+backend/requirements.txt      Lightweight web/API dependency set
 ```
 
 ## Configuration
 
-Create `backend/.env` for local development. Do not commit this file.
+Create `backend/.env` for local development. This file is ignored by Git and
+must never be committed.
 
-Azure OpenAI / Azure AI Foundry:
+### Azure OpenAI
 
-```text
+```dotenv
 AZURE_OPENAI_API_KEY=<your-key>
 AZURE_OPENAI_ENDPOINT=https://<resource-name>.cognitiveservices.azure.com/
 AZURE_OPENAI_DEPLOYMENT=<deployment-name>
 AZURE_OPENAI_API_VERSION=2024-12-01-preview
 ```
 
-Important: `AZURE_OPENAI_DEPLOYMENT` must be the deployment name shown in Azure
-AI Foundry or Azure OpenAI, not only the base model name.
+`AZURE_OPENAI_DEPLOYMENT` must exactly match the deployment name displayed in
+Azure AI Foundry/Azure OpenAI. It is not necessarily the base model name.
 
-The endpoint may also be an Azure AI Foundry project URL such as:
+The client also accepts supported Azure AI Foundry project endpoints:
 
 ```text
 https://<resource-name>.services.ai.azure.com/api/projects/<project-name>
 ```
 
-The app normalizes supported Foundry/OpenAI endpoint formats internally.
+### Public OpenAI Fallback
 
-Public OpenAI fallback:
-
-```text
-OPENAI_API_KEY=<your-openai-key>
+```dotenv
+OPENAI_API_KEY=<your-key>
 OPENAI_MODEL=gpt-4.1-mini
 ```
 
+Azure configuration takes precedence when both providers are configured.
+
+### Optional Runtime Paths
+
+```dotenv
+STIFFNESS_MODEL_DIR=/path/to/reviewed/stiffness/artifacts
+RESONANCE_UPLOAD_DIR=/path/to/persistent/upload/storage
+```
+
+`RESONANCE_UPLOAD_DIR` should point to persistent writable storage in a
+production deployment if uploaded geometry must survive container replacement.
+
 ## Run Locally
 
-### Lightweight web/API mode
+### 1. Lightweight Web/API Mode
 
-This is enough for chat, parsing, upload context, and browser-side preview.
+Use this for chat, structured JSON, uploads, browser CAD preview, and report
+export development:
 
 ```bash
 python -m venv .venv
@@ -119,9 +176,9 @@ Open:
 http://localhost:8000/generate
 ```
 
-### FEM-capable local mode
+Native CadQuery, Gmsh, and CalculiX operations require the full environment.
 
-Use this when testing STEP export, Gmsh, CalculiX, PyVista, and FEM contours.
+### 2. Full CAD/FEM Mode On WSL/Linux
 
 ```bash
 sudo apt-get update
@@ -130,6 +187,7 @@ sudo apt-get install -y \
   libgomp1 \
   libglu1-mesa \
   libgl1 \
+  libgl1-mesa-dri \
   libxrender1 \
   libxext6 \
   libsm6 \
@@ -140,44 +198,54 @@ python -m pip install -r requirements-web-fem.txt
 python -m uvicorn main:app --reload --port 8000
 ```
 
-### Docker FEM container
-
-This matches the production-style FEM image more closely.
+### 3. Production-Style Docker Mode
 
 ```bash
 docker build -f Dockerfile -t resonance-ai:fem .
-docker run --rm -p 8000:8000 --env-file backend/.env resonance-ai:fem
+docker run --rm \
+  -p 8000:8000 \
+  --env-file backend/.env \
+  -v resonance-uploads:/home/resonance-ai/uploads \
+  resonance-ai:fem
 ```
 
-Then open:
+Open `http://localhost:8000/generate`.
+
+The container starts Xvfb for headless VTK/PyVista rendering and serves the app
+with gunicorn on port `8000`.
+
+## API
+
+FastAPI documentation is available locally at:
 
 ```text
-http://localhost:8000/generate
+http://localhost:8000/docs
 ```
-
-## API Endpoints
 
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/` | Health check |
-| `GET` | `/models` | Show configured provider/model without secrets |
-| `GET` | `/generate` | Main web UI |
-| `GET` | `/ui` | Same web UI |
-| `POST` | `/parse-cad` | Natural-language prompt -> validated CAD JSON |
-| `POST` | `/chat-cad` | Interactive chat reply plus current CAD state |
-| `POST` | `/generate-cad` | Parsed JSON plus lightweight preview payload |
-| `POST` | `/preview-cad` | Preview from already-structured CAD JSON |
-| `POST` | `/upload-context` | Extract context from uploaded document/image/CAD file |
-| `POST` | `/export/step` | Generate a real STEP file through CadQuery |
+| `GET` | `/models` | Active provider/deployment status without secrets |
+| `GET` | `/generate` | Product Design Studio UI |
+| `GET` | `/ui` | UI compatibility route |
+| `POST` | `/parse-cad` | Natural-language prompt to validated CAD JSON |
+| `POST` | `/chat-cad` | Conversational response plus current CAD intent |
+| `POST` | `/generate-cad` | Parse prompt and return lightweight preview data |
+| `POST` | `/preview-cad` | Preview an existing structured CAD intent |
+| `POST` | `/generate-parametric-cad` | Generate a parametric CAD result |
+| `POST` | `/upload-context` | Extract prompt context and persist supported geometry |
+| `POST` | `/export/step` | Export CadQuery geometry as STEP |
+| `POST` | `/export/openscad` | Generate and export OpenSCAD bushing artifacts |
+| `POST` | `/export/simulation-report` | Export simulation/design results as XLSX |
 | `POST` | `/generate-mesh` | Generate and evaluate a Gmsh volume mesh |
-| `POST` | `/run-fem` | Run modal FEM batch and return contour data |
-| `POST` | `/run-static-stiffness` | Run three directional static FEM load cases |
-| `POST` | `/export/simulation-report` | Download design, mesh, stiffness, modal, PCA, and optimization results as XLSX |
-| `GET` | `/stiffness-model` | Report trained surrogate availability and metadata |
-| `GET` | `/stiffness-dashboard-data` | Return shape-PCA/FEM training points |
-| `POST` | `/search-stiffness` | Search design bounds with the trained surrogate |
+| `POST` | `/shape-pca` | Encode/reconstruct compatible bushing mesh geometry |
+| `POST` | `/run-static-stiffness` | Run three directional CalculiX static cases |
+| `POST` | `/run-fem` | Run modal FEM batch and return selected contour data |
+| `GET` | `/stiffness-model` | Report installed surrogate status and metadata |
+| `GET` | `/stiffness-dashboard-data` | Return reviewed training/PCA dashboard data |
+| `POST` | `/search-stiffness` | Search design bounds using the installed surrogate |
 
-Example prompt parse:
+### Parse Example
 
 ```bash
 curl -X POST http://localhost:8000/parse-cad \
@@ -187,64 +255,15 @@ curl -X POST http://localhost:8000/parse-cad \
   }'
 ```
 
-Check model configuration:
+Check provider configuration:
 
 ```bash
 curl http://localhost:8000/models
 ```
 
-## Azure Deployment
+## CAD Command-Line Workflows
 
-The active GitHub Actions workflow builds the heavy FEM container and deploys it
-to Azure App Service:
-
-```text
-.github/workflows/main_ext-sjana-vibrac.yml
-```
-
-Current workflow behavior:
-
-1. Build `Dockerfile`.
-2. Push image to GitHub Container Registry:
-   `ghcr.io/sjchem/resonance-ai`.
-3. Point Azure Web App `ext-sjana-vibrac` at the new image.
-4. Set container runtime app settings.
-5. Restart the web app.
-
-Required GitHub/Azure setup:
-
-- GitHub Actions workflow permissions must allow package write.
-- Azure login secrets must exist for the workflow.
-- Azure App Service must have Azure OpenAI settings.
-- For private GHCR pulls, App Service must have registry credentials.
-
-Important App Service settings:
-
-```text
-AZURE_OPENAI_API_KEY=<key>
-AZURE_OPENAI_ENDPOINT=https://<resource-name>.cognitiveservices.azure.com/
-AZURE_OPENAI_DEPLOYMENT=<deployment-name>
-AZURE_OPENAI_API_VERSION=2024-12-01-preview
-WEBSITES_PORT=8000
-PORT=8000
-WEBSITES_CONTAINER_START_TIME_LIMIT=1800
-GUNICORN_TIMEOUT=600
-```
-
-For private GitHub Container Registry images, also configure:
-
-```text
-DOCKER_REGISTRY_SERVER_URL=https://ghcr.io
-DOCKER_REGISTRY_SERVER_USERNAME=<github-username>
-DOCKER_REGISTRY_SERVER_PASSWORD=<GitHub PAT with read:packages>
-```
-
-For the container deployment, leave the Azure Startup Command empty. The
-container runs `docker-entrypoint.sh`, which starts Xvfb and gunicorn.
-
-## Text-To-CAD CLI
-
-Deterministic Phase A generator:
+### Phase A: Deterministic CAD
 
 ```bash
 python -m text_to_cad.cad_generator \
@@ -253,27 +272,29 @@ python -m text_to_cad.cad_generator \
   --name plate
 ```
 
-LLM CAD agent with deterministic fallback:
+### Phase B: Structured CAD Agent
+
+Use Azure when configured, otherwise deterministic fallback:
 
 ```bash
 python -m text_to_cad.cad_agent \
   --prompt "Create a 120 mm x 60 mm x 5 mm bracket with four bolt holes." \
   --output-dir outputs/phase_b/bracket \
   --name bracket \
-  --provider fallback
+  --provider auto
 ```
 
-LLM CAD agent with Azure:
+Force deterministic fallback:
 
 ```bash
 python -m text_to_cad.cad_agent \
-  --prompt "Create a flanged rubber bushing with OD 60 mm, ID 20 mm, height 40 mm, flange diameter 90 mm and flange thickness 5 mm." \
-  --output-dir outputs/phase_b/flanged_bushing \
-  --name flanged_bushing \
-  --provider azure
+  --prompt "Create a rubber bushing with OD 60 mm, ID 20 mm and height 40 mm." \
+  --output-dir outputs/phase_b/bushing \
+  --name bushing \
+  --provider fallback
 ```
 
-Expected generated files commonly include:
+Common generated artifacts:
 
 ```text
 agent_document.json
@@ -286,13 +307,7 @@ prompt.txt
 viewer.html
 ```
 
-Open a generated standalone viewer:
-
-```bash
-python -m text_to_cad.open_viewer outputs/phase_b/bracket/viewer.html
-```
-
-On WSL, opening through Windows Explorer is often easiest:
+Open a generated viewer from WSL:
 
 ```bash
 explorer.exe "$(wslpath -w outputs/phase_b/bracket/viewer.html)"
@@ -300,7 +315,7 @@ explorer.exe "$(wslpath -w outputs/phase_b/bracket/viewer.html)"
 
 ## Meshing And FEM CLI
 
-Run the full modal pipeline from a STEP file:
+Run the modal pipeline from a STEP file:
 
 ```bash
 python -m simulate.pipeline outputs/phase_b/bracket/bracket.step \
@@ -310,53 +325,42 @@ python -m simulate.pipeline outputs/phase_b/bracket/bracket.step \
   --material rubber
 ```
 
-Run stages individually:
+Run individual stages:
 
 ```bash
-# STEP -> Gmsh volume mesh
-python -m geometry.step_to_mesh outputs/phase_b/bracket/bracket.step outputs/simulation/bracket/bracket.msh
+python -m geometry.step_to_mesh \
+  outputs/phase_b/bracket/bracket.step \
+  outputs/simulation/bracket/bracket.msh
 
-# Clean mesh
-python -m geometry.mesh_cleaner outputs/simulation/bracket/bracket.msh outputs/simulation/bracket/bracket_clean.vtk
+python -m geometry.mesh_cleaner \
+  outputs/simulation/bracket/bracket.msh \
+  outputs/simulation/bracket/bracket_clean.vtk
 
-# Check quality
-python -m geometry.mesh_quality outputs/simulation/bracket/bracket_clean.vtk
+python -m geometry.mesh_quality \
+  outputs/simulation/bracket/bracket_clean.vtk
 
-# Run CalculiX modal solve
-python -m simulate.modal_solver outputs/simulation/bracket/bracket_clean.vtk --material rubber --modes 8
-
-# Render contour image from FRD
-python -m simulate.visualize outputs/simulation/bracket/bracket.frd \
-  --field mises \
-  --mode 1 \
-  --warp \
-  --output outputs/simulation/bracket/bracket_mode1_mises.png
+python -m simulate.modal_solver \
+  outputs/simulation/bracket/bracket_clean.vtk \
+  --material rubber \
+  --modes 8
 ```
 
-Notes:
+CAD dimensions use millimetres. The solver uses a tonne-mm-s unit system and
+reports natural frequencies in Hz. Modal stress magnitude is relative for
+eigenmodes; the contour is primarily useful for comparing spatial patterns.
 
-- Units are millimetres in CAD.
-- The solver uses a tonne-mm-s unit system.
-- Natural frequencies are reported in Hz.
-- Rubber materials are treated as linear-elastic first-pass approximations.
-- Modal stress contours show useful spatial patterns; absolute stress magnitude is relative for eigenmodes.
+## Static Stiffness Assumptions
 
-## Static Stiffness And Training Dataset
-
-The static bushing workflow uses these explicit POC assumptions:
+The current structured-bushing Static K POC uses explicit assumptions:
 
 - Client `X` is the bushing centerline.
-- The generated mesh centerline is geometric `Z`, so mesh `Z -> Kx`.
-- Mesh `X/Y -> Ky/Kz`.
+- Mesh `Z` maps to client `Kx`; mesh `X/Y` map to `Ky/Kz`.
 - The outer-core interface is fixed.
-- The inner-core interface is translated by `1 mm`.
-- Stiffness is the summed interface reaction divided by displacement, in `N/mm`.
-- Directional static rubber uses a client-calibrated effective modulus of `1.10 MPa`; this places the POC
-  on the supplied `Kx/Ky/Kz` scale without changing the axis mapping.
-- The calibration is specific to this test setup. Production use still requires measured material curves,
-  fixture validation, and a suitable nearly-incompressible or hyperelastic formulation.
+- The inner-core interface receives a prescribed `1 mm` translation.
+- Stiffness is summed interface reaction divided by displacement in `N/mm`.
+- Directional rubber uses a client-calibrated effective modulus of `1.10 MPa`.
 
-Run one structured-mesh stiffness validation:
+Run one structured-mesh validation:
 
 ```bash
 python -m simulate.static_stiffness \
@@ -367,7 +371,13 @@ python -m simulate.static_stiffness \
   --output-dir outputs/static_stiffness/rb-0001
 ```
 
-Build the complete offline design dataset, shape PCA, and neural surrogate:
+The calibration aligns this POC with the supplied stiffness scale. Production
+release still requires measured material curves, fixture validation, mesh
+convergence, and suitable nearly-incompressible or hyperelastic elements.
+
+## Stiffness Dataset, Shape PCA, And Surrogate
+
+Build the offline dataset and model:
 
 ```bash
 python -m simulate.stiffness_dataset \
@@ -380,45 +390,32 @@ python -m simulate.stiffness_dataset \
   --shape-components 6
 ```
 
-Each design runs three CalculiX solves. The command checkpoints
-`stiffness_dataset.json` after every case, writes a CSV summary, fits shape PCA,
-and saves validation metrics beside `stiffness_model.npz`.
+Each successful design runs three CalculiX static cases. The process
+checkpoints after every case and writes:
 
-Review the validation `MAE`, `MAPE`, and `R²` before installing the model. A
-successful training run does not by itself establish engineering accuracy.
+```text
+stiffness_dataset.json
+stiffness_dataset.csv
+stiffness_model.npz
+stiffness_model_metrics.json
+shape_pca_model.npz
+shape_pca_summary.json
+```
 
-Install reviewed artifacts for the web application:
+Review MAE, MAPE, R-squared, the sampled bounds, failed cases, mesh template,
+and calibration metadata before installing artifacts:
 
 ```bash
 cp outputs/stiffness_dataset/stiffness_model.npz models/stiffness/
 cp outputs/stiffness_dataset/stiffness_dataset.json models/stiffness/
 ```
 
-The web Target Stiffness search uses the installed neural model. When no model
-is installed, it clearly reports the analytical screening fallback. The PCA
-Dataset dashboard plots the first three geometry shape codes, with solved
-training designs in green and target-near designs in red.
-
-Legacy stiffness artifacts trained with the previous `10 MPa` rubber basis are
-scaled to the `1.10 MPa` client-calibrated basis when loaded. Regenerate and
-reinstall the dataset when practical so the artifact metadata records the
-calibration directly.
-
-Use a mounted artifact location in Azure by setting:
-
-```text
-STIFFNESS_MODEL_DIR=/path/to/reviewed/model/artifacts
-```
-
-Run focused verification:
-
-```bash
-python -m unittest discover -s tests -v
-```
+The web target search uses installed reviewed artifacts. Generated training
+data is not automatically trusted as production engineering data.
 
 ## MCP Server
 
-The local MCP server exposes Resonance CAD tools over stdio:
+The local stdio MCP server exposes:
 
 ```text
 create_resonance_cad_document
@@ -426,13 +423,13 @@ inspect_resonance_cad
 export_resonance_cad
 ```
 
-Run it:
+Run it with:
 
 ```bash
 python -m text_to_cad.mcp_server
 ```
 
-Example MCP config:
+Example configuration:
 
 ```json
 {
@@ -440,57 +437,105 @@ Example MCP config:
     "resonance-cad": {
       "command": "python",
       "args": ["-m", "text_to_cad.mcp_server"],
-      "cwd": "/home/santanujana/code/vibracoustic/vc.resonanceAI"
+      "cwd": "/path/to/resonance-AI"
     }
   }
 }
 ```
 
+## Tests
+
+Run the repository test suite:
+
+```bash
+PYTHONPATH=.:backend python -m unittest discover -s tests -v
+```
+
+The CalculiX smoke test skips automatically when `ccx` is unavailable.
+
+## Azure App Service Deployment
+
+The workflow `.github/workflows/main_ext-sjana-vibrac.yml` runs on pushes to
+`main` and manual dispatches. It:
+
+1. Builds the active `Dockerfile`.
+2. Pushes `latest` and commit-SHA images to `ghcr.io/sjchem/resonance-ai`.
+3. Authenticates to Azure with GitHub OIDC secrets.
+4. Points Web App `ext-sjana-vibrac` to the new image.
+5. Clears any App Service Startup Command so the image `CMD` is used.
+6. Applies container settings and restarts the app.
+
+Required App Service settings:
+
+```text
+AZURE_OPENAI_API_KEY=<key>
+AZURE_OPENAI_ENDPOINT=https://<resource-name>.cognitiveservices.azure.com/
+AZURE_OPENAI_DEPLOYMENT=<deployment-name>
+AZURE_OPENAI_API_VERSION=2024-12-01-preview
+WEBSITES_PORT=8000
+PORT=8000
+WEBSITES_CONTAINER_START_TIME_LIMIT=1800
+GUNICORN_TIMEOUT=600
+```
+
+For private GHCR images:
+
+```text
+DOCKER_REGISTRY_SERVER_URL=https://ghcr.io
+DOCKER_REGISTRY_SERVER_USERNAME=<github-username>
+DOCKER_REGISTRY_SERVER_PASSWORD=<PAT-with-read:packages>
+```
+
+GitHub Actions needs `packages: write` for image publishing. Keep the App
+Service Startup Command empty for the container deployment; the image starts
+`docker-entrypoint.sh` itself.
+
 ## Troubleshooting
 
-### Azure OpenAI 404 Resource not found
+### Azure OpenAI returns 404 `Resource not found`
 
-Check these values in Azure App Service environment variables:
+Verify all four values:
 
 ```text
 AZURE_OPENAI_ENDPOINT
 AZURE_OPENAI_DEPLOYMENT
 AZURE_OPENAI_API_VERSION
+AZURE_OPENAI_API_KEY
 ```
 
-The deployment value must match the deployment name in Azure AI Foundry or Azure
-OpenAI. The endpoint should normally look like:
+Use the endpoint and deployment name shown on the Azure deployment's endpoint
+page. Do not append a deployment path manually when the SDK expects the base
+resource endpoint.
 
-```text
-https://<resource-name>.cognitiveservices.azure.com/
-```
+### Uploaded geometry is preview-only
 
-### FEM error: `libgomp.so.1` missing
+Exact volume FEM requires a closed solid. STL failures commonly indicate open
+edges, self-intersections, overlapping internal faces, or a surface-only shell.
+Prefer the original STEP solid when available. The application deliberately
+does not substitute a simplified cylindrical surrogate for a failed exact
+uploaded-geometry mesh.
 
-The FEM/Gmsh stack needs OpenMP runtime support. The production `Dockerfile`
-installs:
+### `libgomp.so.1` is missing
 
-```text
-libgomp1
-```
+Install `libgomp1` or rebuild from the active `Dockerfile`, which includes it.
 
-Rebuild and redeploy the FEM container after Dockerfile changes.
+### CalculiX or rendering is unavailable
 
-### Container timeout on Azure
+Confirm `ccx`, Xvfb, Mesa/OpenGL libraries, and the full Python FEM requirements
+are installed. In Docker, inspect entrypoint logs for the Python, gunicorn, and
+Xvfb diagnostics.
 
-Useful settings:
+### Azure container does not start
+
+Check image pull credentials, port `8000`, Startup Command, and container logs.
+For large FEM images, retain:
 
 ```text
 WEBSITES_CONTAINER_START_TIME_LIMIT=1800
-WEBSITES_PORT=8000
-PORT=8000
-GUNICORN_TIMEOUT=600
 ```
 
-For private GHCR images, verify the App Service registry credentials and that
-the PAT has `read:packages`.
+### Secrets
 
-### Do not commit secrets
-
-Keep `backend/.env` local. Azure secrets belong in App Service environment
-variables or GitHub Actions secrets.
+Never commit `backend/.env`, API keys, publish profiles, PATs, or Azure
+credentials. Store production secrets in Azure App Service settings and GitHub
+Actions secrets.
