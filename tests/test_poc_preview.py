@@ -7,7 +7,7 @@ from app.main import UI_HTML
 class PocPreviewTests(unittest.TestCase):
     def _function_body(self, name: str, next_name: str) -> str:
         match = re.search(
-            rf"function {name}\([^)]*\) \{{(?P<body>.*?)\n    function {next_name}\(",
+            rf"(?:async )?function {name}\([^)]*\) \{{(?P<body>.*?)\n    (?:async )?function {next_name}\(",
             UI_HTML,
             re.DOTALL,
         )
@@ -24,6 +24,16 @@ class PocPreviewTests(unittest.TestCase):
         self.assertNotIn("warpEditableMeshFaces", apply_body)
         self.assertIn("pickUploadedMesh()", apply_body)
         self.assertIn("render3DPreview(currentEditIntent)", apply_body)
+
+    def test_mesh_uses_reference_while_shape_pca_stays_parametric(self):
+        exact_body = self._function_body("exactUploadedGeometryContext", "runGmshMesh")
+        mesh_body = self._function_body("runGmshMesh", "runShapePca")
+        pca_body = self._function_body("runShapePca", "cleanupMeshViewer")
+
+        self.assertNotIn("pocRequirementsComplete", exact_body)
+        self.assertIn("meshRequestOptions(intent)", mesh_body)
+        self.assertIn("meshRequestOptions(intent, false)", pca_body)
+        self.assertIn('mesh_strategy: "uploaded_geometry_all_hex"', UI_HTML)
 
 
 if __name__ == "__main__":

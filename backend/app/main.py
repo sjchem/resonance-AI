@@ -6312,8 +6312,8 @@ UI_HTML = """<!doctype html>
       });
     }
 
-    function meshRequestOptions(intent) {
-      const exactUpload = exactUploadedGeometryContext();
+    function meshRequestOptions(intent, includeExactUpload = true) {
+      const exactUpload = includeExactUpload ? exactUploadedGeometryContext() : null;
       const options = {
         mesh_mode: meshMode,
         global_template: Object.assign({}, globalMeshTemplate),
@@ -6749,9 +6749,6 @@ UI_HTML = """<!doctype html>
     }
 
     function exactUploadedGeometryContext() {
-      if (rubberBushingWorkflowActive && pocRequirementsComplete) {
-        return null;
-      }
       if (
         generatedPocGeometryContext &&
         generatedPocGeometryContext.exact_fem &&
@@ -6845,7 +6842,7 @@ UI_HTML = """<!doctype html>
             intent: intent,
             samples: 12,
             components: 10,
-            ...meshRequestOptions(intent),
+            ...meshRequestOptions(intent, false),
           }),
         });
         const payload = await response.json().catch(() => ({}));
@@ -8366,10 +8363,10 @@ UI_HTML = """<!doctype html>
           prompt_context: "Curated Four Arm Bushing POC geometry from 900000.stl.",
           clientMesh: mesh,
           exact_fem: {
-            supported: false,
+            supported: true,
             source_format: "STL",
-            mesh_strategy: "preview_only",
-            message: "The curated Four Arm Bushing STL is a POC preview; analysis uses the parametric design workflow.",
+            mesh_strategy: "uploaded_geometry_all_hex",
+            message: "The curated Four Arm Bushing STL remains the reference geometry for mesh and FEM.",
           },
           upload_data_base64: arrayBufferToBase64(buffer),
           upload_filename: "900000.stl",
