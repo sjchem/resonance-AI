@@ -35,6 +35,23 @@ class PocPreviewTests(unittest.TestCase):
         self.assertIn("meshRequestOptions(intent, false)", pca_body)
         self.assertIn('mesh_strategy: "uploaded_geometry_all_hex"', UI_HTML)
 
+    def test_requirement_generate_is_preview_only(self):
+        requirements_body = self._function_body("pocRequirementsHtml", "bindPocRequirements")
+        generate_body = self._function_body("generateFourArmPocCad", "generateDesignSpaceVariants")
+        upload_body = self._function_body("uploadContextFile", "buildFullPrompt")
+
+        self.assertNotIn("Client conditions", requirements_body)
+        self.assertIn("Inner-core diameter (mm)", requirements_body)
+        self.assertIn("Inner-core length (mm)", requirements_body)
+        self.assertIn("Outer-core length (mm)", requirements_body)
+        self.assertIn("generateRequirementBtn", requirements_body)
+        self.assertNotIn("activateParametricDesignWorkflow", generate_body)
+        self.assertNotIn("buildRubberBushingWorkflow", generate_body)
+        self.assertIn("setParamEditorOpen(false)", generate_body)
+        self.assertIn("setWorkflowToolsVisible(false)", generate_body)
+        self.assertIn("activateParametricDesignWorkflow", upload_body)
+        self.assertIn("buildParamControls(currentEditIntent)", upload_body)
+
 
 if __name__ == "__main__":
     unittest.main()
