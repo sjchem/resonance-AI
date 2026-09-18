@@ -2652,6 +2652,14 @@ UI_HTML = """<!doctype html>
       width: 100%;
       margin-top: 4px;
     }
+    .workflow-tools-panel[hidden] {
+      display: none;
+    }
+    .workflow-tools-panel .mesh-block:first-child {
+      margin-top: 0;
+      padding-top: 0;
+      border-top: 0;
+    }
     .param-form-field {
       display: grid;
       gap: 4px;
@@ -3769,8 +3777,6 @@ UI_HTML = """<!doctype html>
           <div id="paramControls" class="param-controls">
             <p class="muted">Select Bushing, then Four Arm Bushing, to load its POC requirements.</p>
           </div>
-          <div id="meshResults"></div>
-          <div id="simResults"></div>
           <pre id="jsonOutput" hidden>{}</pre>
         </section>
 
@@ -3868,6 +3874,11 @@ UI_HTML = """<!doctype html>
               <p>Upload a file or write a request. I will summarize the proposed CAD intent before generating the model.</p>
             </div>
           </div>
+        </section>
+
+        <section class="rail-card workflow-tools-panel" id="workflowToolsPanel" hidden>
+          <div id="meshResults"></div>
+          <div id="simResults"></div>
         </section>
       </section>
 
@@ -3985,6 +3996,7 @@ UI_HTML = """<!doctype html>
     const paramToggle = document.getElementById("paramToggle");
     const paramControls = document.getElementById("paramControls");
     const paramHint = document.getElementById("paramHint");
+    const workflowToolsPanel = document.getElementById("workflowToolsPanel");
     const meshResults = document.getElementById("meshResults");
     const simResults = document.getElementById("simResults");
     const analysisResults = document.getElementById("analysisResults");
@@ -4046,6 +4058,7 @@ UI_HTML = """<!doctype html>
     let engineeringChatOpen = false;
     let uploadContextOpen = false;
     let paramEditorOpen = false;
+    let workflowToolsVisible = false;
     let selectedCadEngine = "cadquery";
     let rubberBushingWorkflowActive = false;
     let rubberBushingTab = "space";
@@ -4158,6 +4171,13 @@ UI_HTML = """<!doctype html>
       if (paramToggle) {
         paramToggle.textContent = paramEditorOpen ? "Hide input" : "Open input";
         paramToggle.setAttribute("aria-expanded", paramEditorOpen ? "true" : "false");
+      }
+    }
+
+    function setWorkflowToolsVisible(visible) {
+      workflowToolsVisible = Boolean(visible);
+      if (workflowToolsPanel) {
+        workflowToolsPanel.hidden = !workflowToolsVisible;
       }
     }
 
@@ -4309,6 +4329,7 @@ UI_HTML = """<!doctype html>
 
     function activateFourArmBushingRequirements() {
       rubberBushingWorkflowActive = true;
+      setWorkflowToolsVisible(false);
       selectedCadEngine = "openscad";
       preferParametric = false;
       meshEditMode = false;
@@ -4350,6 +4371,7 @@ UI_HTML = """<!doctype html>
         return;
       }
       rubberBushingWorkflowActive = false;
+      setWorkflowToolsVisible(false);
       setParamEditorOpen(false);
       paramControls.innerHTML = '<p class="muted">Select Bushing, then Four Arm Bushing, to load its POC requirements.</p>';
       if (paramHint) paramHint.textContent = "Parametric input for the POC.";
@@ -4440,6 +4462,7 @@ UI_HTML = """<!doctype html>
         if (previewReady) {
           try {
             await render3DPreview(intent);
+            setWorkflowToolsVisible(true);
             setParamEditorOpen(false);
             buildParamControls(intent);
           } catch (previewError) {
@@ -4448,6 +4471,7 @@ UI_HTML = """<!doctype html>
           }
         } else {
           cleanupViewer();
+          setWorkflowToolsVisible(false);
           currentEditIntent = null;
           setParamEditorOpen(false);
           buildParamControls(null);
@@ -4500,6 +4524,7 @@ UI_HTML = """<!doctype html>
       simShown = false;
       simSelectedMode = "b1";
       stopSimAnimation();
+      setWorkflowToolsVisible(false);
 
       uploadContextButton.disabled = true;
       uploadContextButton.textContent = "Reading...";
@@ -4560,6 +4585,7 @@ UI_HTML = """<!doctype html>
         if (payload.clientMesh) {
           try {
             await render3DPreview({ part_type: "uploaded", geometry: {} });
+            setWorkflowToolsVisible(true);
             lastExport.name = exportBaseName({ part_type: payload.filename });
             downloadBtn.disabled = false;
             currentEditIntent = null;
@@ -5440,6 +5466,7 @@ UI_HTML = """<!doctype html>
       // Identity warp to start (keeps the exact uploaded shape on screen).
       overrideMeshFaces = warpEditableMeshFaces(intent.geometry);
       render3DPreview(intent).catch(() => {});
+      setWorkflowToolsVisible(true);
       setParamEditorOpen(true);
       buildParamControls(intent);
       appendMsg(
@@ -8174,6 +8201,7 @@ UI_HTML = """<!doctype html>
         lastMeshResult = null;
         lastStaticStiffness = null;
         await render3DPreview(currentEditIntent);
+        setWorkflowToolsVisible(true);
         updateSummary(currentEditIntent);
         renderMeshPanel();
         renderSimPanel();
