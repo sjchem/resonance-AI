@@ -2545,7 +2545,7 @@ UI_HTML = """<!doctype html>
       display: flex;
       flex-direction: column;
       gap: 16px;
-      max-height: 420px;
+      max-height: 560px;
       overflow: auto;
     }
     .param-panel.collapsed .param-controls {
@@ -2637,6 +2637,12 @@ UI_HTML = """<!doctype html>
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 8px;
+    }
+    .requirement-value-grid {
+      grid-template-columns: 1fr;
+    }
+    .requirement-summary {
+      margin-top: 2px;
     }
     .param-form-field {
       display: grid;
@@ -3668,6 +3674,8 @@ UI_HTML = """<!doctype html>
       .topbar, main, .hero-inner { width: min(100% - 28px, 1440px); }
       .brand-lockup { align-items: flex-start; gap: 12px; flex-direction: column; }
       .product { padding-left: 0; border-left: 0; }
+      .param-title { align-items: flex-start; flex-wrap: wrap; }
+      .param-title .title-head { flex: 1 1 180px; }
       .hero { padding-block: 26px; }
       .hero-metrics { grid-template-columns: 1fr; }
       .grid { grid-template-columns: 1fr; }
@@ -3742,6 +3750,92 @@ UI_HTML = """<!doctype html>
 
     <section class="workspace">
       <section class="workbench left-rail">
+        <section class="rail-card param-panel" id="paramPanel">
+          <div class="section-title param-title">
+            <div class="title-head">
+              <strong>Requirement</strong>
+              <span id="paramHint" class="muted">Parametric input for the POC.</span>
+            </div>
+            <button type="button" class="param-toggle" id="paramToggle" aria-expanded="true" aria-controls="paramControls">Hide input</button>
+          </div>
+          <div id="paramControls" class="param-controls">
+            <div class="param-section poc-requirements" data-rubber-section="requirements">
+              <div class="param-section-title">Selected values</div>
+              <div class="param-form-grid requirement-value-grid">
+                <div class="param-form-field">
+                  <label for="req_inner_diameter">Inner-core diameter (mm)</label>
+                  <input id="req_inner_diameter" data-requirement-field="inner_diameter_mm" type="number" value="28" min="21" max="35" step="0.5">
+                </div>
+                <div class="param-form-field">
+                  <label for="req_inner_core_length">Inner-core length (mm)</label>
+                  <input id="req_inner_core_length" data-requirement-field="inner_core_length_mm" type="number" value="40" min="20" max="71" step="0.5">
+                </div>
+                <div class="param-form-field">
+                  <label for="req_outer_core_length">Outer-core length (mm)</label>
+                  <input id="req_outer_core_length" data-requirement-field="outer_core_length_mm" type="number" value="40" min="20" max="55" step="0.5">
+                </div>
+                <div class="param-form-field">
+                  <label for="req_sample_count">Samples</label>
+                  <select id="req_sample_count" data-requirement-samples>
+                    <option value="50" selected>50</option>
+                    <option value="100">100</option>
+                    <option value="200">200</option>
+                  </select>
+                </div>
+              </div>
+              <div class="best-geometry requirement-summary">
+                <strong>Client conditions</strong>
+                <span>Target Kx: 88.4 N/mm</span>
+                <span>Target Ky: 294.5 N/mm</span>
+                <span>Target Kz: 294.5 N/mm</span>
+                <span>Outer diameter: 76.0 mm</span>
+                <span>Swaging: 3.0 mm</span>
+                <span>Decking: 0.0 mm</span>
+                <span>Internal teeth: no</span>
+              </div>
+            </div>
+          </div>
+          <div id="meshResults"></div>
+          <div id="simResults"></div>
+          <pre id="jsonOutput" hidden>{}</pre>
+        </section>
+
+        <section class="rail-card upload-context-card collapsed" id="uploadContextPanel">
+          <button type="button" class="rail-card-header" id="uploadContextToggle" aria-expanded="false" aria-controls="uploadContextBody">
+            <span class="rail-card-title" id="uploadContextTitle">Upload your design</span>
+            <span class="status-pill upload-pill">Image / CAD</span>
+          </button>
+          <div class="rail-card-body" id="uploadContextBody">
+            <div class="attachment-tools">
+              <label for="contextFile" class="label-with-info">
+                Add document, image, or old CAD model
+                <span
+                  class="info-dot"
+                  tabindex="0"
+                  aria-label="Supported file types: PDF, image jpg, JSON, STEP/STP/IGES/STL/OBJ/DXF/SCAD/FCStd"
+                  data-tooltip="Supported file types: PDF, image (jpg), JSON, STEP/STP/IGES/STL/OBJ/DXF/SCAD/FCStd"
+                >i</span>
+              </label>
+              <div class="attachment-row">
+                <input
+                  id="contextFile"
+                  type="file"
+                  accept=".pdf,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff,.step,.stp,.iges,.igs,.stl,.obj,.dxf,.scad,.fcstd,.txt,.md,.json,.xml,.csv"
+                >
+                <button id="uploadContextButton" type="button">Attach File</button>
+              </div>
+              <button id="fairEngineeringSearchButton" class="fair-search-button" type="button">
+                Search from FAIR Engineering Data
+              </button>
+              <p id="fairEngineeringSearchStatus" class="fair-search-status" aria-live="polite" hidden>
+                FAIR Engineering Data search is a POC placeholder. The live data connection will be added later.
+              </p>
+              <div id="attachmentList" class="attachment-list"></div>
+              <p class="muted upload-context-note">Rubber bushing uploads can drive OpenSCAD CAD, Design Space, Target Stiffness, mesh, and FEM without using chat.</p>
+            </div>
+          </div>
+        </section>
+
         <section class="rail-card engineering-chat-card" id="engineeringChatPanel">
           <button type="button" class="rail-card-header" id="engineeringChatToggle" aria-expanded="false" aria-controls="engineeringChatBody">
             <span class="rail-card-title">Engineering chat</span>
@@ -3800,65 +3894,6 @@ UI_HTML = """<!doctype html>
               <p>Upload a file or write a request. I will summarize the proposed CAD intent before generating the model.</p>
             </div>
           </div>
-        </section>
-
-        <section class="rail-card upload-context-card collapsed" id="uploadContextPanel">
-          <button type="button" class="rail-card-header" id="uploadContextToggle" aria-expanded="false" aria-controls="uploadContextBody">
-            <span class="rail-card-title" id="uploadContextTitle">Upload your design</span>
-            <span class="status-pill upload-pill">Image / CAD</span>
-          </button>
-          <div class="rail-card-body" id="uploadContextBody">
-            <div class="attachment-tools">
-              <label for="contextFile" class="label-with-info">
-                Add document, image, or old CAD model
-                <span
-                  class="info-dot"
-                  tabindex="0"
-                  aria-label="Supported file types: PDF, image jpg, JSON, STEP/STP/IGES/STL/OBJ/DXF/SCAD/FCStd"
-                  data-tooltip="Supported file types: PDF, image (jpg), JSON, STEP/STP/IGES/STL/OBJ/DXF/SCAD/FCStd"
-                >i</span>
-              </label>
-              <div class="attachment-row">
-                <input
-                  id="contextFile"
-                  type="file"
-                  accept=".pdf,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff,.step,.stp,.iges,.igs,.stl,.obj,.dxf,.scad,.fcstd,.txt,.md,.json,.xml,.csv"
-                >
-                <button id="uploadContextButton" type="button">Attach File</button>
-              </div>
-              <button id="fairEngineeringSearchButton" class="fair-search-button" type="button">
-                Search from FAIR Engineering Data
-              </button>
-              <p id="fairEngineeringSearchStatus" class="fair-search-status" aria-live="polite" hidden>
-                FAIR Engineering Data search is a POC placeholder. The live data connection will be added later.
-              </p>
-              <div id="attachmentList" class="attachment-list"></div>
-              <p class="muted upload-context-note">Rubber bushing uploads can drive OpenSCAD CAD, Design Space, Target Stiffness, mesh, and FEM without using chat.</p>
-            </div>
-          </div>
-        </section>
-
-        <section class="rail-card param-panel collapsed" id="paramPanel">
-          <div class="section-title param-title">
-            <div class="title-head">
-              <strong>Parametric input</strong>
-              <span id="paramHint" class="muted">Open after a model is generated.</span>
-            </div>
-            <button type="button" class="param-toggle" id="paramToggle" aria-expanded="false" aria-controls="paramControls">Open input</button>
-          </div>
-          <div id="paramControls" class="param-controls">
-            <div class="cad-engine-row">
-              <label for="cadEngineSelect">CAD Editor</label>
-              <select id="cadEngineSelect">
-                <option value="cadquery" selected>CadQuery</option>
-                <option value="openscad">OpenSCAD</option>
-              </select>
-            </div>
-            <p class="muted">Adjustable dimensions will appear here once a model is generated. Use the Download menu to export the edited part.</p>
-          </div>
-          <div id="meshResults"></div>
-          <div id="simResults"></div>
-          <pre id="jsonOutput" hidden>{}</pre>
         </section>
       </section>
 
@@ -4034,9 +4069,9 @@ UI_HTML = """<!doctype html>
     // Parametric editor state.
     let currentEditIntent = null;
     let baseGeometry = null;
-    let engineeringChatOpen = true;
+    let engineeringChatOpen = false;
     let uploadContextOpen = false;
-    let paramEditorOpen = false;
+    let paramEditorOpen = true;
     let selectedCadEngine = "cadquery";
     let rubberBushingWorkflowActive = false;
     let rubberBushingTab = "space";
@@ -4068,7 +4103,7 @@ UI_HTML = """<!doctype html>
       innerLengthMax: CLIENT_BUSHING_SPEC.inner_core_length_max_mm,
       outerLengthMin: CLIENT_BUSHING_SPEC.outer_core_length_min_mm,
       outerLengthMax: CLIENT_BUSHING_SPEC.outer_core_length_max_mm,
-      samples: 200,
+      samples: 50,
     };
     let paramRenderQueued = false;
     let uploadNeedsParametricConfirmation = false;
@@ -4114,7 +4149,8 @@ UI_HTML = """<!doctype html>
       paramToggle.addEventListener("click", () => {
         setParamEditorOpen(!paramEditorOpen);
       });
-      setParamEditorOpen(false);
+      setParamEditorOpen(true);
+      bindPocRequirements();
     }
 
     function setEngineeringChatOpen(open) {
@@ -7822,6 +7858,82 @@ UI_HTML = """<!doctype html>
       return rubberBushingWorkflowActive && (type === "bushing" || type === "rubber_mount") && (!workflow || workflow.bushing_type === "rubber-bushing");
     }
 
+    function pocRequirementsHtml(intent) {
+      const normalized = normalizeRubberBushingIntent(intent || currentEditIntent || defaultRubberBushingIntent());
+      const geom = normalized.geometry;
+      const samples = [50, 100, 200].includes(Number(targetSearchInputs.samples)) ? Number(targetSearchInputs.samples) : 50;
+      const sampleOptions = [50, 100, 200].map((value) => (
+        '<option value="' + value + '"' + (samples === value ? ' selected' : '') + '>' + value + '</option>'
+      )).join("");
+      return '<div class="param-section poc-requirements" data-rubber-section="requirements">' +
+        '<div class="param-section-title">Selected values</div>' +
+        '<div class="param-form-grid requirement-value-grid">' +
+        '<div class="param-form-field"><label for="req_inner_diameter">Inner-core diameter (mm)</label><input id="req_inner_diameter" data-requirement-field="inner_diameter_mm" type="number" value="' + formatNumber(geom.inner_diameter_mm, 1) + '" min="' + CLIENT_BUSHING_SPEC.inner_diameter_min_mm + '" max="' + CLIENT_BUSHING_SPEC.inner_diameter_max_mm + '" step="0.5"></div>' +
+        '<div class="param-form-field"><label for="req_inner_core_length">Inner-core length (mm)</label><input id="req_inner_core_length" data-requirement-field="inner_core_length_mm" type="number" value="' + formatNumber(geom.inner_core_length_mm, 1) + '" min="' + CLIENT_BUSHING_SPEC.inner_core_length_min_mm + '" max="' + CLIENT_BUSHING_SPEC.inner_core_length_max_mm + '" step="0.5"></div>' +
+        '<div class="param-form-field"><label for="req_outer_core_length">Outer-core length (mm)</label><input id="req_outer_core_length" data-requirement-field="outer_core_length_mm" type="number" value="' + formatNumber(geom.outer_core_length_mm, 1) + '" min="' + CLIENT_BUSHING_SPEC.outer_core_length_min_mm + '" max="' + CLIENT_BUSHING_SPEC.outer_core_length_max_mm + '" step="0.5"></div>' +
+        '<div class="param-form-field"><label for="req_sample_count">Samples</label><select id="req_sample_count" data-requirement-samples>' + sampleOptions + '</select></div>' +
+        '</div>' +
+        '<div class="best-geometry requirement-summary">' +
+        '<strong>Client conditions</strong>' +
+        '<span>Target Kx: ' + formatNumber(CLIENT_BUSHING_SPEC.target_kx_n_mm, 1) + ' N/mm</span>' +
+        '<span>Target Ky: ' + formatNumber(CLIENT_BUSHING_SPEC.target_ky_n_mm, 1) + ' N/mm</span>' +
+        '<span>Target Kz: ' + formatNumber(CLIENT_BUSHING_SPEC.target_kz_n_mm, 1) + ' N/mm</span>' +
+        '<span>Outer diameter: ' + formatNumber(CLIENT_BUSHING_SPEC.outer_diameter_mm, 1) + ' mm</span>' +
+        '<span>Swaging: ' + formatNumber(CLIENT_BUSHING_SPEC.swaging_value_mm, 1) + ' mm</span>' +
+        '<span>Decking: ' + formatNumber(CLIENT_BUSHING_SPEC.decking_value_mm, 1) + ' mm</span>' +
+        '<span>Internal teeth: no</span>' +
+        '</div>' +
+        '</div>';
+    }
+
+    function bindPocRequirements() {
+      if (!paramControls) return;
+      const fields = Array.from(paramControls.querySelectorAll("[data-requirement-field]"));
+      const sampleSelect = paramControls.querySelector("[data-requirement-samples]");
+      const syncRequirements = () => {
+        const innerDiameter = clamp(
+          readFormNumber("req_inner_diameter", 28),
+          CLIENT_BUSHING_SPEC.inner_diameter_min_mm,
+          CLIENT_BUSHING_SPEC.inner_diameter_max_mm
+        );
+        const innerLength = clamp(
+          readFormNumber("req_inner_core_length", 40),
+          CLIENT_BUSHING_SPEC.inner_core_length_min_mm,
+          CLIENT_BUSHING_SPEC.inner_core_length_max_mm
+        );
+        const outerLength = clamp(
+          readFormNumber("req_outer_core_length", 40),
+          CLIENT_BUSHING_SPEC.outer_core_length_min_mm,
+          CLIENT_BUSHING_SPEC.outer_core_length_max_mm
+        );
+        targetSearchInputs = Object.assign({}, targetSearchInputs, {
+          idMin: innerDiameter,
+          idMax: innerDiameter,
+          innerLengthMin: innerLength,
+          innerLengthMax: innerLength,
+          outerLengthMin: outerLength,
+          outerLengthMax: outerLength,
+          samples: clampInt(readFormNumber("req_sample_count", 50), 1, 200, 50),
+        });
+        if (!currentEditIntent) return;
+        const normalized = normalizeRubberBushingIntent(currentEditIntent);
+        normalized.geometry.inner_diameter_mm = innerDiameter;
+        normalized.geometry.inner_core_length_mm = innerLength;
+        normalized.geometry.outer_core_length_mm = outerLength;
+        normalized.geometry.inner_sleeve_length_mm = normalized.geometry.inner_sleeve ? innerLength : 0;
+        normalized.geometry.height_mm = Math.max(innerLength, outerLength, 1);
+        currentEditIntent = normalizeRubberBushingIntent(normalized);
+        lastExport.intent = currentEditIntent;
+        jsonOutput.textContent = JSON.stringify(currentEditIntent, null, 2);
+        updateSummary(currentEditIntent);
+        lastMeshResult = null;
+        lastStaticStiffness = null;
+        scheduleParamRender();
+      };
+      for (const field of fields) field.addEventListener("change", syncRequirements);
+      if (sampleSelect) sampleSelect.addEventListener("change", syncRequirements);
+    }
+
     function buildRubberBushingWorkflow(intent) {
       currentEditIntent = normalizeRubberBushingIntent(intent || currentEditIntent || defaultRubberBushingIntent());
       baseGeometry = Object.assign({}, currentEditIntent.geometry || {});
@@ -7829,19 +7941,9 @@ UI_HTML = """<!doctype html>
       lastExport.name = "rubber_bushing";
       lastExport.cadEngine = selectedCadEngine;
       jsonOutput.textContent = JSON.stringify(currentEditIntent, null, 2);
-      if (!["space", "target"].includes(rubberBushingTab)) {
-        rubberBushingTab = "space";
-      }
-      const tabs = [
-        ["space", "Design Space"],
-        ["target", "Target Stiffness"],
-      ].map(([key, label]) => (
-        '<button type="button" class="param-tab' + (rubberBushingTab === key ? ' active' : '') + '" data-rubber-tab="' + key + '">' + label + '</button>'
-      )).join("");
-      const body = rubberBushingTab === "target" ? targetStiffnessHtml() : designSpaceHtml();
-      paramControls.innerHTML = cadEngineSelectorHtml() + '<div class="rubber-workflow"><div class="param-tabs">' + tabs + '</div>' + body + '</div>';
-      bindRubberBushingWorkflow();
-      if (paramHint) paramHint.textContent = "Explore design variants or find geometry from target stiffness.";
+      paramControls.innerHTML = pocRequirementsHtml(currentEditIntent);
+      bindPocRequirements();
+      if (paramHint) paramHint.textContent = "Parametric input for the POC.";
       renderMeshPanel();
       renderSimPanel();
     }
@@ -8411,6 +8513,10 @@ UI_HTML = """<!doctype html>
       if (!paramControls) {
         return;
       }
+      if (rubberBushingWorkflowActive && (!intent || ["bushing", "rubber_mount"].includes(String(intent.part_type || "").toLowerCase()))) {
+        buildRubberBushingWorkflow(intent || currentEditIntent || defaultRubberBushingIntent());
+        return;
+      }
       const uploaded = (preferParametric || meshEditMode) ? null : pickUploadedMesh();
       if (uploaded) {
         const dims = measureBushingFromMesh(uploaded);
@@ -8434,9 +8540,9 @@ UI_HTML = """<!doctype html>
       const type = String((intent && intent.part_type) || "unknown").toLowerCase();
       const spec = PART_FIELD_SETS[type];
       if (!intent || !spec) {
-        paramControls.innerHTML = cadEngineSelectorHtml() + '<p class="muted">Adjustable dimensions will appear here once a model is generated. Use the Download menu to export the edited part.</p>';
-        bindCadEngineSelector();
-        if (paramHint) paramHint.textContent = "Open after a model is generated.";
+        paramControls.innerHTML = pocRequirementsHtml(currentEditIntent || defaultRubberBushingIntent());
+        bindPocRequirements();
+        if (paramHint) paramHint.textContent = "Parametric input for the POC.";
         renderMeshPanel();
         renderSimPanel();
         return;
