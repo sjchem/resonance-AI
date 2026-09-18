@@ -4295,6 +4295,12 @@ UI_HTML = """<!doctype html>
         : "Upload your design";
     }
 
+    function clearGeneratedPocGeometryContext() {
+      attachmentContexts = attachmentContexts.filter((context) => !context.generated_poc);
+      generatedPocGeometryContext = null;
+      renderAttachmentList();
+    }
+
     function renderCategoryFamily(familyKey) {
       const resolvedKey = categoryFamilies[familyKey] ? familyKey : "";
       updateUploadContextTitle();
@@ -4330,7 +4336,7 @@ UI_HTML = """<!doctype html>
 
     function activateFourArmBushingRequirements() {
       rubberBushingWorkflowActive = true;
-      generatedPocGeometryContext = null;
+      clearGeneratedPocGeometryContext();
       setWorkflowToolsVisible(false);
       selectedCadEngine = "openscad";
       preferParametric = false;
@@ -4373,7 +4379,7 @@ UI_HTML = """<!doctype html>
         return;
       }
       rubberBushingWorkflowActive = false;
-      generatedPocGeometryContext = null;
+      clearGeneratedPocGeometryContext();
       setWorkflowToolsVisible(false);
       setParamEditorOpen(false);
       paramControls.innerHTML = '<p class="muted">Select Bushing, then Four Arm Bushing, to load its POC requirements.</p>';
@@ -4456,7 +4462,7 @@ UI_HTML = """<!doctype html>
         preferParametric = false;
         meshEditMode = false;
         overrideMeshFaces = null;
-        generatedPocGeometryContext = null;
+        clearGeneratedPocGeometryContext();
         rubberBushingWorkflowActive = false;
         lastMeshResult = null;
         lastStaticStiffness = null;
@@ -4514,7 +4520,7 @@ UI_HTML = """<!doctype html>
       meshEditMode = false;
       overrideMeshFaces = null;
       editableMesh = null;
-      generatedPocGeometryContext = null;
+      clearGeneratedPocGeometryContext();
       currentEditIntent = null;
       baseGeometry = null;
       lastExport.intent = null;
@@ -4793,7 +4799,10 @@ UI_HTML = """<!doctype html>
       for (const button of attachmentList.querySelectorAll("[data-remove-context]")) {
         button.addEventListener("click", () => {
           const index = Number(button.dataset.removeContext);
-          attachmentContexts.splice(index, 1);
+          const removed = attachmentContexts.splice(index, 1)[0];
+          if (removed && removed.generated_poc) {
+            generatedPocGeometryContext = null;
+          }
           pendingDraftPrompt = attachmentContexts.length ? draftPromptFromAttachments() : "";
           renderAttachmentList();
         });
@@ -8292,10 +8301,13 @@ UI_HTML = """<!doctype html>
           throw new Error("The Four Arm Bushing POC STL contains no displayable surface triangles.");
         }
 
+        clearGeneratedPocGeometryContext();
         generatedPocGeometryContext = {
           filename: "900000.stl",
           content_type: "model/stl",
-          file_kind: "cad",
+          file_kind: "CAD",
+          size_bytes: buffer.byteLength,
+          generated_poc: true,
           summary: "Curated Four Arm Bushing POC geometry.",
           prompt_context: "Curated Four Arm Bushing POC geometry from 900000.stl.",
           clientMesh: mesh,
@@ -8309,6 +8321,10 @@ UI_HTML = """<!doctype html>
           upload_filename: "900000.stl",
           upload_content_type: "model/stl",
         };
+        attachmentContexts.push(generatedPocGeometryContext);
+        pendingDraftPrompt = draftPromptFromAttachments();
+        renderAttachmentList();
+        setUploadContextOpen(true);
         preferParametric = false;
         meshEditMode = false;
         overrideMeshFaces = null;
@@ -8334,7 +8350,7 @@ UI_HTML = """<!doctype html>
         completeActivity("Four Arm Bushing ready");
         return true;
       } catch (error) {
-        generatedPocGeometryContext = null;
+        clearGeneratedPocGeometryContext();
         failActivity("CAD failed");
         appendMsg("bot", "Four Arm Bushing generation failed: " + (error && error.message ? error.message : error));
         return false;
