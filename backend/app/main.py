@@ -8063,12 +8063,29 @@ UI_HTML = """<!doctype html>
     function pocRequirementsHtml(intent) {
       const normalized = normalizeRubberBushingIntent(intent || currentEditIntent || defaultRubberBushingIntent());
       const geom = normalized.geometry;
+      const targets = normalized.simulation_hints && normalized.simulation_hints.target_stiffness_n_per_mm
+        ? normalized.simulation_hints.target_stiffness_n_per_mm
+        : targetSearchInputs;
+      const swaging = Number.isFinite(Number(geom.swaging_value_mm))
+        ? Number(geom.swaging_value_mm)
+        : CLIENT_BUSHING_SPEC.swaging_value_mm;
+      const decking = Number.isFinite(Number(geom.decking_value_mm))
+        ? Number(geom.decking_value_mm)
+        : CLIENT_BUSHING_SPEC.decking_value_mm;
+      const internalTeeth = boolValue(geom.internal_teeth, CLIENT_BUSHING_SPEC.internal_teeth);
       return '<div class="param-section poc-requirements" data-rubber-section="requirements">' +
         '<div class="param-section-title">Selected values</div>' +
         '<div class="param-form-grid requirement-value-grid">' +
         '<div class="param-form-field"><label for="req_inner_diameter">Inner-core diameter (mm)</label><input id="req_inner_diameter" data-requirement-field="inner_diameter_mm" type="number" value="' + formatNumber(geom.inner_diameter_mm, 1) + '" min="' + CLIENT_BUSHING_SPEC.inner_diameter_min_mm + '" max="' + CLIENT_BUSHING_SPEC.inner_diameter_max_mm + '" step="0.5"></div>' +
         '<div class="param-form-field"><label for="req_inner_core_length">Inner-core length (mm)</label><input id="req_inner_core_length" data-requirement-field="inner_core_length_mm" type="number" value="' + formatNumber(geom.inner_core_length_mm, 1) + '" min="' + CLIENT_BUSHING_SPEC.inner_core_length_min_mm + '" max="' + CLIENT_BUSHING_SPEC.inner_core_length_max_mm + '" step="0.5"></div>' +
         '<div class="param-form-field"><label for="req_outer_core_length">Outer-core length (mm)</label><input id="req_outer_core_length" data-requirement-field="outer_core_length_mm" type="number" value="' + formatNumber(geom.outer_core_length_mm, 1) + '" min="' + CLIENT_BUSHING_SPEC.outer_core_length_min_mm + '" max="' + CLIENT_BUSHING_SPEC.outer_core_length_max_mm + '" step="0.5"></div>' +
+        '<div class="param-form-field"><label for="req_outer_diameter">Outer diameter (mm)</label><input id="req_outer_diameter" data-requirement-field="outer_diameter_mm" type="number" value="' + formatNumber(geom.outer_diameter_mm, 1) + '" min="1" step="0.5"></div>' +
+        '<div class="param-form-field"><label for="req_swaging">Swaging (mm)</label><input id="req_swaging" data-requirement-field="swaging_value_mm" type="number" value="' + formatNumber(swaging, 1) + '" min="0" step="0.1"></div>' +
+        '<div class="param-form-field"><label for="req_target_kx">Target Kx (N/mm)</label><input id="req_target_kx" data-requirement-target="kx" type="number" value="' + formatNumber(targets.kx || CLIENT_BUSHING_SPEC.target_kx_n_mm, 1) + '" min="0.1" step="0.1"></div>' +
+        '<div class="param-form-field"><label for="req_target_ky">Target Ky (N/mm)</label><input id="req_target_ky" data-requirement-target="ky" type="number" value="' + formatNumber(targets.ky || CLIENT_BUSHING_SPEC.target_ky_n_mm, 1) + '" min="0.1" step="0.1"></div>' +
+        '<div class="param-form-field"><label for="req_target_kz">Target Kz (N/mm)</label><input id="req_target_kz" data-requirement-target="kz" type="number" value="' + formatNumber(targets.kz || CLIENT_BUSHING_SPEC.target_kz_n_mm, 1) + '" min="0.1" step="0.1"></div>' +
+        '<div class="param-form-field"><label for="req_decking">Decking (mm)</label><input id="req_decking" data-requirement-field="decking_value_mm" type="number" value="' + formatNumber(decking, 1) + '" min="0" step="0.1"></div>' +
+        '<div class="param-form-field"><label for="req_internal_teeth">Internal teeth</label><select id="req_internal_teeth" data-requirement-field="internal_teeth"><option value="false"' + (!internalTeeth ? ' selected' : '') + '>No</option><option value="true"' + (internalTeeth ? ' selected' : '') + '>Yes</option></select></div>' +
         '</div>' +
         '<div class="param-actions">' +
         '<button type="button" class="param-primary" id="generateRequirementBtn">Generate</button>' +
