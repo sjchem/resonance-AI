@@ -2551,6 +2551,11 @@ UI_HTML = """<!doctype html>
       max-height: 560px;
       overflow: auto;
     }
+    #requirementControls {
+      max-height: min(440px, 52vh);
+      padding-right: 4px;
+      scrollbar-gutter: stable;
+    }
     .param-panel.collapsed .param-controls {
       display: none;
     }
