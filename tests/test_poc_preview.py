@@ -47,10 +47,23 @@ class PocPreviewTests(unittest.TestCase):
         self.assertIn("generateRequirementBtn", requirements_body)
         self.assertNotIn("activateParametricDesignWorkflow", generate_body)
         self.assertNotIn("buildRubberBushingWorkflow", generate_body)
-        self.assertIn("setParamEditorOpen(false)", generate_body)
+        self.assertIn("setRequirementOpen(false)", generate_body)
+        self.assertIn("setParametricPanelVisible(false)", generate_body)
         self.assertIn("setWorkflowToolsVisible(false)", generate_body)
         self.assertIn("activateParametricDesignWorkflow", upload_body)
         self.assertIn("buildParamControls(currentEditIntent)", upload_body)
+
+    def test_uploaded_parametric_editor_follows_upload_card(self):
+        requirement_index = UI_HTML.index('id="requirementPanel"')
+        upload_index = UI_HTML.index('id="uploadContextPanel"')
+        editor_index = UI_HTML.index('id="paramPanel" hidden')
+        chat_index = UI_HTML.index('id="engineeringChatPanel"')
+
+        self.assertLess(requirement_index, upload_index)
+        self.assertLess(upload_index, editor_index)
+        self.assertLess(editor_index, chat_index)
+        self.assertIn('id="requirementControls"', UI_HTML)
+        self.assertIn('id="paramControls"', UI_HTML)
 
 
 if __name__ == "__main__":

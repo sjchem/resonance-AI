@@ -1781,6 +1781,9 @@ UI_HTML = """<!doctype html>
       padding: 18px;
       box-shadow: 0 12px 30px rgba(15, 23, 42, 0.05);
     }
+    .rail-card[hidden] {
+      display: none;
+    }
     .rail-card-header {
       width: 100%;
       margin: 0;
@@ -3766,18 +3769,17 @@ UI_HTML = """<!doctype html>
 
     <section class="workspace">
       <section class="workbench left-rail">
-        <section class="rail-card param-panel collapsed" id="paramPanel">
+        <section class="rail-card param-panel collapsed" id="requirementPanel">
           <div class="section-title param-title">
             <div class="title-head">
-              <strong id="paramPanelTitle">Requirement</strong>
-              <span id="paramHint" class="muted">Parametric input for the POC.</span>
+              <strong>Requirement</strong>
+              <span class="muted">Parametric input for the POC.</span>
             </div>
-            <button type="button" class="param-toggle" id="paramToggle" aria-expanded="false" aria-controls="paramControls">Open input</button>
+            <button type="button" class="param-toggle" id="requirementToggle" aria-expanded="false" aria-controls="requirementControls">Open input</button>
           </div>
-          <div id="paramControls" class="param-controls">
+          <div id="requirementControls" class="param-controls">
             <p class="muted">Select Bushing, then Four Arm Bushing, to load its POC requirements.</p>
           </div>
-          <pre id="jsonOutput" hidden>{}</pre>
         </section>
 
         <section class="rail-card upload-context-card collapsed" id="uploadContextPanel">
@@ -3814,6 +3816,18 @@ UI_HTML = """<!doctype html>
               <p class="muted upload-context-note">Rubber bushing uploads can drive OpenSCAD CAD, Design Space, Target Stiffness, mesh, and FEM without using chat.</p>
             </div>
           </div>
+        </section>
+
+        <section class="rail-card param-panel collapsed" id="paramPanel" hidden>
+          <div class="section-title param-title">
+            <div class="title-head">
+              <strong id="paramPanelTitle">Parametric input</strong>
+              <span id="paramHint" class="muted">Explore design variants or find geometry from target stiffness.</span>
+            </div>
+            <button type="button" class="param-toggle" id="paramToggle" aria-expanded="false" aria-controls="paramControls">Open input</button>
+          </div>
+          <div id="paramControls" class="param-controls"></div>
+          <pre id="jsonOutput" hidden>{}</pre>
         </section>
 
         <section class="rail-card engineering-chat-card" id="engineeringChatPanel">
@@ -3992,6 +4006,9 @@ UI_HTML = """<!doctype html>
 
     const preview = document.getElementById("preview");
     const jsonOutput = document.getElementById("jsonOutput");
+    const requirementPanel = document.getElementById("requirementPanel");
+    const requirementToggle = document.getElementById("requirementToggle");
+    const requirementControls = document.getElementById("requirementControls");
     const paramPanel = document.getElementById("paramPanel");
     const paramToggle = document.getElementById("paramToggle");
     const paramControls = document.getElementById("paramControls");
@@ -4059,6 +4076,7 @@ UI_HTML = """<!doctype html>
     let baseGeometry = null;
     let engineeringChatOpen = false;
     let uploadContextOpen = false;
+    let requirementOpen = false;
     let paramEditorOpen = false;
     let workflowToolsVisible = false;
     let selectedCadEngine = "cadquery";
@@ -4099,6 +4117,7 @@ UI_HTML = """<!doctype html>
     function activateParametricDesignWorkflow() {
       pocRequirementsComplete = true;
       rubberBushingTab = "space";
+      setParametricPanelVisible(true);
       targetSearchInputs = Object.assign({}, targetSearchInputs, {
         idMin: CLIENT_BUSHING_SPEC.inner_diameter_min_mm,
         idMax: CLIENT_BUSHING_SPEC.inner_diameter_max_mm,
@@ -4149,6 +4168,13 @@ UI_HTML = """<!doctype html>
       setUploadContextOpen(false);
     }
 
+    if (requirementToggle) {
+      requirementToggle.addEventListener("click", () => {
+        setRequirementOpen(!requirementOpen);
+      });
+      setRequirementOpen(false);
+    }
+
     if (paramToggle) {
       paramToggle.addEventListener("click", () => {
         setParamEditorOpen(!paramEditorOpen);
@@ -4177,6 +4203,26 @@ UI_HTML = """<!doctype html>
       }
       if (uploadContextToggle) {
         uploadContextToggle.setAttribute("aria-expanded", uploadContextOpen ? "true" : "false");
+      }
+    }
+
+    function setRequirementOpen(open) {
+      requirementOpen = Boolean(open);
+      if (requirementPanel) {
+        requirementPanel.classList.toggle("collapsed", !requirementOpen);
+      }
+      if (requirementToggle) {
+        requirementToggle.textContent = requirementOpen ? "Hide input" : "Open input";
+        requirementToggle.setAttribute("aria-expanded", requirementOpen ? "true" : "false");
+      }
+    }
+
+    function setParametricPanelVisible(visible) {
+      if (paramPanel) {
+        paramPanel.hidden = !visible;
+      }
+      if (!visible) {
+        setParamEditorOpen(false);
       }
     }
 
@@ -4355,6 +4401,7 @@ UI_HTML = """<!doctype html>
       pocRequirementsComplete = false;
       clearGeneratedPocGeometryContext();
       setWorkflowToolsVisible(false);
+      setParametricPanelVisible(false);
       selectedCadEngine = "openscad";
       preferParametric = false;
       meshEditMode = false;
@@ -4368,9 +4415,8 @@ UI_HTML = """<!doctype html>
       lastExport.prompt = "Four Arm Bushing POC requirements";
       lastExport.cadEngine = selectedCadEngine;
       downloadBtn.disabled = true;
-      if (paramPanelTitle) paramPanelTitle.textContent = "Requirement";
-      buildRubberBushingWorkflow(currentEditIntent);
-      setParamEditorOpen(true);
+      renderPocRequirements(currentEditIntent);
+      setRequirementOpen(true);
       updateSummary(currentEditIntent);
     }
 
@@ -4400,10 +4446,9 @@ UI_HTML = """<!doctype html>
       pocRequirementsComplete = false;
       clearGeneratedPocGeometryContext();
       setWorkflowToolsVisible(false);
-      setParamEditorOpen(false);
-      paramControls.innerHTML = '<p class="muted">Select Bushing, then Four Arm Bushing, to load its POC requirements.</p>';
-      if (paramHint) paramHint.textContent = "Parametric input for the POC.";
-      if (paramPanelTitle) paramPanelTitle.textContent = "Requirement";
+      setParametricPanelVisible(false);
+      setRequirementOpen(false);
+      requirementControls.innerHTML = '<p class="muted">Select Bushing, then Four Arm Bushing, to load its POC requirements.</p>';
       chatInput.focus();
       chatInput.setSelectionRange(chatInput.value.length, chatInput.value.length);
     });
@@ -4659,6 +4704,7 @@ UI_HTML = """<!doctype html>
           lastExport.name = exportBaseName({ part_type: payload.filename });
           lastExport.prompt = pendingDraftPrompt || "Exact uploaded geometry";
           downloadBtn.disabled = false;
+          setParametricPanelVisible(true);
           setParamEditorOpen(false);
           setWorkflowToolsVisible(true);
           if (paramControls) {
@@ -8031,9 +8077,9 @@ UI_HTML = """<!doctype html>
     }
 
     function bindPocRequirements() {
-      if (!paramControls) return;
-      const fields = Array.from(paramControls.querySelectorAll("[data-requirement-field]"));
-      const targets = Array.from(paramControls.querySelectorAll("[data-requirement-target]"));
+      if (!requirementControls) return;
+      const fields = Array.from(requirementControls.querySelectorAll("[data-requirement-field]"));
+      const targets = Array.from(requirementControls.querySelectorAll("[data-requirement-target]"));
       const generateButton = document.getElementById("generateRequirementBtn");
       const syncRequirements = () => {
         const innerDiameter = clamp(
@@ -8113,6 +8159,12 @@ UI_HTML = """<!doctype html>
       }
     }
 
+    function renderPocRequirements(intent) {
+      if (!requirementControls) return;
+      requirementControls.innerHTML = pocRequirementsHtml(intent);
+      bindPocRequirements();
+    }
+
     function buildRubberBushingWorkflow(intent) {
       currentEditIntent = normalizeRubberBushingIntent(intent || currentEditIntent || defaultRubberBushingIntent());
       baseGeometry = Object.assign({}, currentEditIntent.geometry || {});
@@ -8121,10 +8173,8 @@ UI_HTML = """<!doctype html>
       lastExport.cadEngine = selectedCadEngine;
       jsonOutput.textContent = JSON.stringify(currentEditIntent, null, 2);
       if (!pocRequirementsComplete) {
-        paramControls.innerHTML = pocRequirementsHtml(currentEditIntent);
-        bindPocRequirements();
-        if (paramPanelTitle) paramPanelTitle.textContent = "Requirement";
-        if (paramHint) paramHint.textContent = "Four Arm Bushing parametric input.";
+        renderPocRequirements(currentEditIntent);
+        setParametricPanelVisible(false);
         renderMeshPanel();
         renderSimPanel();
         return;
@@ -8369,7 +8419,8 @@ UI_HTML = """<!doctype html>
         await render3DPreview(payloadIntent);
         downloadBtn.disabled = false;
         pocRequirementsComplete = false;
-        setParamEditorOpen(false);
+        setRequirementOpen(false);
+        setParametricPanelVisible(false);
         setWorkflowToolsVisible(false);
         summaryBox.innerHTML = `
           <p><strong>Four Arm Bushing generated.</strong> The CAD preview shows the curated <strong>900000.stl</strong> POC geometry.</p>
@@ -8776,6 +8827,7 @@ UI_HTML = """<!doctype html>
       if (!paramControls) {
         return;
       }
+      setParametricPanelVisible(true);
       if (rubberBushingWorkflowActive && (!intent || ["bushing", "rubber_mount"].includes(String(intent.part_type || "").toLowerCase()))) {
         buildRubberBushingWorkflow(intent || currentEditIntent || defaultRubberBushingIntent());
         return;
@@ -8803,9 +8855,8 @@ UI_HTML = """<!doctype html>
       const type = String((intent && intent.part_type) || "unknown").toLowerCase();
       const spec = PART_FIELD_SETS[type];
       if (!intent || !spec) {
-        paramControls.innerHTML = pocRequirementsHtml(currentEditIntent || defaultRubberBushingIntent());
-        bindPocRequirements();
-        if (paramHint) paramHint.textContent = "Parametric input for the POC.";
+        renderPocRequirements(currentEditIntent || defaultRubberBushingIntent());
+        setParametricPanelVisible(false);
         renderMeshPanel();
         renderSimPanel();
         return;
