@@ -4616,24 +4616,33 @@ UI_HTML = """<!doctype html>
         if (payload.clientMesh) {
           try {
             await render3DPreview({ part_type: "uploaded", geometry: {} });
+            const measuredDims = measureBushingFromMesh(payload.clientMesh);
+            const designIntent = defaultFourArmBushingIntent();
+            if (measuredDims) {
+              designIntent.geometry.outer_diameter_mm = measuredDims.outer_diameter_mm;
+              designIntent.geometry.inner_diameter_mm = measuredDims.inner_diameter_mm;
+              designIntent.geometry.height_mm = measuredDims.height_mm;
+            }
+            rubberBushingWorkflowActive = true;
+            activateParametricDesignWorkflow();
+            selectedCadEngine = "openscad";
+            meshMode = "structured";
+            currentEditIntent = applyUploadedBushingPocTopology(designIntent);
+            lastExport.intent = currentEditIntent;
             setWorkflowToolsVisible(true);
             lastExport.name = exportBaseName({ part_type: payload.filename });
-            lastExport.prompt = pendingDraftPrompt || "Exact uploaded Four Arm Bushing geometry";
+            lastExport.prompt = pendingDraftPrompt || "Uploaded Four Arm Bushing design reference";
+            lastExport.cadEngine = selectedCadEngine;
+            jsonOutput.textContent = JSON.stringify(currentEditIntent, null, 2);
             downloadBtn.disabled = false;
-            currentEditIntent = null;
-            setParamEditorOpen(false);
-            if (paramControls) {
-              paramControls.innerHTML = '<p class="muted">The uploaded Four Arm Bushing is shown exactly as supplied. Use Generate mesh below to mesh this geometry.</p>';
-            }
-            if (paramHint) paramHint.textContent = "Uploaded Four Arm Bushing geometry.";
-            renderMeshPanel();
-            renderSimPanel();
-            const measuredDims = measureBushingFromMesh(payload.clientMesh);
+            setParamEditorOpen(true);
+            buildParamControls(currentEditIntent);
+            updateUploadContextTitle("four-arm-bushing");
             const dimensionNote = measuredDims
               ? ` Measured envelope: OD ${measuredDims.outer_diameter_mm} mm, ID ${measuredDims.inner_diameter_mm} mm, height ${measuredDims.height_mm} mm.`
               : "";
             summaryBox.innerHTML = `
-              <p><strong>Uploaded Four Arm Bushing loaded.</strong> The CAD preview uses the uploaded STL surface; no standard parametric template was substituted.${dimensionNote}</p>
+              <p><strong>Uploaded Four Arm Bushing loaded.</strong> The CAD preview uses the uploaded STL surface.${dimensionNote} Parametric Design Space, Target Stiffness, optimization, and PCA tools are ready.</p>
             `;
             appendMsg("bot", `Extracted file context from ${payload.filename}.\n\n${payload.summary}\n\n${meshNote || "Loaded the uploaded STL geometry exactly as supplied."}`);
             contextFile.value = "";
@@ -6740,6 +6749,9 @@ UI_HTML = """<!doctype html>
     }
 
     function exactUploadedGeometryContext() {
+      if (rubberBushingWorkflowActive && pocRequirementsComplete) {
+        return null;
+      }
       if (
         generatedPocGeometryContext &&
         generatedPocGeometryContext.exact_fem &&
