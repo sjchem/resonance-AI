@@ -4587,13 +4587,55 @@ UI_HTML = """<!doctype html>
             await render3DPreview({ part_type: "uploaded", geometry: {} });
             setWorkflowToolsVisible(true);
             lastExport.name = exportBaseName({ part_type: payload.filename });
+            lastExport.prompt = pendingDraftPrompt || "Exact uploaded Four Arm Bushing geometry";
             downloadBtn.disabled = false;
             currentEditIntent = null;
             setParamEditorOpen(false);
-            buildParamControls(null);
+            if (paramControls) {
+              paramControls.innerHTML = '<p class="muted">The uploaded Four Arm Bushing is shown exactly as supplied. Use Generate mesh below to mesh this geometry.</p>';
+            }
+            if (paramHint) paramHint.textContent = "Uploaded Four Arm Bushing geometry.";
+            renderMeshPanel();
+            renderSimPanel();
+            const measuredDims = measureBushingFromMesh(payload.clientMesh);
+            const dimensionNote = measuredDims
+              ? ` Measured envelope: OD ${measuredDims.outer_diameter_mm} mm, ID ${measuredDims.inner_diameter_mm} mm, height ${measuredDims.height_mm} mm.`
+              : "";
+            summaryBox.innerHTML = `
+              <p><strong>Uploaded Four Arm Bushing loaded.</strong> The CAD preview uses the uploaded STL surface; no standard parametric template was substituted.${dimensionNote}</p>
+            `;
+            appendMsg("bot", `Extracted file context from ${payload.filename}.\n\n${payload.summary}\n\n${meshNote || "Loaded the uploaded STL geometry exactly as supplied."}`);
+            contextFile.value = "";
+            completeActivity("Uploaded geometry ready");
+            return;
           } catch (previewError) {
             cleanupViewer();
           }
+        }
+
+        if (payload.exact_fem && payload.exact_fem.supported) {
+          currentEditIntent = null;
+          lastExport.intent = { part_type: "uploaded", geometry: {} };
+          lastExport.name = exportBaseName({ part_type: payload.filename });
+          lastExport.prompt = pendingDraftPrompt || "Exact uploaded geometry";
+          downloadBtn.disabled = false;
+          setParamEditorOpen(false);
+          setWorkflowToolsVisible(true);
+          if (paramControls) {
+            paramControls.innerHTML = '<p class="muted">The uploaded geometry is kept as supplied. Generate its mesh to prepare the exact preview and FEM workflow.</p>';
+          }
+          if (paramHint) paramHint.textContent = "Uploaded geometry.";
+          cleanupViewer();
+          preview.innerHTML = '<div class="placeholder"><p class="muted">Uploaded geometry stored. Select Generate mesh to build its exact volume preview; no parametric template has been substituted.</p></div>';
+          renderMeshPanel();
+          renderSimPanel();
+          summaryBox.innerHTML = `
+            <p><strong>Uploaded geometry ready.</strong> The source file is preserved for exact Gmsh processing. No standard Four Arm Bushing was generated in its place.</p>
+          `;
+          appendMsg("bot", `Extracted file context from ${payload.filename}.\n\n${payload.summary}\n\n${payload.exact_fem.message || "Uploaded geometry stored for exact mesh/FEM."}`);
+          contextFile.value = "";
+          completeActivity("Uploaded geometry ready");
+          return;
         }
 
         const autoBushingDims = payload.clientMesh ? measureBushingFromMesh(payload.clientMesh) : null;
@@ -6626,6 +6668,9 @@ UI_HTML = """<!doctype html>
     }
 
     function meshIntentForRequest() {
+      if (!preferParametric && exactUploadedGeometryContext() && pickUploadedMesh()) {
+        return null;
+      }
       const candidates = [lastExport && lastExport.intent, currentEditIntent];
       for (const candidate of candidates) {
         if (isStructuredBushingIntentClient(candidate)) {
