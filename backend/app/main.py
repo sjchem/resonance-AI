@@ -2644,6 +2644,14 @@ UI_HTML = """<!doctype html>
     .requirement-summary {
       margin-top: 2px;
     }
+    .requirement-condition-grid {
+      grid-template-columns: 1fr;
+      margin-top: 2px;
+    }
+    .requirement-summary .param-primary {
+      width: 100%;
+      margin-top: 4px;
+    }
     .param-form-field {
       display: grid;
       gap: 4px;
@@ -3750,50 +3758,16 @@ UI_HTML = """<!doctype html>
 
     <section class="workspace">
       <section class="workbench left-rail">
-        <section class="rail-card param-panel" id="paramPanel">
+        <section class="rail-card param-panel collapsed" id="paramPanel">
           <div class="section-title param-title">
             <div class="title-head">
               <strong>Requirement</strong>
               <span id="paramHint" class="muted">Parametric input for the POC.</span>
             </div>
-            <button type="button" class="param-toggle" id="paramToggle" aria-expanded="true" aria-controls="paramControls">Hide input</button>
+            <button type="button" class="param-toggle" id="paramToggle" aria-expanded="false" aria-controls="paramControls">Open input</button>
           </div>
           <div id="paramControls" class="param-controls">
-            <div class="param-section poc-requirements" data-rubber-section="requirements">
-              <div class="param-section-title">Selected values</div>
-              <div class="param-form-grid requirement-value-grid">
-                <div class="param-form-field">
-                  <label for="req_inner_diameter">Inner-core diameter (mm)</label>
-                  <input id="req_inner_diameter" data-requirement-field="inner_diameter_mm" type="number" value="28" min="21" max="35" step="0.5">
-                </div>
-                <div class="param-form-field">
-                  <label for="req_inner_core_length">Inner-core length (mm)</label>
-                  <input id="req_inner_core_length" data-requirement-field="inner_core_length_mm" type="number" value="40" min="20" max="71" step="0.5">
-                </div>
-                <div class="param-form-field">
-                  <label for="req_outer_core_length">Outer-core length (mm)</label>
-                  <input id="req_outer_core_length" data-requirement-field="outer_core_length_mm" type="number" value="40" min="20" max="55" step="0.5">
-                </div>
-                <div class="param-form-field">
-                  <label for="req_sample_count">Samples</label>
-                  <select id="req_sample_count" data-requirement-samples>
-                    <option value="50" selected>50</option>
-                    <option value="100">100</option>
-                    <option value="200">200</option>
-                  </select>
-                </div>
-              </div>
-              <div class="best-geometry requirement-summary">
-                <strong>Client conditions</strong>
-                <span>Target Kx: 88.4 N/mm</span>
-                <span>Target Ky: 294.5 N/mm</span>
-                <span>Target Kz: 294.5 N/mm</span>
-                <span>Outer diameter: 76.0 mm</span>
-                <span>Swaging: 3.0 mm</span>
-                <span>Decking: 0.0 mm</span>
-                <span>Internal teeth: no</span>
-              </div>
-            </div>
+            <p class="muted">Select Bushing, then Four Arm Bushing, to load its POC requirements.</p>
           </div>
           <div id="meshResults"></div>
           <div id="simResults"></div>
@@ -4071,7 +4045,7 @@ UI_HTML = """<!doctype html>
     let baseGeometry = null;
     let engineeringChatOpen = false;
     let uploadContextOpen = false;
-    let paramEditorOpen = true;
+    let paramEditorOpen = false;
     let selectedCadEngine = "cadquery";
     let rubberBushingWorkflowActive = false;
     let rubberBushingTab = "space";
@@ -4149,8 +4123,7 @@ UI_HTML = """<!doctype html>
       paramToggle.addEventListener("click", () => {
         setParamEditorOpen(!paramEditorOpen);
       });
-      setParamEditorOpen(true);
-      bindPocRequirements();
+      setParamEditorOpen(false);
     }
 
     function setEngineeringChatOpen(open) {
@@ -4334,6 +4307,26 @@ UI_HTML = """<!doctype html>
       return family.items.find((item) => item.key === key) || null;
     }
 
+    function activateFourArmBushingRequirements() {
+      rubberBushingWorkflowActive = true;
+      selectedCadEngine = "openscad";
+      preferParametric = false;
+      meshEditMode = false;
+      overrideMeshFaces = null;
+      lastMeshResult = null;
+      lastStaticStiffness = null;
+      simShown = false;
+      currentEditIntent = defaultFourArmBushingIntent();
+      lastExport.intent = currentEditIntent;
+      lastExport.name = "four_arm_bushing";
+      lastExport.prompt = "Four Arm Bushing POC requirements";
+      lastExport.cadEngine = selectedCadEngine;
+      downloadBtn.disabled = true;
+      buildRubberBushingWorkflow(currentEditIntent);
+      setParamEditorOpen(true);
+      updateSummary(currentEditIntent);
+    }
+
     familyGrid.addEventListener("click", (event) => {
       const button = event.target.closest("[data-family]");
       if (!button) return;
@@ -4352,6 +4345,14 @@ UI_HTML = """<!doctype html>
       }
       chatInput.value = item.prompt;
       autoResizeChatInput();
+      if (key === "four-arm-bushing") {
+        activateFourArmBushingRequirements();
+        return;
+      }
+      rubberBushingWorkflowActive = false;
+      setParamEditorOpen(false);
+      paramControls.innerHTML = '<p class="muted">Select Bushing, then Four Arm Bushing, to load its POC requirements.</p>';
+      if (paramHint) paramHint.textContent = "Parametric input for the POC.";
       chatInput.focus();
       chatInput.setSelectionRange(chatInput.value.length, chatInput.value.length);
     });
@@ -5820,6 +5821,7 @@ UI_HTML = """<!doctype html>
 
     function simulationReportPayload() {
       const intent = simulationDesignIntent() || {};
+      const reportGeometry = intent.geometry || {};
       const src = simSourceDims();
       const analytical = src ? estimateBushingModal(src.geom, src.material) : null;
       const nameSource = (targetStiffnessResult && targetStiffnessResult.case_id) ||
@@ -5843,10 +5845,14 @@ UI_HTML = """<!doctype html>
           inner_core_length_max_mm: targetSearchInputs.innerLengthMax,
           outer_core_length_min_mm: targetSearchInputs.outerLengthMin,
           outer_core_length_max_mm: targetSearchInputs.outerLengthMax,
-          outer_diameter_mm: CLIENT_BUSHING_SPEC.outer_diameter_mm,
-          swaging_value_mm: CLIENT_BUSHING_SPEC.swaging_value_mm,
-          decking_value_mm: CLIENT_BUSHING_SPEC.decking_value_mm,
-          internal_teeth: CLIENT_BUSHING_SPEC.internal_teeth,
+          outer_diameter_mm: Number(reportGeometry.outer_diameter_mm) || CLIENT_BUSHING_SPEC.outer_diameter_mm,
+          swaging_value_mm: Number.isFinite(Number(reportGeometry.swaging_value_mm))
+            ? Number(reportGeometry.swaging_value_mm)
+            : CLIENT_BUSHING_SPEC.swaging_value_mm,
+          decking_value_mm: Number.isFinite(Number(reportGeometry.decking_value_mm))
+            ? Number(reportGeometry.decking_value_mm)
+            : CLIENT_BUSHING_SPEC.decking_value_mm,
+          internal_teeth: boolValue(reportGeometry.internal_teeth, CLIENT_BUSHING_SPEC.internal_teeth),
         },
         simulation_settings: {
           requested_modes: femBatchCount,
@@ -7783,6 +7789,26 @@ UI_HTML = """<!doctype html>
       };
     }
 
+    function defaultFourArmBushingIntent() {
+      const intent = applyUploadedBushingPocTopology(defaultRubberBushingIntent());
+      intent.geometry.outer_diameter_mm = CLIENT_BUSHING_SPEC.outer_diameter_mm;
+      intent.geometry.inner_diameter_mm = 28;
+      intent.geometry.inner_core_length_mm = 45;
+      intent.geometry.outer_core_length_mm = 40;
+      intent.geometry.inner_sleeve_length_mm = 45;
+      intent.geometry.height_mm = 45;
+      intent.geometry.swaging_value_mm = CLIENT_BUSHING_SPEC.swaging_value_mm;
+      intent.geometry.decking_value_mm = CLIENT_BUSHING_SPEC.decking_value_mm;
+      intent.geometry.internal_teeth = CLIENT_BUSHING_SPEC.internal_teeth;
+      intent.simulation_hints.target_stiffness_n_per_mm = {
+        kx: CLIENT_BUSHING_SPEC.target_kx_n_mm,
+        ky: CLIENT_BUSHING_SPEC.target_ky_n_mm,
+        kz: CLIENT_BUSHING_SPEC.target_kz_n_mm,
+      };
+      intent.ui_workflow = { product_family: "bushing", bushing_type: "four-arm-bushing" };
+      return normalizeRubberBushingIntent(intent);
+    }
+
     function cloneJson(value) {
       return JSON.parse(JSON.stringify(value || {}));
     }
@@ -7855,33 +7881,44 @@ UI_HTML = """<!doctype html>
     function isRubberBushingWorkflow(intent) {
       const type = String((intent && intent.part_type) || "").toLowerCase();
       const workflow = intent && intent.ui_workflow;
-      return rubberBushingWorkflowActive && (type === "bushing" || type === "rubber_mount") && (!workflow || workflow.bushing_type === "rubber-bushing");
+      const bushingType = workflow && workflow.bushing_type;
+      return rubberBushingWorkflowActive &&
+        (type === "bushing" || type === "rubber_mount") &&
+        (!workflow || bushingType === "rubber-bushing" || bushingType === "four-arm-bushing");
     }
 
     function pocRequirementsHtml(intent) {
       const normalized = normalizeRubberBushingIntent(intent || currentEditIntent || defaultRubberBushingIntent());
       const geom = normalized.geometry;
-      const samples = [50, 100, 200].includes(Number(targetSearchInputs.samples)) ? Number(targetSearchInputs.samples) : 50;
-      const sampleOptions = [50, 100, 200].map((value) => (
-        '<option value="' + value + '"' + (samples === value ? ' selected' : '') + '>' + value + '</option>'
-      )).join("");
+      const targets = normalized.simulation_hints && normalized.simulation_hints.target_stiffness_n_per_mm
+        ? normalized.simulation_hints.target_stiffness_n_per_mm
+        : targetSearchInputs;
+      const swaging = Number.isFinite(Number(geom.swaging_value_mm))
+        ? Number(geom.swaging_value_mm)
+        : CLIENT_BUSHING_SPEC.swaging_value_mm;
+      const decking = Number.isFinite(Number(geom.decking_value_mm))
+        ? Number(geom.decking_value_mm)
+        : CLIENT_BUSHING_SPEC.decking_value_mm;
+      const internalTeeth = boolValue(geom.internal_teeth, CLIENT_BUSHING_SPEC.internal_teeth);
       return '<div class="param-section poc-requirements" data-rubber-section="requirements">' +
         '<div class="param-section-title">Selected values</div>' +
         '<div class="param-form-grid requirement-value-grid">' +
         '<div class="param-form-field"><label for="req_inner_diameter">Inner-core diameter (mm)</label><input id="req_inner_diameter" data-requirement-field="inner_diameter_mm" type="number" value="' + formatNumber(geom.inner_diameter_mm, 1) + '" min="' + CLIENT_BUSHING_SPEC.inner_diameter_min_mm + '" max="' + CLIENT_BUSHING_SPEC.inner_diameter_max_mm + '" step="0.5"></div>' +
         '<div class="param-form-field"><label for="req_inner_core_length">Inner-core length (mm)</label><input id="req_inner_core_length" data-requirement-field="inner_core_length_mm" type="number" value="' + formatNumber(geom.inner_core_length_mm, 1) + '" min="' + CLIENT_BUSHING_SPEC.inner_core_length_min_mm + '" max="' + CLIENT_BUSHING_SPEC.inner_core_length_max_mm + '" step="0.5"></div>' +
         '<div class="param-form-field"><label for="req_outer_core_length">Outer-core length (mm)</label><input id="req_outer_core_length" data-requirement-field="outer_core_length_mm" type="number" value="' + formatNumber(geom.outer_core_length_mm, 1) + '" min="' + CLIENT_BUSHING_SPEC.outer_core_length_min_mm + '" max="' + CLIENT_BUSHING_SPEC.outer_core_length_max_mm + '" step="0.5"></div>' +
-        '<div class="param-form-field"><label for="req_sample_count">Samples</label><select id="req_sample_count" data-requirement-samples>' + sampleOptions + '</select></div>' +
         '</div>' +
         '<div class="best-geometry requirement-summary">' +
         '<strong>Client conditions</strong>' +
-        '<span>Target Kx: ' + formatNumber(CLIENT_BUSHING_SPEC.target_kx_n_mm, 1) + ' N/mm</span>' +
-        '<span>Target Ky: ' + formatNumber(CLIENT_BUSHING_SPEC.target_ky_n_mm, 1) + ' N/mm</span>' +
-        '<span>Target Kz: ' + formatNumber(CLIENT_BUSHING_SPEC.target_kz_n_mm, 1) + ' N/mm</span>' +
-        '<span>Outer diameter: ' + formatNumber(CLIENT_BUSHING_SPEC.outer_diameter_mm, 1) + ' mm</span>' +
-        '<span>Swaging: ' + formatNumber(CLIENT_BUSHING_SPEC.swaging_value_mm, 1) + ' mm</span>' +
-        '<span>Decking: ' + formatNumber(CLIENT_BUSHING_SPEC.decking_value_mm, 1) + ' mm</span>' +
-        '<span>Internal teeth: no</span>' +
+        '<div class="param-form-grid requirement-condition-grid">' +
+        '<div class="param-form-field"><label for="req_outer_diameter">Outer diameter (mm)</label><input id="req_outer_diameter" data-requirement-field="outer_diameter_mm" type="number" value="' + formatNumber(geom.outer_diameter_mm, 1) + '" min="1" step="0.5"></div>' +
+        '<div class="param-form-field"><label for="req_swaging">Swaging (mm)</label><input id="req_swaging" data-requirement-field="swaging_value_mm" type="number" value="' + formatNumber(swaging, 1) + '" min="0" step="0.1"></div>' +
+        '<div class="param-form-field"><label for="req_target_kx">Target Kx (N/mm)</label><input id="req_target_kx" data-requirement-target="kx" type="number" value="' + formatNumber(targets.kx || CLIENT_BUSHING_SPEC.target_kx_n_mm, 1) + '" min="0.1" step="0.1"></div>' +
+        '<div class="param-form-field"><label for="req_target_ky">Target Ky (N/mm)</label><input id="req_target_ky" data-requirement-target="ky" type="number" value="' + formatNumber(targets.ky || CLIENT_BUSHING_SPEC.target_ky_n_mm, 1) + '" min="0.1" step="0.1"></div>' +
+        '<div class="param-form-field"><label for="req_target_kz">Target Kz (N/mm)</label><input id="req_target_kz" data-requirement-target="kz" type="number" value="' + formatNumber(targets.kz || CLIENT_BUSHING_SPEC.target_kz_n_mm, 1) + '" min="0.1" step="0.1"></div>' +
+        '<div class="param-form-field"><label for="req_decking">Decking (mm)</label><input id="req_decking" data-requirement-field="decking_value_mm" type="number" value="' + formatNumber(decking, 1) + '" min="0" step="0.1"></div>' +
+        '<div class="param-form-field"><label for="req_internal_teeth">Internal teeth</label><select id="req_internal_teeth" data-requirement-field="internal_teeth"><option value="false"' + (!internalTeeth ? ' selected' : '') + '>No</option><option value="true"' + (internalTeeth ? ' selected' : '') + '>Yes</option></select></div>' +
+        '</div>' +
+        '<button type="button" class="param-primary" id="generateRequirementBtn">Generate</button>' +
         '</div>' +
         '</div>';
     }
@@ -7889,7 +7926,8 @@ UI_HTML = """<!doctype html>
     function bindPocRequirements() {
       if (!paramControls) return;
       const fields = Array.from(paramControls.querySelectorAll("[data-requirement-field]"));
-      const sampleSelect = paramControls.querySelector("[data-requirement-samples]");
+      const targets = Array.from(paramControls.querySelectorAll("[data-requirement-target]"));
+      const generateButton = document.getElementById("generateRequirementBtn");
       const syncRequirements = () => {
         const innerDiameter = clamp(
           readFormNumber("req_inner_diameter", 28),
@@ -7906,32 +7944,66 @@ UI_HTML = """<!doctype html>
           CLIENT_BUSHING_SPEC.outer_core_length_min_mm,
           CLIENT_BUSHING_SPEC.outer_core_length_max_mm
         );
+        const outerDiameter = Math.max(innerDiameter + 1, readPositiveNumber(readFormNumber("req_outer_diameter", 76), 76));
+        const swaging = readNonNegativeNumber(readFormNumber("req_swaging", 3), 3);
+        const decking = readNonNegativeNumber(readFormNumber("req_decking", 0), 0);
+        const targetKx = readPositiveNumber(readFormNumber("req_target_kx", 88.4), 88.4);
+        const targetKy = readPositiveNumber(readFormNumber("req_target_ky", 294.5), 294.5);
+        const targetKz = readPositiveNumber(readFormNumber("req_target_kz", 294.5), 294.5);
+        const internalTeethInput = document.getElementById("req_internal_teeth");
+        const internalTeeth = Boolean(internalTeethInput && internalTeethInput.value === "true");
         targetSearchInputs = Object.assign({}, targetSearchInputs, {
+          kx: targetKx,
+          ky: targetKy,
+          kz: targetKz,
           idMin: innerDiameter,
           idMax: innerDiameter,
           innerLengthMin: innerLength,
           innerLengthMax: innerLength,
           outerLengthMin: outerLength,
           outerLengthMax: outerLength,
-          samples: clampInt(readFormNumber("req_sample_count", 50), 1, 200, 50),
         });
-        if (!currentEditIntent) return;
-        const normalized = normalizeRubberBushingIntent(currentEditIntent);
+        const normalized = normalizeRubberBushingIntent(currentEditIntent || defaultFourArmBushingIntent());
+        normalized.geometry.outer_diameter_mm = outerDiameter;
         normalized.geometry.inner_diameter_mm = innerDiameter;
         normalized.geometry.inner_core_length_mm = innerLength;
         normalized.geometry.outer_core_length_mm = outerLength;
+        normalized.geometry.inner_sleeve_diameter_mm = normalized.geometry.inner_sleeve ? innerDiameter + 3 : innerDiameter;
+        normalized.geometry.inner_sleeve_thickness_mm = normalized.geometry.inner_sleeve ? 1.5 : 0;
         normalized.geometry.inner_sleeve_length_mm = normalized.geometry.inner_sleeve ? innerLength : 0;
         normalized.geometry.height_mm = Math.max(innerLength, outerLength, 1);
+        normalized.geometry.slot_axial_height_mm = normalized.geometry.height_mm;
+        normalized.geometry.swaging_value_mm = swaging;
+        normalized.geometry.decking_value_mm = decking;
+        normalized.geometry.internal_teeth = internalTeeth;
+        normalized.geometry.rubber_thickness_mm = Math.max(
+          0,
+          (outerDiameter - normalized.geometry.inner_sleeve_diameter_mm) / 2 - normalized.geometry.outer_sleeve_thickness_mm
+        );
+        normalized.simulation_hints.target_stiffness_n_per_mm = { kx: targetKx, ky: targetKy, kz: targetKz };
+        normalized.ui_workflow = { product_family: "bushing", bushing_type: "four-arm-bushing" };
         currentEditIntent = normalizeRubberBushingIntent(normalized);
         lastExport.intent = currentEditIntent;
         jsonOutput.textContent = JSON.stringify(currentEditIntent, null, 2);
         updateSummary(currentEditIntent);
         lastMeshResult = null;
         lastStaticStiffness = null;
-        scheduleParamRender();
+        return currentEditIntent;
       };
-      for (const field of fields) field.addEventListener("change", syncRequirements);
-      if (sampleSelect) sampleSelect.addEventListener("change", syncRequirements);
+      for (const field of fields.concat(targets)) field.addEventListener("change", syncRequirements);
+      if (generateButton) {
+        generateButton.addEventListener("click", async () => {
+          const intent = syncRequirements();
+          generateButton.disabled = true;
+          generateButton.textContent = "Generating...";
+          try {
+            await generateRubberParametricCad(intent);
+          } finally {
+            generateButton.disabled = false;
+            generateButton.textContent = "Generate";
+          }
+        });
+      }
     }
 
     function buildRubberBushingWorkflow(intent) {
@@ -7943,7 +8015,7 @@ UI_HTML = """<!doctype html>
       jsonOutput.textContent = JSON.stringify(currentEditIntent, null, 2);
       paramControls.innerHTML = pocRequirementsHtml(currentEditIntent);
       bindPocRequirements();
-      if (paramHint) paramHint.textContent = "Parametric input for the POC.";
+      if (paramHint) paramHint.textContent = "Four Arm Bushing parametric input.";
       renderMeshPanel();
       renderSimPanel();
     }
