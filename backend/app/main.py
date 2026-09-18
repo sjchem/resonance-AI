@@ -3769,7 +3769,7 @@ UI_HTML = """<!doctype html>
         <section class="rail-card param-panel collapsed" id="paramPanel">
           <div class="section-title param-title">
             <div class="title-head">
-              <strong>Requirement</strong>
+              <strong id="paramPanelTitle">Requirement</strong>
               <span id="paramHint" class="muted">Parametric input for the POC.</span>
             </div>
             <button type="button" class="param-toggle" id="paramToggle" aria-expanded="false" aria-controls="paramControls">Open input</button>
@@ -3996,6 +3996,7 @@ UI_HTML = """<!doctype html>
     const paramToggle = document.getElementById("paramToggle");
     const paramControls = document.getElementById("paramControls");
     const paramHint = document.getElementById("paramHint");
+    const paramPanelTitle = document.getElementById("paramPanelTitle");
     const workflowToolsPanel = document.getElementById("workflowToolsPanel");
     const meshResults = document.getElementById("meshResults");
     const simResults = document.getElementById("simResults");
@@ -4063,6 +4064,7 @@ UI_HTML = """<!doctype html>
     let selectedCadEngine = "cadquery";
     let rubberBushingWorkflowActive = false;
     let rubberBushingTab = "space";
+    let pocRequirementsComplete = false;
     let designSpaceCases = [];
     let targetStiffnessResult = null;
     const CLIENT_BUSHING_SPEC = Object.freeze({
@@ -4093,6 +4095,20 @@ UI_HTML = """<!doctype html>
       outerLengthMax: CLIENT_BUSHING_SPEC.outer_core_length_max_mm,
       samples: 50,
     };
+
+    function activateParametricDesignWorkflow() {
+      pocRequirementsComplete = true;
+      rubberBushingTab = "space";
+      targetSearchInputs = Object.assign({}, targetSearchInputs, {
+        idMin: CLIENT_BUSHING_SPEC.inner_diameter_min_mm,
+        idMax: CLIENT_BUSHING_SPEC.inner_diameter_max_mm,
+        innerLengthMin: CLIENT_BUSHING_SPEC.inner_core_length_min_mm,
+        innerLengthMax: CLIENT_BUSHING_SPEC.inner_core_length_max_mm,
+        outerLengthMin: CLIENT_BUSHING_SPEC.outer_core_length_min_mm,
+        outerLengthMax: CLIENT_BUSHING_SPEC.outer_core_length_max_mm,
+      });
+      if (paramPanelTitle) paramPanelTitle.textContent = "Parametric input";
+    }
     let paramRenderQueued = false;
     let uploadNeedsParametricConfirmation = false;
     // When true, ignore the uploaded mesh and render the parametric model instead
@@ -4336,6 +4352,7 @@ UI_HTML = """<!doctype html>
 
     function activateFourArmBushingRequirements() {
       rubberBushingWorkflowActive = true;
+      pocRequirementsComplete = false;
       clearGeneratedPocGeometryContext();
       setWorkflowToolsVisible(false);
       selectedCadEngine = "openscad";
@@ -4351,6 +4368,7 @@ UI_HTML = """<!doctype html>
       lastExport.prompt = "Four Arm Bushing POC requirements";
       lastExport.cadEngine = selectedCadEngine;
       downloadBtn.disabled = true;
+      if (paramPanelTitle) paramPanelTitle.textContent = "Requirement";
       buildRubberBushingWorkflow(currentEditIntent);
       setParamEditorOpen(true);
       updateSummary(currentEditIntent);
@@ -4379,11 +4397,13 @@ UI_HTML = """<!doctype html>
         return;
       }
       rubberBushingWorkflowActive = false;
+      pocRequirementsComplete = false;
       clearGeneratedPocGeometryContext();
       setWorkflowToolsVisible(false);
       setParamEditorOpen(false);
       paramControls.innerHTML = '<p class="muted">Select Bushing, then Four Arm Bushing, to load its POC requirements.</p>';
       if (paramHint) paramHint.textContent = "Parametric input for the POC.";
+      if (paramPanelTitle) paramPanelTitle.textContent = "Requirement";
       chatInput.focus();
       chatInput.setSelectionRange(chatInput.value.length, chatInput.value.length);
     });
@@ -4671,6 +4691,7 @@ UI_HTML = """<!doctype html>
           designSpaceCases = [];
           targetStiffnessResult = null;
         }
+        activateParametricDesignWorkflow();
 
         const messageParts = [`Extracted file context from ${payload.filename}.`, payload.summary];
         if (meshNote) {
@@ -5513,7 +5534,7 @@ UI_HTML = """<!doctype html>
       preferParametric = false;
       uploadNeedsParametricConfirmation = false;
       rubberBushingWorkflowActive = true;
-      rubberBushingTab = "space";
+      activateParametricDesignWorkflow();
       targetStiffnessResult = null;
       currentEditIntent = intent;
       lastExport.intent = intent;
@@ -8110,9 +8131,29 @@ UI_HTML = """<!doctype html>
       lastExport.name = "rubber_bushing";
       lastExport.cadEngine = selectedCadEngine;
       jsonOutput.textContent = JSON.stringify(currentEditIntent, null, 2);
-      paramControls.innerHTML = pocRequirementsHtml(currentEditIntent);
-      bindPocRequirements();
-      if (paramHint) paramHint.textContent = "Four Arm Bushing parametric input.";
+      if (!pocRequirementsComplete) {
+        paramControls.innerHTML = pocRequirementsHtml(currentEditIntent);
+        bindPocRequirements();
+        if (paramPanelTitle) paramPanelTitle.textContent = "Requirement";
+        if (paramHint) paramHint.textContent = "Four Arm Bushing parametric input.";
+        renderMeshPanel();
+        renderSimPanel();
+        return;
+      }
+      if (!["space", "target"].includes(rubberBushingTab)) {
+        rubberBushingTab = "space";
+      }
+      const tabs = [
+        ["space", "Design Space"],
+        ["target", "Target Stiffness"],
+      ].map(([key, label]) => (
+        '<button type="button" class="param-tab' + (rubberBushingTab === key ? ' active' : '') + '" data-rubber-tab="' + key + '">' + label + '</button>'
+      )).join("");
+      const body = rubberBushingTab === "target" ? targetStiffnessHtml() : designSpaceHtml();
+      paramControls.innerHTML = cadEngineSelectorHtml() + '<div class="rubber-workflow"><div class="param-tabs">' + tabs + '</div>' + body + '</div>';
+      bindRubberBushingWorkflow();
+      if (paramPanelTitle) paramPanelTitle.textContent = "Parametric input";
+      if (paramHint) paramHint.textContent = "Explore design variants or find geometry from target stiffness.";
       renderMeshPanel();
       renderSimPanel();
     }
@@ -8246,6 +8287,7 @@ UI_HTML = """<!doctype html>
 
     async function generateRubberParametricCad(intent) {
       const payloadIntent = normalizeRubberBushingIntent(intent || currentEditIntent || defaultRubberBushingIntent());
+      clearGeneratedPocGeometryContext();
       uploadNeedsParametricConfirmation = false;
       startActivity("Generating CAD", ["Reading structured JSON", "Calling CAD API", "Rendering preview"]);
       try {
@@ -8312,19 +8354,15 @@ UI_HTML = """<!doctype html>
           prompt_context: "Curated Four Arm Bushing POC geometry from 900000.stl.",
           clientMesh: mesh,
           exact_fem: {
-            supported: true,
+            supported: false,
             source_format: "STL",
-            mesh_strategy: "uploaded_geometry_tetra",
-            message: "The curated Four Arm Bushing STL is available for exact Gmsh and FEM processing.",
+            mesh_strategy: "preview_only",
+            message: "The curated Four Arm Bushing STL is a POC preview; analysis uses the parametric design workflow.",
           },
           upload_data_base64: arrayBufferToBase64(buffer),
           upload_filename: "900000.stl",
           upload_content_type: "model/stl",
         };
-        attachmentContexts.push(generatedPocGeometryContext);
-        pendingDraftPrompt = draftPromptFromAttachments();
-        renderAttachmentList();
-        setUploadContextOpen(true);
         preferParametric = false;
         meshEditMode = false;
         overrideMeshFaces = null;
@@ -8341,6 +8379,9 @@ UI_HTML = """<!doctype html>
         simShown = false;
         await render3DPreview(payloadIntent);
         downloadBtn.disabled = false;
+        activateParametricDesignWorkflow();
+        buildRubberBushingWorkflow(payloadIntent);
+        setParamEditorOpen(true);
         setWorkflowToolsVisible(true);
         renderMeshPanel();
         renderSimPanel();
