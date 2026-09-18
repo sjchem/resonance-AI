@@ -4041,6 +4041,7 @@ UI_HTML = """<!doctype html>
     let activityTimer = null;
     let requestContext = [];
     let attachmentContexts = [];
+    let generatedPocGeometryContext = null;
     let pendingDraftPrompt = "";
     let chatHistory = [];
     let lastExport = { mesh: null, canvas: null, intent: null, prompt: "", name: "model" };
@@ -4329,6 +4330,7 @@ UI_HTML = """<!doctype html>
 
     function activateFourArmBushingRequirements() {
       rubberBushingWorkflowActive = true;
+      generatedPocGeometryContext = null;
       setWorkflowToolsVisible(false);
       selectedCadEngine = "openscad";
       preferParametric = false;
@@ -4371,6 +4373,7 @@ UI_HTML = """<!doctype html>
         return;
       }
       rubberBushingWorkflowActive = false;
+      generatedPocGeometryContext = null;
       setWorkflowToolsVisible(false);
       setParamEditorOpen(false);
       paramControls.innerHTML = '<p class="muted">Select Bushing, then Four Arm Bushing, to load its POC requirements.</p>';
@@ -4453,6 +4456,7 @@ UI_HTML = """<!doctype html>
         preferParametric = false;
         meshEditMode = false;
         overrideMeshFaces = null;
+        generatedPocGeometryContext = null;
         rubberBushingWorkflowActive = false;
         lastMeshResult = null;
         lastStaticStiffness = null;
@@ -4510,6 +4514,7 @@ UI_HTML = """<!doctype html>
       meshEditMode = false;
       overrideMeshFaces = null;
       editableMesh = null;
+      generatedPocGeometryContext = null;
       currentEditIntent = null;
       baseGeometry = null;
       lastExport.intent = null;
@@ -5354,6 +5359,9 @@ UI_HTML = """<!doctype html>
     }
 
     function pickUploadedMesh() {
+      if (generatedPocGeometryContext && generatedPocGeometryContext.clientMesh) {
+        return generatedPocGeometryContext.clientMesh;
+      }
       for (let i = attachmentContexts.length - 1; i >= 0; i -= 1) {
         if (attachmentContexts[i] && attachmentContexts[i].clientMesh) {
           return attachmentContexts[i].clientMesh;
@@ -6702,6 +6710,14 @@ UI_HTML = """<!doctype html>
     }
 
     function exactUploadedGeometryContext() {
+      if (
+        generatedPocGeometryContext &&
+        generatedPocGeometryContext.exact_fem &&
+        generatedPocGeometryContext.exact_fem.supported &&
+        (generatedPocGeometryContext.upload_id || generatedPocGeometryContext.upload_data_base64)
+      ) {
+        return generatedPocGeometryContext;
+      }
       for (let i = attachmentContexts.length - 1; i >= 0; i -= 1) {
         const context = attachmentContexts[i];
         if (context && context.exact_fem && context.exact_fem.supported && (context.upload_id || context.upload_data_base64)) {
@@ -8069,7 +8085,7 @@ UI_HTML = """<!doctype html>
           generateButton.disabled = true;
           generateButton.textContent = "Generating...";
           try {
-            await generateRubberParametricCad(intent);
+            await generateFourArmPocCad(intent);
           } finally {
             generateButton.disabled = false;
             generateButton.textContent = "Generate";
@@ -8254,6 +8270,74 @@ UI_HTML = """<!doctype html>
       } catch (error) {
         failActivity("CAD failed");
         appendMsg("bot", "Parametric CAD failed: " + (error && error.message ? error.message : error));
+      }
+    }
+
+    async function generateFourArmPocCad(intent) {
+      const payloadIntent = normalizeRubberBushingIntent(intent || currentEditIntent || defaultFourArmBushingIntent());
+      uploadNeedsParametricConfirmation = false;
+      startActivity("Generating Four Arm Bushing", [
+        "Loading POC reference geometry",
+        "Preparing exact STL preview",
+        "Rendering CAD model",
+      ]);
+      try {
+        const response = await fetch("/static/models/four_arm_bushing_900000.stl");
+        if (!response.ok) {
+          throw new Error("The Four Arm Bushing POC model could not be loaded.");
+        }
+        const buffer = await response.arrayBuffer();
+        const mesh = parseStlMesh(buffer, "900000.stl");
+        if (!mesh || !mesh.faces || !mesh.faces.length) {
+          throw new Error("The Four Arm Bushing POC STL contains no displayable surface triangles.");
+        }
+
+        generatedPocGeometryContext = {
+          filename: "900000.stl",
+          content_type: "model/stl",
+          file_kind: "cad",
+          summary: "Curated Four Arm Bushing POC geometry.",
+          prompt_context: "Curated Four Arm Bushing POC geometry from 900000.stl.",
+          clientMesh: mesh,
+          exact_fem: {
+            supported: true,
+            source_format: "STL",
+            mesh_strategy: "uploaded_geometry_tetra",
+            message: "The curated Four Arm Bushing STL is available for exact Gmsh and FEM processing.",
+          },
+          upload_data_base64: arrayBufferToBase64(buffer),
+          upload_filename: "900000.stl",
+          upload_content_type: "model/stl",
+        };
+        preferParametric = false;
+        meshEditMode = false;
+        overrideMeshFaces = null;
+        editableMesh = null;
+        currentEditIntent = payloadIntent;
+        lastExport.intent = payloadIntent;
+        lastExport.name = "four_arm_bushing_900000";
+        lastExport.prompt = "Curated Four Arm Bushing POC geometry from 900000.stl";
+        lastExport.cadEngine = "stl";
+        jsonOutput.textContent = JSON.stringify(payloadIntent, null, 2);
+        lastMeshResult = null;
+        lastShapePcaResult = null;
+        lastStaticStiffness = null;
+        simShown = false;
+        await render3DPreview(payloadIntent);
+        downloadBtn.disabled = false;
+        setWorkflowToolsVisible(true);
+        renderMeshPanel();
+        renderSimPanel();
+        summaryBox.innerHTML = `
+          <p><strong>Four Arm Bushing generated.</strong> The CAD preview shows the curated <strong>900000.stl</strong> POC geometry. The selected requirement values are retained for stiffness targets and engineering review.</p>
+        `;
+        completeActivity("Four Arm Bushing ready");
+        return true;
+      } catch (error) {
+        generatedPocGeometryContext = null;
+        failActivity("CAD failed");
+        appendMsg("bot", "Four Arm Bushing generation failed: " + (error && error.message ? error.message : error));
+        return false;
       }
     }
 

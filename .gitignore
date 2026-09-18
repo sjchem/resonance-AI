@@ -19,4 +19,8 @@ test/
 *.vtk
 *.obj
 
+# Curated Four Arm Bushing asset used by the deployed POC Generate action.
+!backend/app/static/models/
+!backend/app/static/models/four_arm_bushing_900000.stl
+
 .DS_Store
