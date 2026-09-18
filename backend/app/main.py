@@ -8482,10 +8482,7 @@ UI_HTML = """<!doctype html>
     async function loadVariant(index) {
       const item = designSpaceCases[index];
       if (!item) return;
-      const keptUploadedMesh = applyRubberDesignIntent(item.intent);
-      if (!keptUploadedMesh) {
-        await generateRubberParametricCad(currentEditIntent);
-      }
+      applyRubberDesignIntent(item.intent);
       rubberBushingTab = "space";
       buildParamControls(currentEditIntent);
     }
@@ -8500,14 +8497,14 @@ UI_HTML = """<!doctype html>
       lastMeshResult = null;
       lastShapePcaResult = null;
       lastStaticStiffness = null;
-      if (meshEditMode && editableMesh) {
+      const referenceMesh = pickUploadedMesh();
+      if (referenceMesh) {
         preferParametric = false;
-        overrideMeshFaces = warpEditableMeshFaces(currentEditIntent.geometry);
+        meshEditMode = false;
+        overrideMeshFaces = null;
         render3DPreview(currentEditIntent).catch(() => {});
-        updateSimEstimate();
-        return true;
       }
-      return false;
+      updateSimEstimate();
     }
 
     function captureTargetSearchInputs() {
@@ -8576,10 +8573,7 @@ UI_HTML = """<!doctype html>
           if (!best.withinTolerance) {
             appendMsg("bot", "The trained static-FEM surrogate did not find a candidate inside the 10% tolerance. The closest prediction is shown and should be verified with Static K.");
           }
-          const keptUploadedMesh = applyRubberDesignIntent(best.intent);
-          if (!keptUploadedMesh) {
-            await generateRubberParametricCad(currentEditIntent);
-          }
+          applyRubberDesignIntent(best.intent);
           rubberBushingTab = "target";
           buildParamControls(currentEditIntent);
           return;
@@ -8632,10 +8626,7 @@ UI_HTML = """<!doctype html>
       if (!best.withinTolerance) {
         appendMsg("bot", "No design in the client bounds reached the 10% stiffness tolerance with the current screening model. The closest candidate is shown for review; validate or calibrate it with directional static FEM or client test data.");
       }
-      const keptUploadedMesh = applyRubberDesignIntent(best.intent);
-      if (!keptUploadedMesh) {
-        await generateRubberParametricCad(currentEditIntent);
-      }
+      applyRubberDesignIntent(best.intent);
       rubberBushingTab = "target";
       buildParamControls(currentEditIntent);
     }
