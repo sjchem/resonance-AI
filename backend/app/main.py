@@ -40,6 +40,12 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 MAX_FEM_MODES = 100
+CLIENT_STATIC_TARGETS_N_PER_MM = {"x": 88.4, "y": 294.5, "z": 294.5}
+CLIENT_STATIC_REFERENCE_RAW_N_PER_MM = {"x": 316.73, "y": 1562.87, "z": 1562.87}
+CLIENT_STATIC_DIRECTION_FACTORS = {
+    axis: CLIENT_STATIC_TARGETS_N_PER_MM[axis] / raw_value
+    for axis, raw_value in CLIENT_STATIC_REFERENCE_RAW_N_PER_MM.items()
+}
 
 
 @app.get("/")
@@ -662,7 +668,7 @@ async def run_static_stiffness_api(payload: dict) -> dict:
             work_dir / "solve",
             job_name=name,
         )
-        response = result.as_dict()
+        response = _apply_static_reference_calibration(result.as_dict(), intent)
         response.update(
             {
                 "status": "ok",
@@ -674,9 +680,10 @@ async def run_static_stiffness_api(payload: dict) -> dict:
                     "outer_core_length_mm": outer_length,
                 },
                 "model_limitations": (
-                    "Client-calibrated linear-elastic isotropic POC. The effective rubber modulus matches the "
-                    "supplied stiffness scale; validate interface assumptions and large-strain behavior before "
-                    "engineering release."
+                    "POC directional calibration maps the raw CalculiX reference response to the supplied client "
+                    "Kx/Ky/Kz targets. Raw solver values remain in the response and Excel export. This calibrated "
+                    "reference match is not independent validation; correlate material, interfaces, mesh, and "
+                    "large-strain behavior before engineering release."
                 ),
             }
         )
@@ -687,6 +694,71 @@ async def run_static_stiffness_api(payload: dict) -> dict:
         raise HTTPException(status_code=500, detail=f"Static stiffness FEM failed: {exc}") from exc
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def _apply_static_reference_calibration(response: dict, intent: dict) -> dict:
+    """Apply fixed Four Arm reference factors while retaining raw solver values."""
+
+    calibrated = dict(response)
+    if str(calibrated.get("material") or "").lower() != "rubber":
+        return calibrated
+
+    hints = intent.get("simulation_hints") if isinstance(intent.get("simulation_hints"), dict) else {}
+    requested = hints.get("target_stiffness_n_per_mm") if isinstance(hints.get("target_stiffness_n_per_mm"), dict) else {}
+    targets = {
+        axis: _float_value(requested.get(f"k{axis}"), CLIENT_STATIC_TARGETS_N_PER_MM[axis])
+        for axis in ("x", "y", "z")
+    }
+    calibrated_directions = []
+    raw_by_axis: dict[str, float] = {}
+    calibrated_by_axis: dict[str, float] = {}
+    for value in calibrated.get("directions") or []:
+        item = dict(value)
+        axis = str(item.get("engineering_axis") or "").lower()
+        factor = CLIENT_STATIC_DIRECTION_FACTORS.get(axis, 1.0)
+        raw_force = float(item.get("reaction_force_n") or 0.0)
+        raw_stiffness = float(item.get("stiffness_n_per_mm") or 0.0)
+        raw_vector = tuple(float(component) for component in (item.get("reaction_vector_n") or (0.0, 0.0, 0.0)))
+        item.update(
+            {
+                "raw_reaction_force_n": raw_force,
+                "raw_stiffness_n_per_mm": raw_stiffness,
+                "raw_reaction_vector_n": raw_vector,
+                "calibration_factor": factor,
+                "reaction_force_n": raw_force * factor,
+                "stiffness_n_per_mm": raw_stiffness * factor,
+                "reaction_vector_n": tuple(component * factor for component in raw_vector),
+            }
+        )
+        raw_by_axis[axis] = raw_stiffness
+        calibrated_by_axis[axis] = raw_stiffness * factor
+        calibrated_directions.append(item)
+
+    calibrated["directions"] = calibrated_directions
+    for axis in ("x", "y", "z"):
+        calibrated[f"raw_k{axis}_n_per_mm"] = raw_by_axis.get(axis, 0.0)
+        calibrated[f"k{axis}_n_per_mm"] = calibrated_by_axis.get(axis, 0.0)
+    prior = dict(calibrated.get("calibration") or {})
+    prior.update(
+        {
+            "id": "client-four-arm-directional-reference-v2",
+            "status": "client_calibrated",
+            "method": "fixed_directional_reference_factors",
+            "reference_targets_n_per_mm": {f"k{axis}": targets[axis] for axis in ("x", "y", "z")},
+            "reference_raw_n_per_mm": {
+                f"k{axis}": CLIENT_STATIC_REFERENCE_RAW_N_PER_MM[axis] for axis in ("x", "y", "z")
+            },
+            "directional_factors": {
+                f"k{axis}": CLIENT_STATIC_DIRECTION_FACTORS[axis] for axis in ("x", "y", "z")
+            },
+            "note": (
+                "Fixed axial/radial correction factors were identified from the client Four Arm reference case. "
+                "Raw CalculiX reactions are retained separately; the calibrated reference match is not validation."
+            ),
+        }
+    )
+    calibrated["calibration"] = prior
+    return calibrated
 
 
 @app.get("/stiffness-model")
@@ -7135,7 +7207,7 @@ UI_HTML = """<!doctype html>
       }).join("");
       container.innerHTML =
         '<div class="sim-contour">' +
-        '<p class="sim-fem-msg"><strong>Directional static stiffness</strong> \u00b7 CalculiX linear-static solve \u00b7 material ' +
+        '<p class="sim-fem-msg"><strong>Directional static stiffness</strong> \u00b7 CalculiX raw solve + directional POC calibration \u00b7 material ' +
         escapeHtml(data.material || "rubber") + ' \u00b7 ' +
         escapeHtml(calibration.status === "client_calibrated" ? "client calibrated" : "uncalibrated") + '</p>' +
         '<div class="sim-kpi-grid">' +
@@ -7149,7 +7221,7 @@ UI_HTML = """<!doctype html>
         '<div class="sim-dashboard-detail" style="margin-top:10px">' +
         '<div class="sim-detail-item"><span>Centerline</span><strong>' + escapeHtml(data.centerline_axis || "X") + '</strong></div>' +
         '<div class="sim-detail-item"><span>Fixed interface</span><strong>' + escapeHtml(data.fixed_interface || "outer core") + '</strong></div>' +
-        '<div class="sim-detail-item"><span>Effective modulus</span><strong>' + formatNumber(data.youngs_modulus_mpa, 2) + ' MPa</strong></div>' +
+        '<div class="sim-detail-item"><span>Base modulus</span><strong>' + formatNumber(data.youngs_modulus_mpa, 2) + ' MPa</strong></div>' +
         '<div class="sim-detail-item"><span>Interface nodes</span><strong>' + Number(data.inner_node_count || 0) + ' inner / ' + Number(data.outer_node_count || 0) + ' outer</strong></div>' +
         '</div>' +
         '<p class="muted" style="margin:10px 0 0">' + escapeHtml(data.model_limitations || "") + '</p>' +

@@ -8,6 +8,7 @@ import unittest
 import numpy as np
 
 from geometry.bushing_hex_mesh import generate_bushing_hex_mesh
+from backend.app.main import _apply_static_reference_calibration
 from simulate.materials import resolve_material
 from simulate.modal_solver import _extract_solid_elements
 from simulate.static_stiffness import (
@@ -21,6 +22,52 @@ from simulate.static_stiffness import (
 
 
 class StaticStiffnessTests(unittest.TestCase):
+    def test_four_arm_reference_calibration_preserves_raw_solver_values(self) -> None:
+        response = {
+            "material": "rubber",
+            "youngs_modulus_mpa": 1.1,
+            "directions": [
+                {
+                    "engineering_axis": "x",
+                    "mesh_axis": "Z",
+                    "displacement_mm": 1.0,
+                    "reaction_force_n": 316.73,
+                    "stiffness_n_per_mm": 316.73,
+                    "reaction_vector_n": (0.0, 0.0, 316.73),
+                },
+                {
+                    "engineering_axis": "y",
+                    "mesh_axis": "X",
+                    "displacement_mm": 1.0,
+                    "reaction_force_n": 1562.87,
+                    "stiffness_n_per_mm": 1562.87,
+                    "reaction_vector_n": (1562.87, 0.0, 0.0),
+                },
+                {
+                    "engineering_axis": "z",
+                    "mesh_axis": "Y",
+                    "displacement_mm": 1.0,
+                    "reaction_force_n": 1562.87,
+                    "stiffness_n_per_mm": 1562.87,
+                    "reaction_vector_n": (0.0, 1562.87, 0.0),
+                },
+            ],
+        }
+        intent = {
+            "simulation_hints": {
+                "target_stiffness_n_per_mm": {"kx": 88.4, "ky": 294.5, "kz": 294.5}
+            }
+        }
+
+        calibrated = _apply_static_reference_calibration(response, intent)
+
+        self.assertAlmostEqual(calibrated["kx_n_per_mm"], 88.4)
+        self.assertAlmostEqual(calibrated["ky_n_per_mm"], 294.5)
+        self.assertAlmostEqual(calibrated["kz_n_per_mm"], 294.5)
+        self.assertEqual(calibrated["raw_kx_n_per_mm"], 316.73)
+        self.assertEqual(calibrated["directions"][1]["raw_stiffness_n_per_mm"], 1562.87)
+        self.assertEqual(calibrated["calibration"]["method"], "fixed_directional_reference_factors")
+
     def test_rubber_uses_client_calibrated_static_modulus(self) -> None:
         setup = StaticStiffnessSetup(
             mesh_file=Path("unused.vtk"),

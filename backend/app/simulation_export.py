@@ -121,6 +121,9 @@ def _write_static_stiffness(workbook: Workbook, payload: dict[str, Any]) -> None
         "Stiffness (N/mm)",
         "Absolute error (N/mm)",
         "Error (%)",
+        "Raw reaction force (N)",
+        "Raw stiffness (N/mm)",
+        "Calibration factor",
     ]
     sheet.append(headers)
     targets = _mapping(payload.get("client_targets"))
@@ -146,14 +149,18 @@ def _write_static_stiffness(workbook: Workbook, payload: dict[str, Any]) -> None
                 stiffness,
                 absolute_error,
                 error_percent,
+                _number(item.get("raw_reaction_force_n"), _number(item.get("reaction_force_n"))),
+                _number(item.get("raw_stiffness_n_per_mm"), stiffness),
+                _number(item.get("calibration_factor"), 1.0),
             ]
         )
 
     _style_table(sheet, freeze="A2", auto_filter=True)
     for row in range(2, sheet.max_row + 1):
-        for column in (2, 4, 5, 6, 7):
+        for column in (2, 4, 5, 6, 7, 9, 10):
             sheet.cell(row, column).number_format = "0.00"
         sheet.cell(row, 8).number_format = '0.00"%"'
+        sheet.cell(row, 11).number_format = "0.000000"
     if sheet.max_row >= 2:
         error_range = f"H2:H{sheet.max_row}"
         sheet.conditional_formatting.add(
@@ -180,6 +187,9 @@ def _write_static_stiffness(workbook: Workbook, payload: dict[str, Any]) -> None
         ("Poisson ratio", data.get("poisson_ratio")),
         ("Inner interface nodes", data.get("inner_node_count")),
         ("Outer interface nodes", data.get("outer_node_count")),
+        ("Calibration ID", calibration.get("id")),
+        ("Calibration method", calibration.get("method")),
+        ("Calibration note", calibration.get("note")),
         ("Limitations", data.get("model_limitations")),
     ]
     for offset, (label, value) in enumerate(details, start=1):

@@ -48,6 +48,9 @@ class SimulationExportTests(unittest.TestCase):
                         "displacement_mm": 1,
                         "reaction_force_n": 81.35,
                         "stiffness_n_per_mm": 81.35,
+                        "raw_reaction_force_n": 316.73,
+                        "raw_stiffness_n_per_mm": 316.73,
+                        "calibration_factor": 0.2568,
                     },
                     {
                         "engineering_axis": "y",
@@ -117,6 +120,8 @@ class SimulationExportTests(unittest.TestCase):
         self.assertIn("Optimization", workbook.sheetnames)
         self.assertIn("Design Space", workbook.sheetnames)
         self.assertEqual(workbook["Static Stiffness"]["F2"].value, 81.35)
+        self.assertEqual(workbook["Static Stiffness"]["I2"].value, 316.73)
+        self.assertEqual(workbook["Static Stiffness"]["J2"].value, 316.73)
         self.assertEqual(workbook["Modal Results"]["B3"].value, 1200)
         self.assertEqual(workbook["Optimization"]["B2"].value, "BEST-028")
         mesh_values = [cell.value for cell in workbook["Mesh"]["A"]]
