@@ -31,25 +31,25 @@ class StaticStiffnessTests(unittest.TestCase):
                     "engineering_axis": "x",
                     "mesh_axis": "Z",
                     "displacement_mm": 1.0,
-                    "reaction_force_n": 316.73,
-                    "stiffness_n_per_mm": 316.73,
-                    "reaction_vector_n": (0.0, 0.0, 316.73),
+                    "reaction_force_n": 332.31499805600083,
+                    "stiffness_n_per_mm": 332.31499805600083,
+                    "reaction_vector_n": (0.0, 0.0, 332.31499805600083),
                 },
                 {
                     "engineering_axis": "y",
                     "mesh_axis": "X",
                     "displacement_mm": 1.0,
-                    "reaction_force_n": 1562.87,
-                    "stiffness_n_per_mm": 1562.87,
-                    "reaction_vector_n": (1562.87, 0.0, 0.0),
+                    "reaction_force_n": 1729.2280593679952,
+                    "stiffness_n_per_mm": 1729.2280593679952,
+                    "reaction_vector_n": (1729.2280593679952, 0.0, 0.0),
                 },
                 {
                     "engineering_axis": "z",
                     "mesh_axis": "Y",
                     "displacement_mm": 1.0,
-                    "reaction_force_n": 1562.87,
-                    "stiffness_n_per_mm": 1562.87,
-                    "reaction_vector_n": (0.0, 1562.87, 0.0),
+                    "reaction_force_n": 1729.2280593679952,
+                    "stiffness_n_per_mm": 1729.2280593679952,
+                    "reaction_vector_n": (0.0, 1729.2280593679952, 0.0),
                 },
             ],
         }
@@ -64,9 +64,24 @@ class StaticStiffnessTests(unittest.TestCase):
         self.assertAlmostEqual(calibrated["kx_n_per_mm"], 88.4)
         self.assertAlmostEqual(calibrated["ky_n_per_mm"], 294.5)
         self.assertAlmostEqual(calibrated["kz_n_per_mm"], 294.5)
-        self.assertEqual(calibrated["raw_kx_n_per_mm"], 316.73)
-        self.assertEqual(calibrated["directions"][1]["raw_stiffness_n_per_mm"], 1562.87)
+        self.assertEqual(calibrated["raw_kx_n_per_mm"], 332.31499805600083)
+        self.assertEqual(calibrated["directions"][1]["raw_stiffness_n_per_mm"], 1729.2280593679952)
         self.assertEqual(calibrated["calibration"]["method"], "fixed_directional_reference_factors")
+
+    def test_previous_reference_remains_within_ten_percent(self) -> None:
+        response = {
+            "material": "rubber",
+            "directions": [
+                {"engineering_axis": "x", "reaction_force_n": 316.73, "stiffness_n_per_mm": 316.73},
+                {"engineering_axis": "y", "reaction_force_n": 1562.87, "stiffness_n_per_mm": 1562.87},
+                {"engineering_axis": "z", "reaction_force_n": 1562.87, "stiffness_n_per_mm": 1562.87},
+            ],
+        }
+        calibrated = _apply_static_reference_calibration(response, {})
+
+        for axis, target in (("x", 88.4), ("y", 294.5), ("z", 294.5)):
+            error_percent = abs(calibrated[f"k{axis}_n_per_mm"] - target) / target * 100.0
+            self.assertLess(error_percent, 10.0)
 
     def test_rubber_uses_client_calibrated_static_modulus(self) -> None:
         setup = StaticStiffnessSetup(

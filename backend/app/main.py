@@ -41,7 +41,11 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 MAX_FEM_MODES = 100
 CLIENT_STATIC_TARGETS_N_PER_MM = {"x": 88.4, "y": 294.5, "z": 294.5}
-CLIENT_STATIC_REFERENCE_RAW_N_PER_MM = {"x": 316.73, "y": 1562.87, "z": 1562.87}
+CLIENT_STATIC_REFERENCE_RAW_N_PER_MM = {
+    "x": 332.31499805600083,
+    "y": 1729.2280593679952,
+    "z": 1729.2280593679952,
+}
 CLIENT_STATIC_DIRECTION_FACTORS = {
     axis: CLIENT_STATIC_TARGETS_N_PER_MM[axis] / raw_value
     for axis, raw_value in CLIENT_STATIC_REFERENCE_RAW_N_PER_MM.items()
