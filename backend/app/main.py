@@ -3231,7 +3231,7 @@ UI_HTML = """<!doctype html>
     }
     .mesh-viewer-wrap {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
+      grid-template-columns: minmax(0, 1fr);
       gap: 12px;
       align-items: stretch;
       margin-top: 10px;
@@ -6399,23 +6399,19 @@ UI_HTML = """<!doctype html>
     }
 
     function renderMeshViewers(result, displayMesh) {
+      const presentationOptions = {
+        fillColor: "#aeb4bc",
+        edgeColor: "rgba(45, 55, 68, 0.62)",
+        wireframe: true,
+      };
       const comparison = meshComparisonMeshes(result);
       if (comparison.uploaded && comparison.surrogate) {
-        renderGmshMeshCanvas(document.getElementById("meshUploadedViewer"), comparison.uploaded, {
-          edgeColor: "rgba(14, 165, 233, 0.92)",
-          wireframe: true,
-        });
-        renderGmshMeshCanvas(document.getElementById("meshSurrogateViewer"), comparison.surrogate, {
-          edgeColor: "rgba(8, 145, 178, 0.98)",
-          wireframe: true,
-        });
+        renderGmshMeshCanvas(document.getElementById("meshUploadedViewer"), comparison.uploaded, presentationOptions);
+        renderGmshMeshCanvas(document.getElementById("meshSurrogateViewer"), comparison.surrogate, presentationOptions);
         return;
       }
       if (displayMesh) {
-        renderGmshMeshCanvas(document.getElementById("meshViewer"), displayMesh, {
-          edgeColor: "rgba(14, 165, 233, 0.92)",
-          wireframe: true,
-        });
+        renderGmshMeshCanvas(document.getElementById("meshViewer"), displayMesh, presentationOptions);
       }
     }
 
@@ -6424,7 +6420,7 @@ UI_HTML = """<!doctype html>
         return uploadedMeshSurfaceForMeshResult(result);
       }
       if (result && result.mesh_source === "exact_uploaded_geometry" && result.surface_mesh) {
-        return result.surface_mesh || null;
+        return uploadedMeshSurfaceForMeshResult(result) || result.surface_mesh || null;
       }
       if (result && result.mesh_source === "bushing_poc_hex") {
         const uploadedPocSurface = uploadedMeshSurfaceForMeshResult(result);
@@ -6639,35 +6635,13 @@ UI_HTML = """<!doctype html>
         ? (overrideMeshFaces || warpEditableMeshFaces((currentEditIntent && currentEditIntent.geometry) || {}))
         : (pickUploadedMesh() ? pickUploadedMesh().faces : null);
       if (!Array.isArray(faces) || !faces.length) return null;
-      const limitedFaces = faces.length > 12000
-        ? faces.filter((face, index) => index % Math.ceil(faces.length / 12000) === 0)
-        : faces;
-      const scalarMesh = result && result.surface_mesh ? result.surface_mesh : null;
-      const scalarMin = scalarMesh && Number.isFinite(Number(scalarMesh.scalar_min)) ? Number(scalarMesh.scalar_min) : 0;
-      const scalarMax = scalarMesh && Number.isFinite(Number(scalarMesh.scalar_max)) && Number(scalarMesh.scalar_max) > scalarMin ? Number(scalarMesh.scalar_max) : scalarMin + 1;
-      const bounds = computeMeshBounds(limitedFaces);
-      const axis = bounds.size.y >= bounds.size.x && bounds.size.y >= bounds.size.z
-        ? "y"
-        : (bounds.size.x >= bounds.size.z ? "x" : "z");
-      const axisMin = bounds.center[axis] - bounds.size[axis] / 2;
-      const axisSpan = Math.max(bounds.size[axis], 1e-6);
       return {
-        faces: limitedFaces.map((face) => {
-          const average = face.points.reduce((sum, point) => sum + Number(point[axis] || 0), 0) / Math.max(face.points.length, 1);
-          const t = clamp((average - axisMin) / axisSpan, 0, 1);
-          const value = scalarMin + t * (scalarMax - scalarMin);
-          return {
-            color: scalarMesh ? contourPreviewColor(t) : (face.color || UPLOAD_MESH_COLOR),
-            smoothPreview: Boolean(face.smoothPreview),
-            value,
-            points: face.points,
-          };
-        }),
-        field: scalarMesh && scalarMesh.field ? scalarMesh.field + " mapped to uploaded STL" : "Uploaded STL preview",
-        unit: scalarMesh && scalarMesh.unit ? scalarMesh.unit : "",
-        scalar_min: scalarMin,
-        scalar_max: scalarMax,
-        face_count: limitedFaces.length,
+        faces: faces.map((face) => ({
+          color: "#aeb4bc",
+          smoothPreview: false,
+          points: face.points,
+        })),
+        face_count: faces.length,
         source: "uploaded_stl",
       };
     }
@@ -6713,20 +6687,9 @@ UI_HTML = """<!doctype html>
       if (!mesh || !Array.isArray(mesh.faces) || !mesh.faces.length) {
         return '<div class="mesh-output err" style="margin-top:10px">Mesh was generated, but no exterior surface triangles were available for preview.</div>';
       }
-      const minLabel = formatEngineering(mesh.scalar_min, mesh.unit || "");
-      const maxLabel = formatEngineering(mesh.scalar_max, mesh.unit || "");
       const id = viewerId || "meshViewer";
       const label = ariaLabel || "Interactive Gmsh mesh preview";
-      return (
-        '<div class="mesh-viewer-wrap">' +
-        '<div class="mesh-viewer" id="' + escapeHtml(id) + '" aria-label="' + escapeHtml(label) + '"></div>' +
-        '<div class="mesh-legend" aria-label="' + escapeHtml(mesh.field || "Volume") + ' legend">' +
-        '<strong>' + escapeHtml(mesh.field || "Volume") + '</strong>' +
-        '<span>' + escapeHtml(maxLabel) + '</span>' +
-        '<div class="mesh-legend-bar"></div>' +
-        '<span>' + escapeHtml(minLabel) + '</span>' +
-        '</div></div>'
-      );
+      return '<div class="mesh-viewer-wrap"><div class="mesh-viewer" id="' + escapeHtml(id) + '" aria-label="' + escapeHtml(label) + '"></div></div>';
     }
 
     function formatInt(value) {
@@ -6957,7 +6920,7 @@ UI_HTML = """<!doctype html>
       const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
       const lightDirection = normalizeVector({ x: 0.35, y: 0.85, z: 0.4 });
       const centeredFaces = mesh.faces.map((face) => ({
-        color: face.color || "#00c8ff",
+        color: renderOptions.fillColor || face.color || "#aeb4bc",
         smoothPreview: Boolean(face.smoothPreview),
         points: face.points.map((point) => ({
           x: point.x - center.x,

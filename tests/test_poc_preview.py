@@ -72,6 +72,22 @@ class PocPreviewTests(unittest.TestCase):
         self.assertIn('id="requirementControls"', UI_HTML)
         self.assertIn('id="paramControls"', UI_HTML)
 
+    def test_mesh_preview_is_connected_monochrome_without_legend(self):
+        display_body = self._function_body("meshSurfaceForDisplay", "renderShapePcaOutputPanel")
+        upload_body = self._function_body("uploadedMeshSurfaceForMeshResult", "meshStrategyNote")
+        viewer_html_body = self._function_body("meshViewerHtml", "formatInt")
+        canvas_body = self._function_body("renderGmshMeshCanvas", "escapeHtml")
+
+        self.assertIn(
+            "return uploadedMeshSurfaceForMeshResult(result) || result.surface_mesh || null",
+            display_body,
+        )
+        self.assertNotIn("filter((face, index)", upload_body)
+        self.assertIn('color: "#aeb4bc"', upload_body)
+        self.assertIn("smoothPreview: false", upload_body)
+        self.assertNotIn("mesh-legend", viewer_html_body)
+        self.assertIn("renderOptions.fillColor", canvas_body)
+
 
 if __name__ == "__main__":
     unittest.main()
